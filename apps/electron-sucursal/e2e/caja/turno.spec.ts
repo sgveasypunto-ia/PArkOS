@@ -99,7 +99,14 @@ test.describe('Turno flow — F3.3 T5', () => {
     await expect(page.getByTestId('turno-activo-uuid')).toContainText(TEST_UUID_SESION);
   });
 
-  test('E2 — sesion-already-active-409: submit mientras ya activa → FormMessage + botón "Ir al turno"', async ({ page }) => {
+  test('E2 — sesion-already-active-409: apertura automática con turno ya activo → alerta + botón "Ir al turno"', async ({ page }) => {
+    // La base de caja es un parámetro de la sucursal (la define administración).
+    await page.route('**/api/v1/configuracion/configuracion-caja/efectiva**', (route) =>
+      route.fulfill({
+        status: 200,
+        body: JSON.stringify({ uuid_sucursal: 'suc-uuid-1', base_inicial_sugerida: '50000.0000' }),
+      }),
+    );
     // Estado pre-existente: sesion activa via localStorage JWT stub + /me 200.
     await page.route('**/api/v1/auth/me', (route) =>
       route.fulfill({
@@ -136,9 +143,8 @@ test.describe('Turno flow — F3.3 T5', () => {
     );
     await page.goto('/caja/abrir-turno');
 
+    // El turno se abre solo (sin pedir valores): el 409 aparece sin que el operador haga nada.
     await expect(page.getByTestId('abrir-turno-form')).toBeVisible({ timeout: 10_000 });
-    await page.getByTestId('abrir-turno-submit').click();
-
     await expect(page.getByTestId('abrir-turno-error-sesion-ya-abierta')).toBeVisible();
     await expect(
       page.getByTestId('abrir-turno-error-sesion-ya-abierta'),
@@ -203,6 +209,13 @@ test.describe('Turno flow — F3.3 T5', () => {
   });
 
   test('A1 — axe-core WCAG 2.1 AA en AbrirTurno + CerrarTurno + TurnoActivoPanel + Login ?closed=true', async ({ page }) => {
+    // La base de caja es un parámetro de la sucursal (la define administración).
+    await page.route('**/api/v1/configuracion/configuracion-caja/efectiva**', (route) =>
+      route.fulfill({
+        status: 200,
+        body: JSON.stringify({ uuid_sucursal: 'suc-uuid-1', base_inicial_sugerida: '50000.0000' }),
+      }),
+    );
     // Stub mínimo /auth/me para hidratar useAuth sin red.
     await page.route('**/api/v1/auth/me', (route) =>
       route.fulfill({

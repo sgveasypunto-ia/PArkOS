@@ -1,162 +1,94 @@
 /**
- * `<AbrirTurno />` — container (F3.3 — T2, DEC-F3.3-01 verbatim).
+ * `<AbrirTurno />` — container. Opens the shift without asking for anything.
  *
- * Orquesta RHF + Zod resolver + `useAuth` + `useNavigate` +
- * `sesionActivaApi.abrirSesion(payload)` con mapeo tipado de 409
- * (SesionAlreadyActiveError → UX "ya tenés un turno abierto" + botón
- * "Ir al turno").
+ * The base de caja is a branch parameter configured by administration
+ * (`configuracion_caja`, synced from the cloud). This screen resolves it, opens
+ * the shift on its own and leaves a marker so the dashboard shows a notice with
+ * the base and who to ask if in doubt (`<BaseCajaAviso>`). The backend resolves
+ * the base again server-side and ignores whatever the client sends.
  *
- * DEC-F3.3-08: validación local Zod (abrirTurnoSchema) ANTES del POST.
- * Defense in depth XR6 layer 4 — Zod local + backend Pydantic +
- * partial unique index 0023 (F1.3).
- *
- * DEC-F3.3-02: `<Input type="number" inputMode="decimal" step="0.01">`
- * en el presentational `<AbrirTurnoForm>` (teclado numérico mobile).
- *
- * WCAG 2.1 AA: shadcn Form primitives (form.tsx) proveen `aria-invalid`
- * + `aria-describedby` + `<FormMessage role="alert">` automático.
- * axe-core 0 violaciones verificado en vitest (REQ-OPS-124 S3).
+ * 409 `sesion_already_active` keeps its UX ("ya tenés un turno abierto" + "Ir
+ * al turno"); a branch without a configured base cannot open a shift.
  */
-import { useState } from 'react';
-import { useForm, type Resolver } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSWRConfig } from 'swr';
 
 import { useAuth } from '@parkos/ui-kit/hooks';
 import { useAuthStore } from '@parkos/ui-kit/store';
 
-import {
-  abrirSesion,
-  SesionAlreadyActiveError,
-  type SesionOpenResponse,
-  type SesionRead,
-} from '../api/sesionActivaApi';
-import {
-  abrirTurnoSchema,
-  type AbrirTurnoInput,
-} from '../api/schemas/turnoSchema';
+import { abrirSesion, SesionAlreadyActiveError } from '../api/sesionActivaApi';
+import { AbrirTurnoAviso, type AbrirTurnoStatus } from '../components/AbrirTurnoAviso';
+import { useBaseCajaEfectiva } from '../hooks/useBaseCajaEfectiva';
 import { SESION_KEY } from '../hooks/useSesionActiva';
-import {
-  AbrirTurnoForm,
-  type AbrirTurnoErrorState,
-  type AbrirTurnoFormValues,
-} from '../components/AbrirTurnoForm';
+import { marcarBaseAviso } from '../lib/baseCajaAviso';
 
 export function AbrirTurno(): JSX.Element {
   const navigate = useNavigate();
   // Cache-bound mutate: the SWR cache is scoped per operator session.
   const { mutate } = useSWRConfig();
   const { user, sucursal } = useAuth();
-  const [errorState, setErrorState] = useState<AbrirTurnoErrorState>(null);
+  const { base, isLoading: baseLoading, error: baseError } = useBaseCajaEfectiva(sucursal?.uuid);
 
-  const form = useForm<AbrirTurnoFormValues, unknown, AbrirTurnoInput>({
-    // KNOWN GAP: `abrirTurnoSchema.valor_inicial_*` uses `.transform()`
-    // (string → number), so the schema's INPUT shape (what RHF's form
-    // state holds while the operator types) differs from its OUTPUT
-    // shape (`AbrirTurnoInput`, what `onSubmit` below receives). The
-    // installed `@hookform/resolvers@3.10.0` `zodResolver` type doesn't
-    // encode that Input/Output distinction (its exported `Resolver` is
-    // a loosely-typed passthrough), so this cast restores the real,
-    // correct Input→Output relationship without weakening validation —
-    // `zodResolver` still runs the real schema (incl. `.transform()`)
-    // at runtime exactly as before.
-    resolver: zodResolver(abrirTurnoSchema) as Resolver<
-      AbrirTurnoFormValues,
-      unknown,
-      AbrirTurnoInput
-    >,
-    mode: 'onBlur',
-    defaultValues: {
-      uuid_sucursal: sucursal?.uuid ?? '',
-      // REQ-OPS-131 (qa-2026-09-17 bug 1): backend canonical identity
-      // is ``UserItem.uuid`` (renamed from legacy ``id``); reading
-      // ``user?.uuid`` produces a non-empty UUID so Zod's
-      // ``uuid_usuario: z.string().uuid()`` validation passes
-      // (previously the legacy ``id`` field was either empty or a
-      // non-UUID string, surfacing as a silent 422 with no inline
-      // ``<FormMessage>``).
-      uuid_usuario: user?.uuid ?? '',
-      // F3.3 numeric inputs: defaults VACÍOS. Antes había '0' aquí y
-      // eso generaba el bug "0 queda fijo cuando quiero escribir el
-      // número" (no se podía borrar el cero). El schema acepta "" y
-      // lo trata como 0 (transform) — comportamiento esperado: el
-      // operador escribe el monto desde cero, sin pre-relleno.
-      // El placeholder provee la pista visual.
-      valor_inicial_efectivo: '',
-      observaciones: '',
-    },
-  });
+  const [status, setStatus] = useState<AbrirTurnoStatus>('cargando');
+  // One open attempt per mount/retry: effects run twice in StrictMode and the
+  // backend would answer 409 to the second POST.
+  const intentoRef = useRef(0);
+  const [reintento, setReintento] = useState(0);
 
-  const onIrAlTurno = (): void => {
-    navigate('/');
-  };
-
-  const onSubmit = form.handleSubmit(async (values) => {
-    setErrorState(null);
+  const abrir = useCallback(async (): Promise<void> => {
+    if (sucursal?.uuid === undefined || user?.uuid === undefined) return;
+    setStatus('abriendo');
     try {
-      const opened: SesionOpenResponse = await abrirSesion({
-        uuid_sucursal: values.uuid_sucursal,
-        uuid_usuario: values.uuid_usuario,
-        valor_inicial_efectivo: values.valor_inicial_efectivo,
-        // El operador ya no tipea el valor inicial del datáfono: el form
-        // no expone el campo. La API sigue recibiendo el campo con default
-        // 0 para preservar el contrato backend (SesionCreate Pydantic
-        // requiere `valor_inicial_datafono: number`).
+      const opened = await abrirSesion({
+        uuid_sucursal: sucursal.uuid,
+        uuid_usuario: user.uuid,
+        // Informative only: the server resolves the base itself and ignores
+        // both values (the datafono never starts a shift with a value).
+        valor_inicial_efectivo: base ?? 0,
         valor_inicial_datafono: 0,
-        ...(values.observaciones !== undefined && values.observaciones !== ''
-          ? { observaciones: values.observaciones }
-          : {}),
       });
-      // BUGFIX (2026-09-25): adopt the reissued token pair BEFORE
-      // navigating — it now carries the `sesion` claim the backend
-      // never set before, which every payment (reimpresión, venta de
-      // suscripción, pago de salida) needs so `factura_pagos.
-      // uuid_sesion` links to this turno for arqueo.
+      // Adopt the reissued token pair BEFORE leaving: it carries the `sesion`
+      // claim every payment needs so `factura_pagos.uuid_sesion` links to this
+      // turno for arqueo.
       useAuthStore
         .getState()
         .setTokens(opened.access_token, opened.refresh_token, opened.expires_in);
-      // `opened` is a `SesionOpenResponse` (SesionRead + tokens) — the
-      // `sesion` name is kept for the SWR cache write below, which only
-      // cares about the `SesionRead` fields (structural typing accepts
-      // the wider object; the extra token fields are simply unused).
-      const sesion: SesionRead = opened;
-      void sesion; // SWR re-fetch on next render via `useSesionActiva` key change.
-      // F3.3 follow-up (auto-redirect): push the new session into
-      // SWR cache BEFORE navigating so Dashboard's first render
-      // sees `data: sesion` instead of the cached `undefined` from
-      // the pre-submit state. Without this, the Dashboard's
-      // `useEffect` -- `if (!sesion && !isLoading && !error)
-      // navigate('/caja/abrir-turno')` -- fires before SWR's first
-      // fetch lands and bounces the operator back. With
-      // `revalidate: false` we skip the redundant re-fetch (we
-      // already have the canonical value from the POST body); a
-      // later refresh cycle replaces it with whatever the server
-      // canonicalizes.
-      void mutate(SESION_KEY, sesion, { revalidate: false });
-      navigate('/');
+      // Push the new session into the SWR cache so the dashboard does not
+      // bounce the operator back here (revalidate: false — we already hold the
+      // canonical value).
+      // The dashboard shows the base notice (this screen unmounts as soon as
+      // the session exists), so leave the marker BEFORE the cache write.
+      marcarBaseAviso(opened.uuid);
+      void mutate(SESION_KEY, opened, { revalidate: false });
+      navigate('/', { replace: true });
     } catch (err) {
       if (err instanceof SesionAlreadyActiveError) {
-        // F11.4 follow-up -- the operator reported that on 409 the
-        // UI silently redirected to / without any feedback, leaving
-        // them confused about why "Abrir turno" did nothing. The
-        // plan (plan.md:1340, F3.3 Manejo de errores) is explicit:
-        //   "409 sesion_ya_abierta → mensaje 'ya tenés un turno abierto'"
-        //
-        // The fix: SET the error state instead of auto-navigating.
-        // The <AbrirTurnoForm /> then renders a `<FormMessage role="alert">`
-        // with the message AND an explicit "Ir al turno" button
-        // (`onIrAlTurno` callback that calls `navigate('/')`). The
-        // operator sees the message AND takes the action — no silent
-        // jump. We still bust the SWR cache so the dashboard reads
-        // fresh data when the operator hits "Ir al turno".
         void mutate(SESION_KEY);
-        setErrorState({ kind: 'sesion_already_active' });
+        setStatus('sesion_ya_abierta');
         return;
       }
-      setErrorState({ kind: 'network' });
+      setStatus('error');
     }
-  });
+  }, [base, mutate, navigate, sucursal?.uuid, user?.uuid]);
+
+  useEffect(() => {
+    if (baseLoading) {
+      setStatus('cargando');
+      return;
+    }
+    if (baseError !== undefined) {
+      setStatus('error');
+      return;
+    }
+    if (base === null) {
+      setStatus('sin_base');
+      return;
+    }
+    if (intentoRef.current === reintento + 1) return;
+    intentoRef.current = reintento + 1;
+    void abrir();
+  }, [abrir, base, baseError, baseLoading, reintento]);
 
   return (
     <div
@@ -164,12 +96,13 @@ export function AbrirTurno(): JSX.Element {
       data-testid="abrir-turno-page-wrapper"
     >
       <div className="w-full max-w-md">
-        <AbrirTurnoForm
-          form={form}
-          onSubmit={onSubmit}
-          isSubmitting={form.formState.isSubmitting}
-          error={errorState}
-          onIrAlTurno={onIrAlTurno}
+        <AbrirTurnoAviso
+          status={status}
+          onReintentar={() => {
+            void mutate(`/configuracion-caja/efectiva/${sucursal?.uuid ?? ''}`);
+            setReintento((n) => n + 1);
+          }}
+          onIrAlTurno={() => navigate('/')}
         />
       </div>
     </div>

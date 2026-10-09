@@ -195,7 +195,7 @@ def check_rule_2_exactly_one_catalog(
 
 
 # ---------------------------------------------------------------------------
-# Rule 3 — counts (46 / 3 / 5 / 54)
+# Rule 3 — counts (47 / 3 / 5 / 55)
 # ---------------------------------------------------------------------------
 
 
@@ -203,8 +203,8 @@ def check_rule_3_counts(
     *, sync_catalog: list, local_only_catalog: list, out_of_catalog: frozenset[str]
 ) -> list[DriftViolation]:
     violations: list[DriftViolation] = []
-    if len(sync_catalog) != 46:
-        violations.append(DriftViolation(3, f"SYNC_CATALOG has {len(sync_catalog)} entries, want 46"))
+    if len(sync_catalog) != 47:
+        violations.append(DriftViolation(3, f"SYNC_CATALOG has {len(sync_catalog)} entries, want 47"))
     if len(local_only_catalog) != 3:
         violations.append(
             DriftViolation(3, f"LOCAL_ONLY_CATALOG has {len(local_only_catalog)} entries, want 3")
@@ -212,8 +212,8 @@ def check_rule_3_counts(
     if len(out_of_catalog) != 5:
         violations.append(DriftViolation(3, f"OUT_OF_CATALOG has {len(out_of_catalog)} names, want 5"))
     total = len(sync_catalog) + len(local_only_catalog) + len(out_of_catalog)
-    if total != 54:
-        violations.append(DriftViolation(3, f"46+3+5 coverage totals {total}, want 54"))
+    if total != 55:
+        violations.append(DriftViolation(3, f"47+3+5 coverage totals {total}, want 55"))
     return violations
 
 

@@ -167,6 +167,7 @@ async def _seed_world(engine, factory) -> tuple[World, int]:
                 ),
                 build("configuracion_tolerancias", who, uuid_sucursal=suc),
                 build("configuracion_seguridad", who, uuid_sucursal=suc),
+                build("configuracion_caja", who, uuid_sucursal=suc),
                 build(
                     "subscripciones_cliente",
                     who,
@@ -196,6 +197,7 @@ async def _seed_world(engine, factory) -> tuple[World, int]:
         stage2 += [
             build("configuracion_tolerancias", "global", uuid_sucursal=None),
             build("configuracion_seguridad", "global", uuid_sucursal=None),
+            build("configuracion_caja", "global", uuid_sucursal=None),
         ]
         s.add_all(stage2)
         await s.commit()
@@ -246,7 +248,7 @@ def test_expected_scope_matches_pull_eligible_catalog(app) -> None:
     }
     assert eligible - set(EXPECTED_SCOPE) == set(), "catalog entries with no decided pull scope"
     assert set(EXPECTED_SCOPE) - eligible == set(), "EXPECTED_SCOPE names non pull-eligible entries"
-    assert len(EXPECTED_SCOPE) == 27
+    assert len(EXPECTED_SCOPE) == 28
 
 
 # ---------------------------------------------------------------------------

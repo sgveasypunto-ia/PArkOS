@@ -27,7 +27,7 @@ SYNC_CATALOG: tuple[SyncCatalogEntry, ...] = (
     + SYNC_ENTRIES_A
 )
 
-assert len(SYNC_CATALOG) == 46, f"expected 46 SYNC_CATALOG entries, got {len(SYNC_CATALOG)}"
+assert len(SYNC_CATALOG) == 47, f"expected 47 SYNC_CATALOG entries, got {len(SYNC_CATALOG)}"
 
 # name -> entry lookup, used by check_catalog_drift.py and (from PR4 on) the
 # motor's dispatch path.

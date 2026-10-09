@@ -55,6 +55,38 @@ beforeEach(() => {
   descargarMock.mockResolvedValue(undefined);
 });
 
+describe('<ResumenCierreTurno /> — producido y base entregada', () => {
+  it('deriva el producido (contado − base) y muestra la base que pasa al siguiente turno', () => {
+    render(
+      <ResumenCierreTurno
+        sesion={SESION}
+        arqueo={ARQUEO}
+        resumen={null}
+        onFinalizar={() => {}}
+      />,
+    );
+
+    const text = screen.getByTestId('resumen-cierre-turno').textContent ?? '';
+    expect(text).toContain('Producido consignado');
+    expect(text).toContain('25.000'); // 75.000 contado − 50.000 base
+    expect(text).toContain('Base entregada al siguiente turno');
+  });
+
+  it('prefiere las cifras del servidor cuando vienen en el resumen', () => {
+    render(
+      <ResumenCierreTurno
+        sesion={SESION}
+        arqueo={ARQUEO}
+        resumen={{ ...RESUMEN, base_entregada: 50_000, efectivo_reportado: 75_000, producido: 31_000 }}
+        onFinalizar={() => {}}
+      />,
+    );
+
+    const text = screen.getByTestId('resumen-cierre-turno').textContent ?? '';
+    expect(text).toContain('31.000');
+  });
+});
+
 describe('<ResumenCierreTurno />', () => {
   it('muestra TODOS los datos: base, esperado vs contado, diferencia, hora de cierre, nº de transacciones, totales por medio y observaciones', () => {
     render(

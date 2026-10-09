@@ -68,7 +68,7 @@ P95_TARGET_SECONDS = 0.005
 HIT_RATE_TARGET = 0.95
 
 _V_TABLE_NAMES = [entry.name for entry in SYNC_ENTRIES_V]
-assert len(_V_TABLE_NAMES) == 26
+assert len(_V_TABLE_NAMES) == 27
 
 
 async def _seed_rows(session_factory) -> list[tuple[str, uuid_lib.UUID]]:

@@ -238,6 +238,7 @@ function ResumenTurno({
 function SesionDetails({ sesion }: { sesion: SesionRead }): JSX.Element {
   const { t } = useTranslation('caja');
   return (
+    <>
     <dl className="space-y-1.5">
       <div className="flex justify-between gap-2">
         <dt className="text-sm text-muted-foreground">UUID</dt>
@@ -282,5 +283,15 @@ function SesionDetails({ sesion }: { sesion: SesionRead }): JSX.Element {
           </div>
         )}
     </dl>
+    <p
+      className="mt-2 text-xs text-muted-foreground"
+      data-testid="turno-activo-details-base-nota"
+    >
+      {t('caja:baseDeCajaNota', {
+        defaultValue:
+          'Base de caja configurada por administración. Si tienes dudas, consulta con el supervisor o el administrador del sistema.',
+      })}
+    </p>
+    </>
   );
 }

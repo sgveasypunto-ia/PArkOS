@@ -30,6 +30,10 @@ export const ResumenCierreTurnoSchema = z
     medios_pago: z.array(ResumenCierreMedioPagoSchema),
     reversos_count: z.number().int().nonnegative(),
     reversos_total_cop: z.coerce.number(),
+    // Cash handover (efectivo only). `null` while the sesion has no arqueo yet.
+    base_entregada: z.coerce.number().nullable().optional(),
+    efectivo_reportado: z.coerce.number().nullable().optional(),
+    producido: z.coerce.number().nullable().optional(),
   })
   .strict();
 
