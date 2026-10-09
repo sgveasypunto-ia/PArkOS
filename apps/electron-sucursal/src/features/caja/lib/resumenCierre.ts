@@ -61,6 +61,11 @@ export function buildResumenCierreSections(
   const diferencia =
     arqueo.diferencia_efectivo ??
     (contado !== undefined && esperado !== undefined ? contado - esperado : undefined);
+  // Producido = efectivo contado − base (efectivo only). The server figure wins
+  // when present; otherwise it is derived from what this summary already shows.
+  const baseEntregada = resumen?.base_entregada ?? sesion.valor_inicial_efectivo;
+  const producido =
+    resumen?.producido ?? (contado !== undefined ? contado - baseEntregada : undefined);
   const dash = '—';
 
   const sections: ResumenCierrePdfSection[] = [
@@ -89,6 +94,14 @@ export function buildResumenCierreSections(
         {
           label: k('diferencia', 'Diferencia'),
           value: diferencia !== undefined ? formatSigned(diferencia) : dash,
+        },
+        {
+          label: k('producido', 'Producido consignado'),
+          value: producido !== undefined ? formatCOP(producido) : dash,
+        },
+        {
+          label: k('baseEntregada', 'Base entregada al siguiente turno'),
+          value: formatCOP(baseEntregada),
         },
       ],
     },
