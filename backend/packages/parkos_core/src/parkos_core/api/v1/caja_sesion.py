@@ -13,6 +13,7 @@ difference calculation).
 
 from __future__ import annotations
 
+import logging
 import uuid as uuid_lib
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Response
@@ -23,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...auth.tokens import issue_token
 from ...exceptions import SesionAlreadyActive
 from ...models.L_S.sesion import Sesion
+from ...repo.config_override import resolve_efectiva_caja
 from ...repo.sesion_activa import get_sesion_activa
 from ...repo.session_cycle import close_session_with_log, open_session
 from ...schemas.caja import (
@@ -35,6 +37,8 @@ from ...schemas.caja import (
 from ..deps import TenantContext, get_session, get_tenant_ctx, requires_issuer
 from ..router_factory import make_router
 from .auth import ACCESS_TOKEN_TTL, REFRESH_TOKEN_TTL
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/caja-sesion", tags=["caja-sesion"])
 
@@ -150,8 +154,18 @@ async def open_sesion(
             },
         )
 
-    valor_efectivo = float(payload.valor_inicial_efectivo or 0)
-    valor_datafono = float(payload.valor_inicial_datafono or 0)
+    # The base de caja is a branch parameter, not something the operator types:
+    # the server resolves it (branch override, then global default) and ignores
+    # the client value. Only when nothing is configured does the payload value
+    # survive, so a branch that was never parametrized keeps opening shifts.
+    config = await resolve_efectiva_caja(session, payload.uuid_sucursal)
+    if config is not None and config.base_inicial_sugerida is not None:
+        valor_efectivo = float(config.base_inicial_sugerida)
+    else:
+        valor_efectivo = float(payload.valor_inicial_efectivo or 0)
+        logger.warning("sesion_open_base_not_configured uuid_sucursal=%s", payload.uuid_sucursal)
+    # Cash control is cash only: the datafono never starts a shift with a value.
+    valor_datafono = 0.0
 
     try:
         new_row = await open_session(
