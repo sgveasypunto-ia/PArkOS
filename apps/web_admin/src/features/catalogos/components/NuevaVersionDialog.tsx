@@ -6,7 +6,7 @@
  * fila vigente e inserta una nueva.
  *
  * Reutiliza los primitives `Dialog`, `Button`, `Input`, `Label`,
- * `Form` (shadcn). El formulario se renderiza desde la lista de
+ * `Select` (shadcn). El formulario se renderiza desde la lista de
  * campos del `config.fields` — el componente no conoce ningún
  * catálogo específico.
  *
@@ -16,7 +16,7 @@
  * por el overlay.
  */
 import { useEffect } from 'react';
-import { useForm, type UseFormRegisterReturn } from 'react-hook-form';
+import { FormProvider, useController, useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useTranslation } from 'react-i18next';
 import { z } from 'zod';
@@ -32,6 +32,14 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+  NONE_VALUE,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 import { useCatalogList } from '../hooks/useCatalogList';
 import type { CatalogField } from '../lib/configTypes';
@@ -58,6 +66,28 @@ interface NuevaVersionDialogProps {
   submitError?: string | null;
 }
 
+interface SelectOption {
+  value: string;
+  label: string;
+}
+
+/**
+ * Map the form value (empty string) to the Radix Select sentinel
+ * (`__none__`) at the UI boundary, and back when the user picks the
+ * empty option. The form state keeps the empty string, so the
+ * backend contract (string-or-absent) is unchanged.
+ */
+function toRadixValue(formValue: unknown): string {
+  if (formValue === '' || formValue === undefined || formValue === null) {
+    return NONE_VALUE;
+  }
+  return String(formValue);
+}
+
+function fromRadixValue(radixValue: string): string {
+  return radixValue === NONE_VALUE ? '' : radixValue;
+}
+
 /**
  * `select` field with two modes:
  *  - `field.options` is set → render those literal options (e.g. enum-like
@@ -69,15 +99,20 @@ interface NuevaVersionDialogProps {
  * (default `uuid`). Set it to e.g. `tipo` when the backend field is a
  * free string keyed by the option's `tipo` (e.g. `tipo_cliente_permitido`,
  * which the backend stores as a `str` not a FK).
+ *
+ * `allowEmpty === false` hides the empty option — used for fields where
+ * "no value" is not a legal UI state (e.g. a plan's vehicle type once
+ * the plan is assigned).
+ *
+ * Driven through `useController` because Radix Select is a controlled
+ * component; `register` (the pattern for native inputs) doesn't apply.
  */
 function CatalogSelect({
   field,
-  register,
   invalid,
   currentValue,
 }: {
   field: CatalogField;
-  register: UseFormRegisterReturn;
   invalid: boolean;
   /** Value stored on the row being edited (may point at a no-longer-vigente version). */
   currentValue: string;
@@ -86,46 +121,64 @@ function CatalogSelect({
   const { rows } = useCatalogList(field.optionsResource ?? 'tipos-vehiculo');
   const labelKey = field.optionsLabelKey ?? 'tipo';
   const valueKey = field.optionsValueKey ?? 'uuid';
+  const showEmpty = field.allowEmpty !== false;
+
+  const { field: controllerField } = useController<Record<string, unknown>>({
+    name: field.name,
+  });
 
   const literalOptions = field.options ?? [];
-  const resourceOptions = useResourceOptions({
+  const resourceOptions = buildResourceOptions({
     rows,
     valueKey,
     labelKey,
     currentValue,
   });
+  const options: SelectOption[] = hasLiteral ? literalOptions : resourceOptions;
+  const hintId = `field-${field.name}-hint`;
 
   return (
-    <select
-      id={`field-${field.name}`}
-      {...register}
-      data-testid={`field-${field.name}`}
-      aria-invalid={invalid ? 'true' : 'false'}
-      aria-describedby={field.hint ? `field-${field.name}-hint` : undefined}
-      className="border-input bg-transparent flex h-9 w-full rounded-md border px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-    >
-      <option value="">{field.emptyOptionLabel ?? ''}</option>
-      {(hasLiteral ? literalOptions : resourceOptions).map((o) => (
-        <option key={o.value} value={o.value}>
-          {o.label}
-        </option>
-      ))}
-    </select>
+    <>
+      <Select
+        value={toRadixValue(controllerField.value)}
+        onValueChange={(v) => controllerField.onChange(fromRadixValue(v))}
+        name={controllerField.name}
+      >
+        <SelectTrigger
+          id={`field-${field.name}`}
+          data-testid={`field-${field.name}`}
+          aria-invalid={invalid ? 'true' : 'false'}
+          aria-describedby={field.hint ? hintId : undefined}
+        >
+          <SelectValue placeholder={field.placeholder ?? field.emptyOptionLabel} />
+        </SelectTrigger>
+        <SelectContent>
+          {showEmpty && (
+            <SelectItem value={NONE_VALUE}>{field.emptyOptionLabel ?? ''}</SelectItem>
+          )}
+          {options.map((o) => (
+            <SelectItem key={o.value} value={o.value}>
+              {o.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {field.hint && (
+        <p id={hintId} className="text-muted-foreground text-xs">
+          {field.hint}
+        </p>
+      )}
+    </>
   );
 }
 
-interface SelectOption {
-  value: string;
-  label: string;
-}
-
 /**
- * Build the `<option>` list for a resource-driven select. The `value` is
- * the row's `optionsValueKey` (default `uuid`). When the current row
- * references a no-longer-vigente version, keep that option selectable
- * so the field doesn't silently reset to "no value".
+ * Build the option list for a resource-driven select. The `value` is the
+ * row's `optionsValueKey` (default `uuid`). When the current row references
+ * a no-longer-vigente version, keep that option selectable so the field
+ * doesn't silently reset to "no value".
  */
-function useResourceOptions({
+function buildResourceOptions({
   rows,
   valueKey,
   labelKey,
@@ -202,21 +255,22 @@ export function NuevaVersionDialog({
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
 
-        <form
-          onSubmit={form.handleSubmit(async (values) => {
-            if (validateForm) {
-              const blocked = validateForm(values as Record<string, unknown>);
-              if (blocked !== null) {
-                form.setError('root' as never, { type: 'manual', message: blocked });
-                return;
+        <FormProvider {...form}>
+          <form
+            onSubmit={form.handleSubmit(async (values) => {
+              if (validateForm) {
+                const blocked = validateForm(values as Record<string, unknown>);
+                if (blocked !== null) {
+                  form.setError('root' as never, { type: 'manual', message: blocked });
+                  return;
+                }
               }
-            }
-            await onSubmit(values as Record<string, unknown>, { validateForm });
-          })}
-          className="grid gap-4"
-          data-testid="nueva-version-form"
-        >
-          {fields.map((field) => {
+              await onSubmit(values as Record<string, unknown>, { validateForm });
+            })}
+            className="grid gap-4"
+            data-testid="nueva-version-form"
+          >
+            {fields.map((field) => {
             const error = form.formState.errors[field.name];
             const isCheckbox = field.type === 'checkbox';
             const isTextarea = field.type === 'textarea' || (field.type === undefined && field.multiline === true);
@@ -261,61 +315,54 @@ export function NuevaVersionDialog({
                     </>
                   )}
                 </Label>
-                {field.type === 'select' && (
-                  <>
-                    <CatalogSelect
-                      field={field}
-                      register={form.register(field.name)}
-                      invalid={Boolean(error)}
-                      currentValue={String(defaults[field.name] ?? '')}
-                    />
-                    {field.hint && (
-                      <p id={hintId} className="text-muted-foreground text-xs">
-                        {field.hint}
-                      </p>
-                    )}
-                  </>
-                )}
-                {!isCheckbox && field.type !== 'select' && (
-                  <>
-                    {isTextarea ? (
-                      <textarea
-                        id={`field-${field.name}`}
-                        {...form.register(field.name)}
-                        data-testid={`field-${field.name}`}
-                        aria-invalid={error ? 'true' : 'false'}
-                        aria-describedby={describedBy || undefined}
-                        placeholder={field.placeholder}
-                        rows={4}
-                        className="border-input bg-transparent flex w-full rounded-md border px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      />
-                    ) : (
-                      <Input
-                        id={`field-${field.name}`}
-                        type={field.type === 'number' ? 'number' : 'text'}
-                        step={field.type === 'number' ? '0.0001' : undefined}
-                        placeholder={field.placeholder}
-                        {...form.register(field.name)}
-                        data-testid={`field-${field.name}`}
-                        aria-invalid={error ? 'true' : 'false'}
-                        aria-describedby={describedBy || undefined}
-                      />
-                    )}
-                    {field.hint && (
-                      <p id={hintId} className="text-muted-foreground text-xs">
-                        {field.hint}
-                      </p>
-                    )}
-                    {error && (
-                      <p
-                        id={errorId}
-                        role="alert"
-                        className="text-destructive text-xs"
-                      >
-                        {error.message as string}
-                      </p>
-                    )}
-                  </>
+                {field.type === 'select' ? (
+                  <CatalogSelect
+                    field={field}
+                    invalid={Boolean(error)}
+                    currentValue={String(defaults[field.name] ?? '')}
+                  />
+                ) : (
+                  !isCheckbox && (
+                    <>
+                      {isTextarea ? (
+                        <textarea
+                          id={`field-${field.name}`}
+                          {...form.register(field.name)}
+                          data-testid={`field-${field.name}`}
+                          aria-invalid={error ? 'true' : 'false'}
+                          aria-describedby={describedBy || undefined}
+                          placeholder={field.placeholder}
+                          rows={4}
+                          className="border-input bg-transparent flex w-full rounded-md border px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        />
+                      ) : (
+                        <Input
+                          id={`field-${field.name}`}
+                          type={field.type === 'number' ? 'number' : 'text'}
+                          step={field.type === 'number' ? '0.0001' : undefined}
+                          placeholder={field.placeholder}
+                          {...form.register(field.name)}
+                          data-testid={`field-${field.name}`}
+                          aria-invalid={error ? 'true' : 'false'}
+                          aria-describedby={describedBy || undefined}
+                        />
+                      )}
+                      {field.hint && (
+                        <p id={hintId} className="text-muted-foreground text-xs">
+                          {field.hint}
+                        </p>
+                      )}
+                      {error && (
+                        <p
+                          id={errorId}
+                          role="alert"
+                          className="text-destructive text-xs"
+                        >
+                          {error.message as string}
+                        </p>
+                      )}
+                    </>
+                  )
                 )}
               </div>
             );
@@ -333,22 +380,23 @@ export function NuevaVersionDialog({
             </p>
           )}
 
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-              disabled={isSubmitting}
-            >
-              {t('common.cancel', 'Cancelar')}
-            </Button>
-            <Button type="submit" disabled={isSubmitting} data-testid="submit-nueva-version">
-              {isSubmitting
-                ? t('common.saving', 'Guardando...')
-                : t('catalogos.submit', 'Nueva versión')}
-            </Button>
-          </DialogFooter>
-        </form>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onOpenChange(false)}
+                disabled={isSubmitting}
+              >
+                {t('common.cancel', 'Cancelar')}
+              </Button>
+              <Button type="submit" disabled={isSubmitting} data-testid="submit-nueva-version">
+                {isSubmitting
+                  ? t('common.saving', 'Guardando...')
+                  : t('catalogos.submit', 'Nueva versión')}
+              </Button>
+            </DialogFooter>
+          </form>
+        </FormProvider>
       </DialogContent>
     </Dialog>
   );

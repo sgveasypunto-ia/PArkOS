@@ -162,28 +162,24 @@ describe('CatalogEditor: caracteristicas JSON validation (item 4)', () => {
 });
 
 describe('CatalogEditor: tipo_calculo / base_calculo as constrained selects (item 5)', () => {
-  it('Impuestos: tipo_calculo and base_calculo render as selects with the canonical values', async () => {
+  it('Impuestos: tipo_calculo and base_calculo render as Radix selects with the canonical values', async () => {
     const user = userEvent.setup();
     render(<CatalogEditor config={impuestosConfig} />, { wrapper });
     await user.click(await screen.findByTestId('catalog-new-impuestos'));
     await user.type(await screen.findByTestId('field-codigo'), 'IVA2');
 
-    const tipo = (await screen.findByTestId('field-tipo_calculo')) as HTMLSelectElement;
-    expect(tipo.tagName).toBe('SELECT');
-    await waitFor(() => expect(tipo.options.length).toBe(3));
-    expect(tipo.options[0]?.textContent).toBe('Sin definir');
-    expect(tipo.options[1]?.value).toBe('porcentaje');
-    expect(tipo.options[2]?.value).toBe('fijo');
+    const tipoTrigger = await screen.findByTestId('field-tipo_calculo');
+    await user.click(tipoTrigger);
+    const tipoOptions = await screen.findAllByRole('option');
+    expect(tipoOptions.map((o) => o.textContent)).toEqual(['Sin definir', 'Porcentaje', 'Fijo']);
+    await user.click(screen.getByRole('option', { name: 'Porcentaje' }));
 
-    const base = (await screen.findByTestId('field-base_calculo')) as HTMLSelectElement;
-    expect(base.tagName).toBe('SELECT');
-    await waitFor(() => expect(base.options.length).toBe(3));
-    expect(base.options[0]?.textContent).toBe('Sin definir');
-    expect(base.options[1]?.value).toBe('subtotal');
-    expect(base.options[2]?.value).toBe('total');
+    const baseTrigger = await screen.findByTestId('field-base_calculo');
+    await user.click(baseTrigger);
+    const baseOptions = await screen.findAllByRole('option');
+    expect(baseOptions.map((o) => o.textContent)).toEqual(['Sin definir', 'Subtotal', 'Total']);
+    await user.click(screen.getByRole('option', { name: 'Subtotal' }));
 
-    await user.selectOptions(tipo, 'porcentaje');
-    await user.selectOptions(base, 'subtotal');
     mockCreate.mockResolvedValueOnce({});
     await user.click(screen.getByTestId('submit-nueva-version'));
 
@@ -195,29 +191,32 @@ describe('CatalogEditor: tipo_calculo / base_calculo as constrained selects (ite
     });
   });
 
-  it('Otros cobros: tipo_calculo and base_calculo render as selects', async () => {
+  it('Otros cobros: tipo_calculo and base_calculo render as Radix selects', async () => {
     const user = userEvent.setup();
     render(<CatalogEditor config={otrosCobrosConfig} />, { wrapper });
     await user.click(await screen.findByTestId('catalog-new-otros-cobros'));
-    await user.type(await screen.findByTestId('field-nombre'), 'Lavado premium');
+    await user.type(screen.getByTestId('field-nombre'), 'Lavado premium');
 
-    const tipo = (await screen.findByTestId('field-tipo_calculo')) as HTMLSelectElement;
-    const base = (await screen.findByTestId('field-base_calculo')) as HTMLSelectElement;
-    expect(tipo.tagName).toBe('SELECT');
-    expect(base.tagName).toBe('SELECT');
-    expect(tipo.options.length).toBe(3);
-    expect(base.options.length).toBe(3);
+    // Picking an option closes the dropdown (Radix behavior), which
+    // is the cleanest way to move on to the next select without
+    // fighting the Escape key in jsdom.
+    await user.click(await screen.findByTestId('field-tipo_calculo'));
+    expect((await screen.findAllByRole('option')).length).toBe(3);
+    await user.click(screen.getByRole('option', { name: 'Fijo' }));
+
+    await user.click(screen.getByTestId('field-base_calculo'));
+    expect((await screen.findAllByRole('option')).length).toBe(3);
   });
 
-  it('Costos de servicios: tipo_calculo is a select (no base_calculo field)', async () => {
+  it('Costos de servicios: tipo_calculo is a Radix select (no base_calculo field)', async () => {
     const user = userEvent.setup();
     render(<CatalogEditor config={costosServiciosConfig} />, { wrapper });
     await user.click(await screen.findByTestId('catalog-new-costos-servicios'));
     await user.type(await screen.findByTestId('field-concepto'), 'Reimpresión');
 
-    const tipo = (await screen.findByTestId('field-tipo_calculo')) as HTMLSelectElement;
-    expect(tipo.tagName).toBe('SELECT');
-    expect(tipo.options.length).toBe(3);
+    const tipoTrigger = await screen.findByTestId('field-tipo_calculo');
+    await user.click(tipoTrigger);
+    expect((await screen.findAllByRole('option')).length).toBe(3);
     expect(screen.queryByTestId('field-base_calculo')).not.toBeInTheDocument();
   });
 });

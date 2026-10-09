@@ -1,9 +1,14 @@
 /**
  * Plan administration with "Tipo de vehículo" (PT-2): the plans catalog
- * (`tipo-subscripciones`) shows the vehicle type per plan, lets the admin
- * assign it (or leave "Cualquiera") and sends it on create/edit. A plan with
- * a type cannot go back to "Cualquiera" (the generic update drops `null`),
- * which is communicated instead of silently ignored.
+ * (`tipo-subscripciones`) shows the vehicle type per plan and lets the
+ * admin assign it on create/edit. The dialog's selects for vehicle type
+ * and client type do NOT have a "Cualquiera" option — once a plan is
+ * assigned, the backend's `exclude_none` makes it impossible to go back
+ * to NULL, so the UI matches the contract: pick one, always.
+ *
+ * The TABLE cell (`TipoVehiculoCell`) still renders "Cualquiera" for
+ * null `uuid_tipo_vehiculo` — that's a display choice, not a form state,
+ * and is the only place the user reads "Cualquiera" anymore.
  */
 import { createElement, type ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -82,8 +87,25 @@ beforeEach(() => {
   mockUpdate.mockReset().mockResolvedValue({});
 });
 
+/**
+ * Open a Radix Select and pick the option whose visible text matches
+ * `optionLabel`. Wraps the two `user.click` calls so the tests stay
+ * focused on the data flow rather than the trigger/option event
+ * mechanics.
+ */
+async function pickOption(
+  trigger: HTMLElement,
+  optionLabel: string,
+): Promise<HTMLElement> {
+  const user = userEvent.setup();
+  await user.click(trigger);
+  const option = await screen.findByRole('option', { name: optionLabel });
+  await user.click(option);
+  return option;
+}
+
 describe('Planes: tipo de vehículo', () => {
-  it('lists the vehicle type of each plan ("Cualquiera" when none)', async () => {
+  it('lists the vehicle type of each plan ("Cualquiera" when none in the table cell)', async () => {
     render(<CatalogEditor config={tipoSubscripcionesConfig} />, { wrapper });
 
     const rowAny = await screen.findByTestId(`catalog-row-${PLAN_ANY}`);
@@ -99,13 +121,12 @@ describe('Planes: tipo de vehículo', () => {
     render(<CatalogEditor config={tipoSubscripcionesConfig} />, { wrapper });
     await user.click(await screen.findByTestId('catalog-new-tipo-subscripciones'));
 
-    const select = (await screen.findByTestId('field-uuid_tipo_vehiculo')) as HTMLSelectElement;
-    await waitFor(() => {
-      expect(select.options.length).toBe(3); // Cualquiera + Carro + Moto
-    });
-    expect(select.options[0]?.textContent).toBe('Cualquiera');
+    await user.click(await screen.findByTestId('field-uuid_tipo_vehiculo'));
+    const options = await screen.findAllByRole('option');
+    expect(options.map((o) => o.textContent)).toEqual(['Carro', 'Moto']);
+
+    await user.click(screen.getByRole('option', { name: 'Carro' }));
     await user.type(screen.getByTestId('field-tipo'), 'Mensual carro');
-    await user.selectOptions(select, TIPO_CARRO);
     await user.click(screen.getByTestId('submit-nueva-version'));
 
     await waitFor(() => {
@@ -118,26 +139,29 @@ describe('Planes: tipo de vehículo', () => {
     });
   });
 
-  it('omits uuid_tipo_vehiculo (instead of sending "") when left on "Cualquiera"', async () => {
+  it('blocks submit when the vehicle type is required and not picked', async () => {
     const user = userEvent.setup();
     render(<CatalogEditor config={tipoSubscripcionesConfig} />, { wrapper });
     await user.click(await screen.findByTestId('catalog-new-tipo-subscripciones'));
     await user.type(await screen.findByTestId('field-tipo'), 'Mensual libre');
     await user.click(screen.getByTestId('submit-nueva-version'));
 
-    await waitFor(() => {
-      expect(mockCreate).toHaveBeenCalledTimes(1);
-    });
-    expect(mockCreate.mock.calls[0]?.[1]).not.toHaveProperty('uuid_tipo_vehiculo');
+    // Radix Select requires a value to be picked (no "Cualquiera"). The
+    // empty form value fails Zod's `z.string().min(1)`, so the submit
+    // is blocked before reaching the network.
+    expect(mockCreate).not.toHaveBeenCalled();
   });
 
-  it('edits a plan keeping/changing its type (PUT carries uuid_tipo_vehiculo)', async () => {
+  it('edits a plan changing its vehicle type (PUT carries uuid_tipo_vehiculo)', async () => {
     const user = userEvent.setup();
     render(<CatalogEditor config={tipoSubscripcionesConfig} />, { wrapper });
     await user.click(await screen.findByTestId(`catalog-row-${PLAN_ANY}`));
-    const select = (await screen.findByTestId('field-uuid_tipo_vehiculo')) as HTMLSelectElement;
-    await waitFor(() => expect(select.options.length).toBe(3));
-    await user.selectOptions(select, TIPO_MOTO);
+    const trigger = await screen.findByTestId('field-uuid_tipo_vehiculo');
+    // The trigger shows the label of the row's current vehicle type
+    // (null → placeholder; for PLAN_ANY the cell is "Cualquiera" but
+    // the dialog's select trigger has no value, so it shows the
+    // placeholder).
+    await pickOption(trigger, 'Moto');
     await user.click(screen.getByTestId('submit-nueva-version'));
 
     await waitFor(() => expect(mockUpdate).toHaveBeenCalledTimes(1));
@@ -145,12 +169,15 @@ describe('Planes: tipo de vehículo', () => {
     expect(mockUpdate.mock.calls[0]?.[2]).toMatchObject({ uuid_tipo_vehiculo: TIPO_MOTO });
   });
 
-  it('keeps a plan whose type points at an older (no longer vigente) version selectable, instead of resetting it to "Cualquiera"', async () => {
+  it('keeps a plan whose type points at an older (no longer vigente) version selectable, instead of forcing the user to re-pick', async () => {
     const user = userEvent.setup();
     render(<CatalogEditor config={tipoSubscripcionesConfig} />, { wrapper });
     await user.click(await screen.findByTestId(`catalog-row-${PLAN_VIEJO}`));
-    const select = (await screen.findByTestId('field-uuid_tipo_vehiculo')) as HTMLSelectElement;
-    await waitFor(() => expect(select.value).toBe(TIPO_VIEJO));
+    const trigger = await screen.findByTestId('field-uuid_tipo_vehiculo');
+    // The trigger should show the stale option's label.
+    await waitFor(() => {
+      expect(trigger).toHaveTextContent(/Bicicleta/);
+    });
     await user.click(screen.getByTestId('submit-nueva-version'));
 
     await waitFor(() => expect(mockUpdate).toHaveBeenCalledTimes(1));
@@ -158,41 +185,30 @@ describe('Planes: tipo de vehículo', () => {
     expect(screen.queryByTestId('nueva-version-submit-error')).not.toBeInTheDocument();
   });
 
-  it('refuses to put a typed plan back to "Cualquiera" and says why (generic update ignores null)', async () => {
-    const user = userEvent.setup();
-    render(<CatalogEditor config={tipoSubscripcionesConfig} />, { wrapper });
-    await user.click(await screen.findByTestId(`catalog-row-${PLAN_MOTO}`));
-    const select = (await screen.findByTestId('field-uuid_tipo_vehiculo')) as HTMLSelectElement;
-    await waitFor(() => expect(select.options.length).toBe(3));
-    await user.selectOptions(select, '');
-    await user.click(screen.getByTestId('submit-nueva-version'));
-
-    const msg = await screen.findByTestId('nueva-version-submit-error');
-    expect(msg).toHaveTextContent(/no puede volver a "Cualquiera"/);
-    expect(mockUpdate).not.toHaveBeenCalled();
-  });
-
-  it('tipo_cliente_permitido is a select populated by tipos-persona and saves the `tipo` string (not the uuid)', async () => {
+  it('tipo_cliente_permitido is a select populated by tipos-persona and saves the `tipo` string (not the uuid); no "Cualquiera"', async () => {
     const user = userEvent.setup();
     render(<CatalogEditor config={tipoSubscripcionesConfig} />, { wrapper });
     await user.click(await screen.findByTestId('catalog-new-tipo-subscripciones'));
 
-    const select = (await screen.findByTestId(
-      'field-tipo_cliente_permitido',
-    )) as HTMLSelectElement;
-    await waitFor(() => expect(select.options.length).toBe(3)); // Cualquiera + Natural + Juridica
-    expect(select.options[0]?.textContent).toBe('Cualquiera');
-    expect(select.options[1]?.value).toBe('Natural');
-    expect(select.options[2]?.value).toBe('Juridica');
+    const trigger = await screen.findByTestId('field-tipo_cliente_permitido');
+    await user.click(trigger);
+    const options = await screen.findAllByRole('option');
+    // Natural + Juridica only — no "Cualquiera" anymore.
+    expect(options.map((o) => o.textContent)).toEqual(['Natural', 'Juridica']);
 
+    await user.click(screen.getByRole('option', { name: 'Juridica' }));
+    // uuid_tipo_vehiculo is now required too — pick a vehicle type so
+    // the submit is not blocked by Zod before reaching the network.
+    await user.click(screen.getByTestId('field-uuid_tipo_vehiculo'));
+    await user.click(screen.getByRole('option', { name: 'Carro' }));
     await user.type(screen.getByTestId('field-tipo'), 'Plan premium');
-    await user.selectOptions(select, 'Juridica');
     await user.click(screen.getByTestId('submit-nueva-version'));
 
     await waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(1));
     expect(mockCreate.mock.calls[0]?.[1]).toMatchObject({
       tipo: 'Plan premium',
       tipo_cliente_permitido: 'Juridica',
+      uuid_tipo_vehiculo: TIPO_CARRO,
     });
   });
 });
