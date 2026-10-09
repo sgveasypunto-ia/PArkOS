@@ -787,19 +787,48 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     expect(msg).not.toMatch(/validation\.|_/);
     expect(msg.length).toBeGreaterThan(10);
   });
-  it('T17 (5.4): la misma placa dos veces se rechaza en el paso 5 con un mensaje en español', async () => {
-    renderVenta();
-    await paso1();
-    await paso2();
-    await paso3(PLAN_ANY);
-    await change('venta-cantidad-input', '2');
-    await click('venta-paso-4-siguiente');
-    await change('venta-placa-input-0', 'ABC123');
-    await change('venta-placa-input-1', 'abc123');
-    await click('venta-paso-5-siguiente');
-    const msg = screen.getByTestId('venta-placas-format-error').textContent ?? '';
-    expect(msg).toContain('repetida');
-    expect(msg).not.toContain('placa_duplicada_en_venta');
-    expect(screen.queryByTestId('venta-paso-6')).toBeNull();
+  describe('T17 (5.4): la misma placa dos veces se rechaza en el paso 5 como error de campo', () => {
+    const input = (i: number): HTMLInputElement =>
+      screen.getByTestId(`venta-placa-input-${i}`) as HTMLInputElement;
+    const MSG = 'repetida';
+
+    async function hastaPlacasRepetidas(segunda = 'abc123'): Promise<void> {
+      renderVenta();
+      await paso1();
+      await paso2();
+      await paso3(PLAN_ANY);
+      await change('venta-cantidad-input', '2');
+      await click('venta-paso-4-siguiente');
+      await change('venta-placa-input-0', 'ABC123');
+      await change('venta-placa-input-1', segunda);
+      await click('venta-paso-5-siguiente');
+    }
+
+    it('marca ambos inputs (aria-invalid + descripcion en espanol) y enfoca el primero', async () => {
+      await hastaPlacasRepetidas();
+      for (const i of [0, 1]) {
+        expect(input(i)).toHaveAttribute('aria-invalid', 'true');
+        expect(input(i)).toHaveAccessibleDescription(new RegExp(MSG));
+        expect(screen.getByTestId(`venta-placa-error-${i}`)).toHaveAttribute('role', 'alert');
+      }
+      expect(input(0)).toHaveFocus();
+      expect(screen.getByTestId('venta-placa-error-1').textContent).not.toContain(
+        'placa_duplicada_en_venta',
+      );
+      expect(screen.queryByTestId('venta-placas-format-error')).toBeNull();
+      expect(screen.queryByTestId('venta-paso-6')).toBeNull();
+    });
+
+    it('editar uno de los campos repetidos limpia el error', async () => {
+      await hastaPlacasRepetidas();
+      await change('venta-placa-input-1', 'XYZ987');
+      for (const i of [0, 1]) {
+        expect(input(i)).not.toHaveAttribute('aria-invalid', 'true');
+        expect(input(i)).not.toHaveAccessibleDescription();
+      }
+      expect(screen.queryByTestId('venta-placa-error-1')).toBeNull();
+      await click('venta-paso-5-siguiente');
+      expect(screen.getByTestId('venta-paso-6')).toBeDefined();
+    });
   });
 });

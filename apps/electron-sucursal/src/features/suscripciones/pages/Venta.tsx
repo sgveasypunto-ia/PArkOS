@@ -267,11 +267,12 @@ export function Venta({
   // Generic inline error for the placas step -- shared by both duplicate-plate
   // 422 (server response) and invalid-format (local Zod).
   const [placaGroupError, setPlacaGroupError] = useState<string | null>(null);
-  // Error del servidor atribuido a UNA placa concreta (422 con `placa`): se
-  // pega al input de ese índice (aria-invalid + aria-describedby) y recibe el
-  // foco al volver al paso 5. Sin placa identificable se usa `placaGroupError`.
+  // Error atribuido a una o varias placas concretas (422 con `placa`, o placa
+  // repetida detectada en local): se pega a los inputs de esos índices
+  // (aria-invalid + aria-describedby) y el primero recibe el foco. Sin placa
+  // identificable se usa `placaGroupError`.
   const [placaFieldError, setPlacaFieldError] = useState<{
-    index: number;
+    indices: number[];
     message: string;
   } | null>(null);
   const [placaFoco, setPlacaFoco] = useState<number | null>(null);
@@ -464,8 +465,18 @@ export function Venta({
     }
     // 5.4: the same plate twice in one sale is rejected (backend answers 422
     // `placa_duplicada_en_venta`; fail fast here with the same rule).
-    if (new Set(parsed.data.placas.map((p) => p.trim().toUpperCase())).size !== parsed.data.placas.length) {
-      setPlacasError('placa_duplicada_en_venta');
+    const normalizadas = parsed.data.placas.map((p) => p.trim().toUpperCase());
+    const repetidas = normalizadas.flatMap((p, i) =>
+      normalizadas.indexOf(p) !== i || normalizadas.lastIndexOf(p) !== i ? [i] : [],
+    );
+    if (repetidas.length > 0) {
+      setPlacasError(null);
+      setPlacaGroupError(null);
+      setPlacaFieldError({
+        indices: repetidas,
+        message: mensajeIdentificacion('placa_duplicada_en_venta'),
+      });
+      setPlacaFoco(repetidas[0] ?? null);
       return;
     }
     const tipoNombre = (selectedTipoVehiculo?.tipo ?? '').trim().toLowerCase();
@@ -609,7 +620,7 @@ export function Venta({
           : -1;
         if (idx >= 0) {
           setPlacaGroupError(null);
-          setPlacaFieldError({ index: idx, message: msg });
+          setPlacaFieldError({ indices: [idx], message: msg });
           setPlacaFoco(idx);
         } else {
           setPlacaFieldError(null);
@@ -950,9 +961,9 @@ export function Venta({
                   value={placa}
                   maxLength={6}
                   autoCapitalize="characters"
-                  aria-invalid={placaFieldError?.index === i ? true : undefined}
+                  aria-invalid={placaFieldError?.indices.includes(i) ? true : undefined}
                   aria-describedby={
-                    placaFieldError?.index === i ? `venta-placa-error-${i}` : undefined
+                    placaFieldError?.indices.includes(i) ? `venta-placa-error-${i}` : undefined
                   }
                   onChange={(e) => {
                     const raw = e.target.value.toUpperCase();
@@ -966,12 +977,12 @@ export function Venta({
                         return next;
                       });
                       setPlacasError(null);
-                      setPlacaFieldError((cur) => (cur?.index === i ? null : cur));
+                      setPlacaFieldError((cur) => (cur?.indices.includes(i) ? null : cur));
                     }
                   }}
                   placeholder="ABC123"
                 />
-                {placaFieldError?.index === i && (
+                {placaFieldError?.indices.includes(i) && (
                   <p
                     id={`venta-placa-error-${i}`}
                     data-testid={`venta-placa-error-${i}`}
