@@ -97,6 +97,7 @@ def _build_payload_nuevo_cliente(
     payload.placas = placas if placas is not None else ["ABC123"]
     payload.uuid_tipo_subscripcion = uuid_lib.uuid4()
     payload.fecha_inicio_cobertura = date(2026, 9, 20)
+    payload.fecha_fin_cobertura = None
     payload.cobrar_ahora = cobrar_ahora
     payload.emitir_factura_electronica = False
     payload.medio_pago = "efectivo"
@@ -116,6 +117,7 @@ def _build_payload_cliente_existente(
     payload.placas = placas if placas is not None else ["AAA111", "BBB222"]
     payload.uuid_tipo_subscripcion = uuid_lib.uuid4()
     payload.fecha_inicio_cobertura = date(2026, 9, 20)
+    payload.fecha_fin_cobertura = None
     payload.cobrar_ahora = False
     payload.emitir_factura_electronica = False
     payload.medio_pago = "efectivo"

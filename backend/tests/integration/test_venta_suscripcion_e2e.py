@@ -78,6 +78,7 @@ def _build_payload() -> MagicMock:
     payload.placas = ["ABC123"]
     payload.uuid_tipo_subscripcion = uuid_lib.uuid4()
     payload.fecha_inicio_cobertura = date(2026, 9, 20)
+    payload.fecha_fin_cobertura = None
     payload.cobrar_ahora = False
     payload.emitir_factura_electronica = False
     payload.medio_pago = "efectivo"
