@@ -78,7 +78,7 @@ const PLANES = [
   ...p,
   valor: 30000,
   duracion_dias: 30,
-  cantidad_maxima_vehiculos: 1,
+  cantidad_maxima_vehiculos: p.uuid === PLAN_ANY ? 2 : 1,
   mismo_tipo_vehiculo: true,
   tipo_cliente_permitido: 'natural',
 }));
@@ -659,5 +659,20 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     const msg = screen.getByTestId('venta-cantidad-error').textContent ?? '';
     expect(msg).not.toMatch(/validation\.|_/);
     expect(msg.length).toBeGreaterThan(10);
+  });
+  it('T17 (5.4): la misma placa dos veces se rechaza en el paso 5 con un mensaje en español', async () => {
+    renderVenta();
+    await paso1();
+    await paso2();
+    await paso3(PLAN_ANY);
+    await change('venta-cantidad-input', '2');
+    await click('venta-paso-4-siguiente');
+    await change('venta-placa-input-0', 'ABC123');
+    await change('venta-placa-input-1', 'abc123');
+    await click('venta-paso-5-siguiente');
+    const msg = screen.getByTestId('venta-placas-format-error').textContent ?? '';
+    expect(msg).toContain('repetida');
+    expect(msg).not.toContain('placa_duplicada_en_venta');
+    expect(screen.queryByTestId('venta-paso-6')).toBeNull();
   });
 });

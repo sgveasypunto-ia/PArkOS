@@ -79,6 +79,8 @@ __all__ = [
     "validar_placa_duplicada_subscripcion",
     "validar_mismo_tipo_vehiculos",
     "validar_placas_mismo_tipo_vehiculo",
+    "validar_placas_no_duplicadas",
+    "PlacaDuplicadaEnVentaError",
     "validar_tipo_vehiculo_del_plan",
 ]
 
@@ -137,6 +139,14 @@ class SubscripcionDuplicadaPlacaError(Exception):
         super().__init__(
             f"suscripcion_duplicada_placa: placa={placa}, uuid_sucursal={uuid_sucursal}"
         )
+
+
+class PlacaDuplicadaEnVentaError(Exception):
+    """422 discriminator -- the same placa appears twice in one venta."""
+
+    def __init__(self, *, placa: str) -> None:
+        self.placa = placa
+        super().__init__(f"placa_duplicada_en_venta: placa={placa}")
 
 
 class TipoVehiculoIncompatibleError(Exception):
@@ -381,6 +391,19 @@ def validar_tipo_vehiculo_del_plan(
             tipo_plan=tipo_plan,
             tipos_encontrados=sorted(str(t) for t in tipos),
         )
+
+
+def validar_placas_no_duplicadas(*, placas: list[str]) -> None:
+    """Reject a venta whose ``placas`` repeat a plate (trim + upper first).
+
+    Raises :class:`PlacaDuplicadaEnVentaError` BEFORE any INSERT (422).
+    """
+    vistas: set[str] = set()
+    for placa in placas:
+        norm = placa.strip().upper()
+        if norm in vistas:
+            raise PlacaDuplicadaEnVentaError(placa=norm)
+        vistas.add(norm)
 
 
 def validar_placas_mismo_tipo_vehiculo(

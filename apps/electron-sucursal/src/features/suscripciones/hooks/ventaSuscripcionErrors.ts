@@ -37,6 +37,20 @@ export class VentaSuscripcionDuplicatePlateError extends Error {
 }
 
 /**
+ * 422 `placa_duplicada_en_venta` — the same placa appears twice in
+ * `payload.placas` of one sale (defect 5.4). Carries the repeated placa.
+ */
+export class VentaSuscripcionPlacaRepetidaError extends Error {
+  public readonly status = 422;
+  public readonly placa: string;
+  constructor(placa: string) {
+    super('placa_duplicada_en_venta');
+    this.name = 'VentaSuscripcionPlacaRepetidaError';
+    this.placa = placa;
+  }
+}
+
+/**
  * 422 `tipo_vehiculo_incompatible` — `plan.mismo_tipo_vehiculo=true`
  * but the placas resolve to distinct `uuid_tipo_vehiculo` (F1.12
  * REQ-OPS-087). Carries the list of distinct tipos found.

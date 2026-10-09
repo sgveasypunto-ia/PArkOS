@@ -63,6 +63,7 @@
       "vehiculo_ya_inscrito": "La placa {{placa}} ya está inscrita en esta suscripción.",
       "placa_con_suscripcion_activa": "La placa {{placa}} ya está en otra suscripción activa de esta sucursal.",
       "tipo_vehiculo_plan_incompatible": "El plan es para vehículos tipo {{tipoPlan}}; la placa corresponde a {{tipos}}.",
+      "placa_duplicada_en_venta": "Hay una placa repetida en la venta; cada vehículo debe tener una placa distinta.",
       "tipo_vehiculo_incompatible": "Este plan exige que todos los vehículos sean del mismo tipo.",
       "cantidad_maxima_excedida": "El plan alcanzó su cantidad máxima de vehículos.",
       "sesion_expirada": "Tu sesión expiró. Ingresá de nuevo.",

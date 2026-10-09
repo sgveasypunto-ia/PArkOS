@@ -449,3 +449,28 @@ async def test_crear_subscripcion_vehiculos_bulk_advisory_lock_and_bulk_insert()
     assert rows[1].uuid_vehiculo == v2
     assert rows[0].estado == "activo"
     assert rows[0].vigente_hasta is None
+
+
+# ---------------------------------------------------------------------------
+# Defecto 5.4 -- placa repetida dentro de la misma venta
+# ---------------------------------------------------------------------------
+
+
+def test_validar_placas_no_duplicadas_ok_distintas() -> None:
+    from parkos_core.repo import venta_suscripcion as repo_venta
+
+    repo_venta.validar_placas_no_duplicadas(placas=["ABC123", "XYZ987"])
+
+
+@pytest.mark.parametrize(
+    "placas",
+    [["ABC123", "ABC123"], ["abc123", "ABC123"], [" abc123 ", "ABC123"]],
+)
+def test_validar_placas_no_duplicadas_rechaza_repetida_normalizada(
+    placas: list[str],
+) -> None:
+    from parkos_core.repo import venta_suscripcion as repo_venta
+
+    with pytest.raises(repo_venta.PlacaDuplicadaEnVentaError) as exc:
+        repo_venta.validar_placas_no_duplicadas(placas=placas)
+    assert exc.value.placa == "ABC123"
