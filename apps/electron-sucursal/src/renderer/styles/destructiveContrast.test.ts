@@ -72,3 +72,23 @@ describe('texto de error en tema oscuro', () => {
     expect(contraste(encima, relleno)).toBeGreaterThanOrEqual(4.5);
   });
 });
+
+describe('texto secundario (--muted-foreground) en tema oscuro', () => {
+  // --muted-foreground resuelve a --gray-dark-secondary en oscuro. Se mide
+  // contra las tres superficies reales: el popover (gray-700) es la mas
+  // clara y la que fallaba (4.46:1 con 65% L, medido en el navegador).
+  const texto = parseHsl(token(tokens, '--gray-dark-secondary'));
+  const superficies: Array<[string, Hsl]> = [
+    ['--background (gray-900)', parseHsl(token(tokens, '--gray-900'))],
+    ['--card (gray-800)', parseHsl(token(tokens, '--gray-800'))],
+    ['popover/muted (gray-700)', parseHsl(token(tokens, '--gray-700'))],
+  ];
+
+  it('en oscuro --muted-foreground resuelve a --gray-dark-secondary', () => {
+    expect(token(darkBlock, '--muted-foreground')).toContain('--gray-dark-secondary');
+  });
+
+  it.each(superficies)('--gray-dark-secondary >= 4.5:1 sobre %s', (_n, fondo) => {
+    expect(contraste(texto, fondo)).toBeGreaterThanOrEqual(4.5);
+  });
+});
