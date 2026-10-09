@@ -55,6 +55,7 @@ import type { FacturaRead } from '../../facturacion/api/facturaApi';
 import {
   useVentaSuscripcion,
   VentaSuscripcionDuplicatePlateError,
+  VentaSuscripcionPlacaRepetidaError,
   VentaSuscripcionTipoIncompatibleError,
   VentaSuscripcionCantidadMaximaError,
   type VentaSuscripcionCreate,
@@ -449,6 +450,12 @@ export function Venta({
       setPlacasError(issue?.message ?? 'invalid');
       return;
     }
+    // 5.4: the same plate twice in one sale is rejected (backend answers 422
+    // `placa_duplicada_en_venta`; fail fast here with the same rule).
+    if (new Set(parsed.data.placas.map((p) => p.trim().toUpperCase())).size !== parsed.data.placas.length) {
+      setPlacasError('placa_duplicada_en_venta');
+      return;
+    }
     const tipoNombre = (selectedTipoVehiculo?.tipo ?? '').trim().toLowerCase();
     const formatoEsperado =
       tipoNombre === 'moto' ? PLACA_MOTO : tipoNombre === 'carro' ? PLACA_AUTO : null;
@@ -547,13 +554,19 @@ export function Venta({
     } catch (err) {
       if (
         err instanceof VentaSuscripcionDuplicatePlateError ||
+        err instanceof VentaSuscripcionPlacaRepetidaError ||
         err instanceof VentaSuscripcionTipoIncompatibleError ||
         err instanceof VentaSuscripcionCantidadMaximaError
       ) {
         // Revert to the placas step (paso 5) so the operator sees which
         // input was rejected without losing the rest of the wizard state.
         const msg =
-          err instanceof VentaSuscripcionDuplicatePlateError
+          err instanceof VentaSuscripcionPlacaRepetidaError
+          ? t('suscripciones:venta.errors.placa_duplicada_en_venta', {
+              defaultValue:
+                'Hay una placa repetida en la venta; cada vehículo debe tener una placa distinta.',
+            })
+          : err instanceof VentaSuscripcionDuplicatePlateError
             ? t('suscripciones:venta.errors.suscripcion_duplicada_placa', {
                 defaultValue: 'Esta placa ya tiene una suscripción vigente',
               })

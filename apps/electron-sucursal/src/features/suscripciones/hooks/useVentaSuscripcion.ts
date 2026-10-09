@@ -42,6 +42,7 @@ import {
 export type { VentaSuscripcionCreate, VentaSuscripcionRead } from '../api/ventaSuscripcionApi';
 export {
   VentaSuscripcionDuplicatePlateError,
+  VentaSuscripcionPlacaRepetidaError,
   VentaSuscripcionTipoIncompatibleError,
   VentaSuscripcionCantidadMaximaError,
 } from './ventaSuscripcionErrors';
@@ -53,6 +54,7 @@ export {
  */
 import {
   VentaSuscripcionDuplicatePlateError,
+  VentaSuscripcionPlacaRepetidaError,
   VentaSuscripcionTipoIncompatibleError,
   VentaSuscripcionCantidadMaximaError,
 } from './ventaSuscripcionErrors';
@@ -63,6 +65,7 @@ export interface UseVentaSuscripcionReturn {
   error:
     | ParkosHttpError
     | VentaSuscripcionDuplicatePlateError
+    | VentaSuscripcionPlacaRepetidaError
     | VentaSuscripcionTipoIncompatibleError
     | VentaSuscripcionCantidadMaximaError
     | undefined;
@@ -138,6 +141,9 @@ async function mutateFn(
         const code = parsed?.error;
         if (code === 'suscripcion_duplicada_placa') {
           throw new VentaSuscripcionDuplicatePlateError(parsed?.placa ?? '');
+        }
+        if (code === 'placa_duplicada_en_venta') {
+          throw new VentaSuscripcionPlacaRepetidaError(parsed?.placa ?? '');
         }
         if (code === 'tipo_vehiculo_incompatible') {
           throw new VentaSuscripcionTipoIncompatibleError(
