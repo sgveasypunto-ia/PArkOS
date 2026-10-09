@@ -15,8 +15,26 @@ export const otrosCobrosConfig: CatalogConfig = {
   fields: [
     { name: 'nombre', label: 'Nombre', required: true },
     { name: 'costo', label: 'Costo', type: 'number' },
-    { name: 'tipo_calculo', label: 'Tipo de cálculo' },
-    { name: 'base_calculo', label: 'Base de cálculo' },
+    {
+      name: 'tipo_calculo',
+      label: 'Tipo de cálculo',
+      type: 'select',
+      emptyOptionLabel: 'Sin definir',
+      options: [
+        { value: 'porcentaje', label: 'Porcentaje' },
+        { value: 'fijo', label: 'Fijo' },
+      ],
+    },
+    {
+      name: 'base_calculo',
+      label: 'Base de cálculo',
+      type: 'select',
+      emptyOptionLabel: 'Sin definir',
+      options: [
+        { value: 'subtotal', label: 'Subtotal' },
+        { value: 'total', label: 'Total' },
+      ],
+    },
   ],
   columns: [
     { key: 'nombre', label: 'Nombre' },

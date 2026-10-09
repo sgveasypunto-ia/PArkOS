@@ -16,7 +16,16 @@ export const costosServiciosConfig: CatalogConfig = {
   fields: [
     { name: 'concepto', label: 'Concepto', required: true },
     { name: 'costo', label: 'Costo', type: 'number' },
-    { name: 'tipo_calculo', label: 'Tipo de cálculo' },
+    {
+      name: 'tipo_calculo',
+      label: 'Tipo de cálculo',
+      type: 'select',
+      emptyOptionLabel: 'Sin definir',
+      options: [
+        { value: 'porcentaje', label: 'Porcentaje' },
+        { value: 'fijo', label: 'Fijo' },
+      ],
+    },
   ],
   columns: [
     { key: 'concepto', label: 'Concepto' },

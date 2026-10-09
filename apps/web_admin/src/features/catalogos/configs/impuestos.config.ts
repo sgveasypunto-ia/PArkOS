@@ -6,6 +6,10 @@
  * (≤32 opt), `base_calculo` (≤32 opt).
  *
  * NOTA: el business key es `codigo`, NO `nombre` ni `tipo`.
+ * `tipo_calculo` y `base_calculo` son strings libres en el backend,
+ * pero la UI los restringe a los valores que el sistema efectivamente
+ * usa (visto en `test_calcular_cotizacion_db.py` + repos de impuestos
+ * y de cotización): "porcentaje"/"fijo" y "subtotal"/"total".
  */
 import type { CatalogConfig } from '../lib/configTypes';
 
@@ -18,8 +22,26 @@ export const impuestosConfig: CatalogConfig = {
     { name: 'codigo', label: 'Código', required: true },
     { name: 'nombre', label: 'Nombre' },
     { name: 'porcentaje', label: 'Porcentaje (0-100)', type: 'number' },
-    { name: 'tipo_calculo', label: 'Tipo de cálculo' },
-    { name: 'base_calculo', label: 'Base de cálculo' },
+    {
+      name: 'tipo_calculo',
+      label: 'Tipo de cálculo',
+      type: 'select',
+      emptyOptionLabel: 'Sin definir',
+      options: [
+        { value: 'porcentaje', label: 'Porcentaje' },
+        { value: 'fijo', label: 'Fijo' },
+      ],
+    },
+    {
+      name: 'base_calculo',
+      label: 'Base de cálculo',
+      type: 'select',
+      emptyOptionLabel: 'Sin definir',
+      options: [
+        { value: 'subtotal', label: 'Subtotal' },
+        { value: 'total', label: 'Total' },
+      ],
+    },
   ],
   columns: [
     { key: 'codigo', label: 'Código' },
