@@ -10,9 +10,8 @@
  * Plan source of truth -- HU-F10.1 acceptance criteria verbatim:
  *   - Shows "base vigente" (sesion.valor_inicial_efectivo, BR1 literal)
  *     + per-medio_pago sum of pagos during the session. The pagos sum
- *     is a TODO for F10.2/F10.3 (those HUs own the chain that needs
- *     it); F10.1 ships with the initial values only and notes the
- *     limitation. El datáfono ya no se arquea en el cuadre parcial
+ *     ya esta incluida: el esperado (base + efectivo - reversos) lo
+ *     calcula el servidor (useEsperadoParcial). El datáfono ya no se arquea en el cuadre parcial
  *     (fix/electron-sucursal-datafono-arqueo) -- el wire sigue
  *     recibiendo `valor_datafono_reportado: 0` para preservar el
  *     contrato del backend (ArqueoCreateV2 requiere el campo).
@@ -53,6 +52,7 @@ import {
 
 import { useSesionActiva } from '../hooks/useSesionActiva';
 import { useArqueo } from '../hooks/useArqueo';
+import { useEsperadoParcial } from '../hooks/useEsperadoParcial';
 import { useTipoArqueoPorCodigo } from '../hooks/useTipoArqueoPorCodigo';
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { formatCOP } from '../lib/format';
@@ -121,16 +121,18 @@ export function ArqueoParcial(): JSX.Element {
     setJustificacion('');
   }, []);
 
-  // BR1 literal: "no necesariamente sesion.valor_inicial_efectivo fijo".
-  // Use sesion.valor_inicial_efectivo (the authoritative opening value
-  // for the current sesion) as the base. TODO F10.2/F10.3: add sum of
-  // pagos during the session once `/caja-sesion/arqueos/.../pagos` (or
-  // equivalent) is exposed for read.
-  const esperadoEfectivo = sesion?.valor_inicial_efectivo ?? 0;
+  // Efectivo esperado = base + cobros en efectivo del turno - reversos, calculado
+  // por el servidor (el mismo valor que registra POST /caja/arqueo). Hasta que
+  // llega no se compara contra la base: se bloquea la confirmacion.
+  const { esperadoEfectivo: esperadoServidor } = useEsperadoParcial(
+    sesion?.uuid ?? null,
+  );
+  const esperadoListo = esperadoServidor !== undefined;
+  const esperadoEfectivo = esperadoServidor ?? 0;
 
   const reportadoEfectivoNum = Number.isFinite(reportEfectivo) ? reportEfectivo : 0;
 
-  const difEfectivo = reportadoEfectivoNum - esperadoEfectivo;
+  const difEfectivo = esperadoListo ? reportadoEfectivoNum - esperadoEfectivo : 0;
   const difTotal = Math.abs(difEfectivo);
   const reportadoTotal = reportadoEfectivoNum;
   const esperadoTotal = esperadoEfectivo;
@@ -153,6 +155,7 @@ export function ArqueoParcial(): JSX.Element {
 
   const canSubmit =
     !!sesion &&
+    esperadoListo &&
     !submitting &&
     !validacionError &&
     !!uuidTipoAuditoria;
@@ -259,7 +262,7 @@ export function ArqueoParcial(): JSX.Element {
               className="font-medium tabular-nums"
               data-testid="arqueo-esperado-efectivo"
             >
-              {formatCOP(esperadoEfectivo)}
+              {esperadoListo ? formatCOP(esperadoEfectivo) : '…'}
             </span>
           </div>
         </CardContent>
