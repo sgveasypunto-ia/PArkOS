@@ -211,6 +211,20 @@ describe('useMiTurno — zero-state (DA-F12.1-4)', () => {
     expect(result.data?.total_cobrado_datafono_cop).toBe(0);
     expect(result.error).toBeUndefined();
   });
+
+  it('U9b: isLoaded=false mientras SWR no poblo (el fallback de ceros no es un dato real)', () => {
+    useAuthStoreMock.mockReturnValue('jwt-abc');
+    currentData = undefined;
+    currentError = undefined;
+    expect(useMiTurno('00000000-0000-0000-0000-000000000099').isLoaded).toBe(false);
+  });
+
+  it('U9c: isLoaded=true cuando SWR ya trajo datos del turno', () => {
+    useAuthStoreMock.mockReturnValue('jwt-abc');
+    currentData = SAMPLE_OK;
+    currentError = undefined;
+    expect(useMiTurno('00000000-0000-0000-0000-000000000099').isLoaded).toBe(true);
+  });
 });
 
 describe('useMiTurno — fetcher parses response through MiTurnoSchema (Zod)', () => {

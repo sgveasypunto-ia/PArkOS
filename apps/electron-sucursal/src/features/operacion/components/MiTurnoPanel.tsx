@@ -1,15 +1,12 @@
 /**
  * `<MiTurnoPanel />` — operator-facing per-turn widget (HU-F12.1).
  *
- * Directiva del operador (2026-09-22 — feedback de testing en kiosk):
- * la sección debe mostrar exclusivamente métricas operativas del turno
- * más cupos libres de la sucursal. NO incluye dinero (totalCobrado /
- * efectivo / datafono) — esos campos siguen llegando en el wire
- * `MiTurnoRead` por el contrato BE locked (DA-F12.1-1 GATING:
- * `backend/tests/unit/test_mi_turno_schema.py` y `apps/electron-
- * sucursal/src/lib/api/schemas/__tests__/mi-turno.test.ts` leen el
- * key-set del wire; tocar la Zod schema requiere tocar ambos). El
- * panel simplemente deja de renderizarlos.
+ * Además de las métricas operativas (ingresos, salidas, cupos libres),
+ * muestra el dinero cobrado en efectivo durante el turno
+ * (`total_cobrado_efectivo_cop`), de sólo lectura. El datáfono NO se
+ * muestra: el BE lo fija en 0 a propósito (F12.1.1 / REQ-OPS-197) y un
+ * cero ahí sería un dato falso. El valor sólo se pinta cuando el hook
+ * trae datos reales (`isLoaded`); si no, `—` (nunca un 0 inventado).
  *
  * Diseño tipo LISTA vertical (no KPI cards en grid) consistente con
  * `<OcupacionPanel />` que está justo debajo en el sidebar derecho.
@@ -34,6 +31,7 @@
  */
 import { useTranslation } from 'react-i18next';
 
+import { formatCOP } from '../../caja/lib/format';
 import {
   Card,
   CardContent,
@@ -63,12 +61,15 @@ export function MiTurnoPanel({
   uuid_sucursal,
 }: MiTurnoPanelProps): JSX.Element {
   const { t } = useTranslation('operacion');
-  const { data, isStale } = useMiTurno(uuid_sesion);
+  const { data, error, isStale, isLoaded } = useMiTurno(uuid_sesion);
   const { data: ocupacionData } = useOcupacion(uuid_sucursal);
 
   // Defensive `?? 0` keeps the type narrow in case the SWR shape drifts.
   const ingresos = data?.ingresos_count ?? 0;
   const salidas = data?.salidas_count ?? 0;
+  const efectivoCobrado =
+    isLoaded && data ? formatCOP(data.total_cobrado_efectivo_cop) : '—';
+  const cobradoConError = !isLoaded && error !== undefined;
 
   // Cupos libres = sum de `disponible` a través de los tipos
   // admin-configured (cupo_maximo > 0). Unconfigured tipos
@@ -138,6 +139,29 @@ export function MiTurnoPanel({
             </span>
           </li>
         </ul>
+        <section
+          role="region"
+          aria-label={t('miTurno.cobrado.regionLabel')}
+          data-testid="mi-turno-cobrado"
+          className="mt-1 border-t border-border/40 px-0 pt-2.5"
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-muted-foreground/90 text-sm">
+              {t('miTurno.cobrado.efectivo')}
+            </span>
+            <span
+              className="font-mono text-xl font-semibold tabular-nums tracking-tight"
+              data-testid="mi-turno-cobrado-efectivo-value"
+            >
+              {efectivoCobrado}
+            </span>
+          </div>
+          {cobradoConError && (
+            <p role="alert" className="mt-1 text-xs text-destructive">
+              {t('miTurno.cobrado.error')}
+            </p>
+          )}
+        </section>
       </CardContent>
     </Card>
   );
