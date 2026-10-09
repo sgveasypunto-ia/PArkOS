@@ -20,6 +20,7 @@
  */
 import type { FacturaLinea } from './facturaPrint';
 import { MARCA_ENCABEZADO, MARCA_PIE } from './marcaTicket';
+import { ajustarTexto, TICKET_COLUMNAS } from './ticketBase';
 import {
   formatCOP,
   formatFecha,
@@ -44,12 +45,26 @@ interface LeyendaReimpresion {
 
 type Opciones = { centro?: boolean; negrita?: boolean };
 
-/** Builder of lines: keeps the constructors short and strips non-breaking spaces (the printer has no glyph for them). */
+/** `Etiqueta: valor` whose value is ONE token (uuid, folio, code): label and value are split when the row overflows. */
+const CAMPO_CON_TOKEN = /^([^:]{1,32}:) (\S+)$/;
+
+/**
+ * Builder of lines: keeps the constructors short and strips non-breaking spaces
+ * (the printer has no glyph for them). Every `texto` is wrapped HERE to the 48
+ * ticket columns, so the model itself never carries a row wider than the paper:
+ * ESC/POS, HTML and the on-screen preview show the same rows. A long single-token
+ * value (a 36-char uuid) goes on its own line under its label instead of being cut.
+ */
 class Lineas {
   readonly out: FacturaLinea[] = [];
 
   texto(t: string, o: Opciones = {}): this {
-    this.out.push({ tipo: 'texto', texto: t.replace(/[\u00a0\u202f]/g, ' '), ...o });
+    const limpio = t.replace(/[\u00a0\u202f]/g, ' ');
+    const campo = limpio.length > TICKET_COLUMNAS ? CAMPO_CON_TOKEN.exec(limpio) : null;
+    const filas = campo
+      ? [campo[1] as string, ...ajustarTexto(campo[2] as string, TICKET_COLUMNAS)]
+      : ajustarTexto(limpio, TICKET_COLUMNAS);
+    for (const fila of filas) this.out.push({ tipo: 'texto', texto: fila, ...o });
     return this;
   }
 

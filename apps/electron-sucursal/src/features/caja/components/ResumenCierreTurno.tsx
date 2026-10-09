@@ -16,6 +16,8 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
+import { LogoMarca } from '../../../components/LogoMarca';
+
 import { descargarResumenCierrePdf } from '../../../lib/print/resumenCierrePdf';
 import { useImprimirCierre } from '../hooks/useImprimirCierre';
 import { buildResumenCierreSections, type ResumenCierreInput } from '../lib/resumenCierre';
@@ -93,16 +95,24 @@ export function ResumenCierreTurno({
 
   return (
     <div className="space-y-4" data-testid="resumen-cierre-turno">
-      <div role="status" className="space-y-1">
-        <h2 className="text-base font-semibold" data-testid="resumen-cierre-titulo">
-          {title}
-        </h2>
-        <p className="text-sm text-muted-foreground">
-          {t('caja:cerrarTurno.resumenCierre.descripcion', {
-            defaultValue:
-              'Este resumen es de solo lectura y no se guarda en la aplicación. Descárgalo si lo necesitas antes de salir.',
-          })}
-        </p>
+      {/* Logo por tema (blanco sobre fondo oscuro, oscuro sobre fondo claro).
+          Decorativo: el título "Turno cerrado" ya identifica la pantalla, y
+          queda fuera del `role="status"` para que no se anuncie. */}
+      <div className="space-y-3" data-testid="resumen-cierre-encabezado">
+        <div className="flex">
+          <LogoMarca className="h-8 w-auto" />
+        </div>
+        <div role="status" className="space-y-1">
+          <h2 className="text-base font-semibold" data-testid="resumen-cierre-titulo">
+            {title}
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            {t('caja:cerrarTurno.resumenCierre.descripcion', {
+              defaultValue:
+                'Este resumen es de solo lectura y no se guarda en la aplicación. Descárgalo si lo necesitas antes de salir.',
+            })}
+          </p>
+        </div>
       </div>
 
       {sections.map((section, index) => (
