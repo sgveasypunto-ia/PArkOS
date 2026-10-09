@@ -41,6 +41,7 @@ from ...runtime.tiempo import hoy_bogota
 from ...schemas.caja import (
     AdminResumenQueryParams,
     ArqueoCreateV2,
+    ArqueoEsperadoParcialRead,
     ArqueoListQueryParams,
     ArqueoReadForHandler,
     ArqueoReadList,
@@ -51,6 +52,7 @@ from ...schemas.caja import (
     ArqueoResumenRead,
     CierreDiaNoAceptaSesionErrorRead,
     CierreDiarioQueryParams,
+    EsperadoParcialQueryParams,
     JustificacionRequeridaErrorRead,
     RequiereJustificacionQueryParams,
     SesionNoEncontradaErrorRead,
@@ -564,6 +566,61 @@ async def get_arqueo_requiere_justificacion(
     return ArqueoRequiereJustificacionRead(
         requiere_justificacion=diferencia_efectivo != 0,
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/caja/arqueo/esperado-parcial -- efectivo esperado del turno abierto
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/arqueo/esperado-parcial",
+    response_model=ArqueoEsperadoParcialRead,
+    status_code=200,
+    responses={
+        404: {"model": SesionNoEncontradaErrorRead},
+        409: {"model": SesionYaCerradaErrorRead},
+    },
+)
+async def get_arqueo_esperado_parcial(
+    response: Response,
+    params: EsperadoParcialQueryParams = Depends(),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_caja_arqueo_issuer_dep),
+) -> ArqueoEsperadoParcialRead:
+    """Efectivo esperado (base + cobros en efectivo - reversos) del turno abierto.
+
+    Existe para el arqueo PARCIAL, que muestra el esperado al operador y antes
+    lo reemplazaba en pantalla por la base sola (falso faltante). Usa la misma
+    ``calcular_esperado_sesion`` que ``post_arqueo``, asi que pantalla y registro
+    nunca divergen. El cierre de turno (conteo ciego) no consume este endpoint.
+    """
+    no_store = _helpers.no_store_headers()
+    try:
+        await repo_arqueo.validar_sesion_abierta_para_arqueo(
+            session,
+            uuid_sesion=params.uuid_sesion,
+            target_sucursal=ctx.sucursal_uuid,
+        )
+    except repo_arqueo.SesionNoEncontradaError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "sesion_no_encontrada", "uuid_sesion": str(exc.uuid_sesion)},
+            headers=no_store,
+        ) from exc
+    except repo_arqueo.SesionYaCerradaError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "sesion_ya_cerrada", "uuid_sesion": str(exc.uuid_sesion)},
+            headers=no_store,
+        ) from exc
+
+    esperado = await repo_arqueo.calcular_esperado_sesion(
+        session, uuid_sesion=params.uuid_sesion
+    )
+    _helpers.apply_no_store_header(response)
+    return ArqueoEsperadoParcialRead(valor_efectivo_esperado=esperado)
 
 
 # ---------------------------------------------------------------------------

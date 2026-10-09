@@ -24,7 +24,7 @@
  *     `useArqueo`, `useAuth`). `useTranslation` runs as-is.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 // Mock the cross-feature hooks BEFORE the component imports them.
 const mockSesion = vi.fn();
@@ -36,6 +36,16 @@ vi.mock('../../hooks/useSesionActiva', () => ({
     isLoading: mockSesionLoading(),
     error: undefined,
     refresh: mockRefreshSesion,
+  }),
+}));
+
+// Efectivo esperado del turno (base + cobros en efectivo - reversos) que
+// calcula el servidor; el arqueo parcial lo muestra tal cual.
+const mockEsperado = vi.fn((): number | undefined => 0);
+vi.mock('../../hooks/useEsperadoParcial', () => ({
+  useEsperadoParcial: () => ({
+    esperadoEfectivo: mockEsperado(),
+    error: undefined,
   }),
 }));
 
@@ -83,6 +93,8 @@ describe('HU-F10.1 — <ArqueoParcial /> drawer-mounted page (REQ-OPS-154)', () 
     mockSesionLoading.mockReset();
     mockSesionLoading.mockReturnValue(false);
     mockRefreshSesion.mockReset();
+    mockEsperado.mockReset();
+    mockEsperado.mockReturnValue(0);
     mockSubmit.mockReset();
     mockSubmit.mockResolvedValue({ uuid: 'arqueo-uuid' });
     mockTipoAuditoriaUuid.mockReset();
@@ -152,5 +164,61 @@ describe('HU-F10.1 — <ArqueoParcial /> drawer-mounted page (REQ-OPS-154)', () 
     expect(screen.getByTestId('arqueo-efectivo-input')).toBeInTheDocument();
     expect(screen.getByTestId('arqueo-dif-total')).toHaveTextContent('$ 0');
     expect(screen.getByTestId('arqueo-confirmar')).toBeInTheDocument();
+  });
+
+  // El esperado incluye los cobros en efectivo del turno, no solo la base.
+  it('esperado-1: muestra base + cobros en efectivo (base 10.000 + 5.000 = 15.000), no solo la base', () => {
+    mockSesion.mockReturnValue({
+      uuid: 'sesion-uuid-1',
+      uuid_sucursal: 'suc-uuid-1',
+      uuid_usuario: 'user-uuid-1',
+      valor_inicial_efectivo: 10000,
+      valor_inicial_datafono: 0,
+    });
+    mockEsperado.mockReturnValue(15000);
+
+    RENDER();
+
+    const esperado = screen.getByTestId('arqueo-esperado-efectivo');
+    expect(esperado).toHaveTextContent('15.000');
+    expect(esperado).not.toHaveTextContent(/10\.000/);
+  });
+
+  it('esperado-2: contar exactamente el esperado no genera diferencia ni exige justificacion', () => {
+    mockSesion.mockReturnValue({
+      uuid: 'sesion-uuid-1',
+      uuid_sucursal: 'suc-uuid-1',
+      uuid_usuario: 'user-uuid-1',
+      valor_inicial_efectivo: 10000,
+      valor_inicial_datafono: 0,
+    });
+    mockEsperado.mockReturnValue(15000);
+
+    RENDER();
+    fireEvent.change(screen.getByTestId('arqueo-efectivo-input'), {
+      target: { value: '15000' },
+    });
+
+    expect(screen.getByTestId('arqueo-dif-total')).toHaveTextContent('$ 0');
+    expect(screen.queryByTestId('arqueo-advertencia')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('arqueo-justificacion')).not.toBeInTheDocument();
+  });
+
+  it('esperado-3: mientras el esperado no llega no se puede confirmar (no se compara contra la base)', () => {
+    mockSesion.mockReturnValue({
+      uuid: 'sesion-uuid-1',
+      uuid_sucursal: 'suc-uuid-1',
+      uuid_usuario: 'user-uuid-1',
+      valor_inicial_efectivo: 10000,
+      valor_inicial_datafono: 0,
+    });
+    mockEsperado.mockReturnValue(undefined);
+
+    RENDER();
+    fireEvent.change(screen.getByTestId('arqueo-efectivo-input'), {
+      target: { value: '10000' },
+    });
+
+    expect(screen.getByTestId('arqueo-confirmar')).toBeDisabled();
   });
 });

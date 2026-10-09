@@ -41,7 +41,7 @@ from datetime import date as date_cls
 from decimal import Decimal
 from typing import Any, Dict
 
-from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy import and_, case, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.A.arqueo import Arqueo
@@ -73,6 +73,7 @@ __all__ = [
     "TipoArqueoNoEncontradoError",
     "ToleranciaNoConfiguradaError",
     "calcular_diferencia",
+    "MEDIOS_PAGO_EN_ESPERADO",
     "calcular_esperado_cierre_dia",
     "calcular_esperado_sesion",
     "cerrar_sesiones_del_dia_bulk",
@@ -310,6 +311,13 @@ def _to_decimal(value: Any) -> Decimal:
     return Decimal(str(value))
 
 
+# Medios de pago que cuentan para el efectivo esperado del turno / del dia.
+# Unico punto de decision: la politica vigente (F12.1.1) deja el datafono fuera.
+# Si negocio decide incluirlo, se agrega aqui y arqueo parcial, cierre de
+# turno y cierre diario lo heredan sin tocar nada mas.
+MEDIOS_PAGO_EN_ESPERADO: tuple[str, ...] = ("efectivo",)
+
+
 async def _sum_factura_pagos_by_medio_pago(
     session: AsyncSession,
     *,
@@ -318,15 +326,23 @@ async def _sum_factura_pagos_by_medio_pago(
     fecha: date_cls | None,
     medios_pago: tuple[str, ...],
 ) -> Decimal:
-    """SUM ``prod.factura_pagos.valor`` filtered by medio_pago + tipo_movimiento='pago'.
+    """Neto de ``prod.factura_pagos.valor`` por medio_pago: pagos menos reversos.
+
+    Un ``reverso`` es una fila compensatoria (mismo medio, misma sesion, valor
+    positivo) que anula un pago; entra restando. ``[A]`` no se muta: el neto se
+    deriva al leer.
 
     ``uuid_sesion=None`` + ``fecha != None`` triggers the cierre_dia
     aggregation path (joins via ``prod.sesion.uuid_sucursal`` +
     ``timestamp_apertura::date=fecha``).
     """
-    stmt = select(func.coalesce(func.sum(FacturaPagos.valor), 0)).where(
+    neto = case(
+        (FacturaPagos.tipo_movimiento == "reverso", -FacturaPagos.valor),
+        else_=FacturaPagos.valor,
+    )
+    stmt = select(func.coalesce(func.sum(neto), 0)).where(
         FacturaPagos.medio_pago.in_(medios_pago),
-        FacturaPagos.tipo_movimiento == "pago",
+        FacturaPagos.tipo_movimiento.in_(("pago", "reverso")),
     )
     if uuid_sesion is not None:
         stmt = stmt.where(FacturaPagos.uuid_sesion == uuid_sesion)
@@ -352,7 +368,7 @@ async def calcular_esperado_sesion(
 
     Returns ``esperado_efectivo`` (single Decimal, NOT a tuple) as:
 
-    * ``esperado_efectivo = sesion.valor_inicial_efectivo + SUM(factura_pagos.valor WHERE medio_pago='efectivo' AND tipo_movimiento='pago')``
+    * ``esperado_efectivo = sesion.valor_inicial_efectivo + SUM(pagos - reversos en efectivo del turno)``
 
     The datafono dimension is excluded from the result per the F12.1.1
     backend-ignore-datafono change: the datafono column is preserved in
@@ -373,7 +389,7 @@ async def calcular_esperado_sesion(
         uuid_sesion=uuid_sesion,
         uuid_sucursal=None,
         fecha=None,
-        medios_pago=("efectivo",),
+        medios_pago=MEDIOS_PAGO_EN_ESPERADO,
     )
     return inicial_efectivo + sum_efectivo
 
@@ -409,7 +425,7 @@ async def calcular_esperado_cierre_dia(
         uuid_sesion=None,
         uuid_sucursal=uuid_sucursal,
         fecha=fecha,
-        medios_pago=("efectivo",),
+        medios_pago=MEDIOS_PAGO_EN_ESPERADO,
     )
     return _to_decimal(base) + sum_efectivo
 
