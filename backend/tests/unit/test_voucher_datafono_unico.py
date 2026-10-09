@@ -104,7 +104,8 @@ async def test_consulta_excluye_misma_factura_y_pagos_revertidos() -> None:
     session = _session(existing=None)
     await _pagar(session, "datafono", "TEST999")
     stmt = session.execute.await_args_list[-1].args[0]
-    sql = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})).lower()
+    compiled = stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    sql = str(compiled).lower()
     assert "uuid_factura !=" in sql or "uuid_factura <>" in sql
     assert "not (exists" in sql
     assert "uuid_pago_revertido" in sql
