@@ -9,7 +9,7 @@
  *   T2: buffer contains the subline `'--- COPIA AUTORIZADA ---'`
  *       between sello and motivo — currently FAIL because the subline
  *       does not exist on dev.
- *   T3: bold marca (escBoldOn `0x1B 0x45` + escBoldOff `0x1B 0x46`)
+ *   T3: bold marca (escBoldOn `0x1B 0x45 0x01` + escBoldOff `0x1B 0x45 0x00`)
  *       wraps the inner body — currently FAIL because the inner body
  *       is concatenated AFTER the header without a wrapping
  *       bold-on/bold-off pair around it.
@@ -81,15 +81,15 @@ describe('buildReimpresionBuffer — subline (HU-F8.3, REQ-OPS-172)', () => {
 // ──────────────────────────────────────────────────────────────────────────
 
 describe('buildReimpresionBuffer — bold marca wrapping (HU-F8.3, REQ-OPS-172)', () => {
-  it('T3 — escBoldOn (0x1B 0x45) + escBoldOff (0x1B 0x46) wrap the inner body', () => {
+  it('T3 — escBoldOn (0x1B 0x45 0x01) + escBoldOff (0x1B 0x45 0x00) wrap the inner body', () => {
     const payload = makeReimpresionEntradaPayload();
     const buf = build('reimpresion', payload);
 
     // Opcode byte sequences
     const boldOnBytes = escBoldOn();
     const boldOffBytes = escBoldOff();
-    expect(boldOnBytes).toEqual(Buffer.from([0x1b, 0x45]));
-    expect(boldOffBytes).toEqual(Buffer.from([0x1b, 0x46]));
+    expect(boldOnBytes).toEqual(Buffer.from([0x1b, 0x45, 0x01]));
+    expect(boldOffBytes).toEqual(Buffer.from([0x1b, 0x45, 0x00]));
 
     // Locate the sello with accent (we already asserted its presence)
     const selloIdx = buf.indexOf(Buffer.from('*** REIMPRESIÓN ***', 'utf8'));

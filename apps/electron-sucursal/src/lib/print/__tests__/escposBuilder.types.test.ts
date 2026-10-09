@@ -61,8 +61,8 @@ describe('build("entrada", payload)', () => {
     // 2. contains sello (text 2x) for "*** TIQUETE DE ENTRADA ***"
     expect(contains(buf, Buffer.from([0x1b, 0x21, 0x30]))).toBe(true);
     // 3. contains bold on/off
-    expect(contains(buf, Buffer.from([0x1b, 0x45]))).toBe(true);
-    expect(contains(buf, Buffer.from([0x1b, 0x46]))).toBe(true);
+    expect(contains(buf, Buffer.from([0x1b, 0x45, 0x01]))).toBe(true);
+    expect(contains(buf, Buffer.from([0x1b, 0x45, 0x00]))).toBe(true);
     // 4. body contains placa + folio
     expect(contains(buf, Buffer.from('ABC123'))).toBe(true);
     expect(contains(buf, Buffer.from('00000000-0000-4000-8000-000000000001'))).toBe(true);
@@ -82,7 +82,7 @@ describe('build("salida", payload)', () => {
     const buf = build('salida', validSalidaPayload());
     expect(startsWith(buf, [0x1b, 0x40])).toBe(true);
     expect(contains(buf, Buffer.from([0x1b, 0x21, 0x30]))).toBe(true);
-    expect(contains(buf, Buffer.from([0x1b, 0x45]))).toBe(true);
+    expect(contains(buf, Buffer.from([0x1b, 0x45, 0x01]))).toBe(true);
     // Money tokens (formatCOP "$ 10.000", "$ 1.900", "$ 11.900")
     expect(contains(buf, Buffer.from('$'))).toBe(true);
     // "Subtotal:" and "TOTAL:" must appear
