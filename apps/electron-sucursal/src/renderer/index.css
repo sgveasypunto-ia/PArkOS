@@ -105,8 +105,11 @@
     /*
      * --muted-foreground: los grises de marca (#636363/#696969, ~39-41%
      * L) dan <3:1 como texto secundario sobre este fondo oscuro — NO
-     * pasan AA. --gray-dark-secondary (65% L, interpolación propia)
-     * sí pasa: 6.52:1 sobre --background, 5.31:1 sobre --card.
+     * pasan AA. --gray-dark-secondary (67% L, interpolación propia)
+     * sí pasa: ~6.9:1 sobre --background, ~5.6:1 sobre --card y ~4.7:1
+     * sobre gray-700 (popover/muted). Con 65% L daba 4.46:1 sobre el
+     * popover (medido en el navegador): por eso 67%. Fijado por
+     * styles/destructiveContrast.test.ts.
      */
     --muted-foreground: var(--gray-dark-secondary);
     --accent: var(--gray-700);
