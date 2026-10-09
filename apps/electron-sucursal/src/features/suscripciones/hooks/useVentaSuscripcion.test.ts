@@ -231,6 +231,17 @@ describe('useVentaSuscripcion — REQ-OPS-177 + REQ-OPS-179', () => {
       return caught;
     }
 
+    it('voucher_datafono_duplicado (caja bug 3) -> se relanza el ParkosHttpError original para que el PagoModal lo pinte en el campo voucher', async () => {
+      const { ParkosHttpError } = await import('@parkos/ui-kit/fetch');
+      const caught = await disparar422(
+        JSON.stringify({
+          detail: { error: 'voucher_datafono_duplicado', message: 'El voucher X ya fue registrado hoy', referencia: 'X' },
+        }),
+      );
+      expect(caught).toBeInstanceOf(ParkosHttpError);
+      expect(caught).not.toBeInstanceOf(VentaSuscripcionValidationError);
+    });
+
     it('detail string -> VentaSuscripcionValidationError con ese mensaje', async () => {
       const caught = await disparar422(JSON.stringify({ detail: 'El vehículo ya existe' }));
       expect(caught).toBeInstanceOf(VentaSuscripcionValidationError);

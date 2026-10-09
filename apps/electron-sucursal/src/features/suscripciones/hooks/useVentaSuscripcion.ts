@@ -32,6 +32,7 @@ import { useAuthStore } from '@parkos/ui-kit/store';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
 import { withActionIdempotencyKey } from '../../operacion/lib/idempotency';
+import { VOUCHER_DUPLICADO_CODE } from '../../facturacion/lib/voucherDuplicado';
 import {
   POST_VENTA_SUSCRIPCION_PATH,
   VentaSuscripcionReadSchema,
@@ -167,6 +168,12 @@ async function mutateFn(
           throw new VentaSuscripcionCantidadMaximaError(
             parsed?.cantidad_maxima_vehiculos ?? 0,
           );
+        }
+        // Caja bug 3: el voucher duplicado es un error del CAMPO voucher del
+        // PagoModal, no de la venta: se relanza el original para que
+        // `leerVoucherDuplicado` lo reconozca (no se tipa como placa/validación).
+        if (code === VOUCHER_DUPLICADO_CODE) {
+          throw err;
         }
         // Defecto 5.13: cualquier otro 422 (detail string, lista Pydantic u
         // objeto con código desconocido) se tipa para que el wizard lo
