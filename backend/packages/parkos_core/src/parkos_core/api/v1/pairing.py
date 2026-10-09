@@ -40,6 +40,18 @@ at the AST + OpenAPI level.
 
 Mount: ``api/v1/__init__.py`` includes this router only on cloud deploy
 (belt-and-suspenders with the issuer guard).
+
+Tenant scope (HU-F19.3, 2026-10-08 fix): for ``admin-`` issuers the read
+permission set is the actor's currently-open ``prod.usuarios_sucursal``
+rows, resolved per-request by :func:`require_branch_scope` and exposed as
+``BranchScope.permitidas``. The three endpoints in this module compare the
+request's branch (POST body, GET path lookup, or revoke path lookup) against
+``scope.allows(...)`` — NOT against ``ctx.sucursal_uuid`` (which is the
+``X-Sucursal-Context`` header value and is intentionally independent of the
+branch picker choice in the admin UI). See the 403-handling code blocks in
+each handler for the exact rule. Same pattern as
+``operacion.py:get_ingreso`` (post-read ``scope.allows`` check) and
+``empresa.py:create_resolucion_facturacion_dedicated`` (``Depends(require_branch_scope)``).
 """
 from __future__ import annotations
 
@@ -54,7 +66,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...api.deps import get_session, requires_issuer
 from ...auth.permissions import require_permission
-from ...auth.tenancy import TenantContext, get_tenant_ctx
+from ...auth.tenancy import (
+    BranchScope,
+    TenantContext,
+    get_tenant_ctx,
+    require_branch_scope,
+)
 from ...auth.tokens import JWT_OVERLAP_HOURS
 from ...models.A.pairing_tokens import PairingToken
 from ...models.A.revoked_sync_jwts import RevokedSyncJwt
@@ -173,6 +190,7 @@ async def issue_pairing_token(
     payload: PairingTokenIssueRequest,
     ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
+    scope: BranchScope = Depends(require_branch_scope),  # noqa: B008
 ) -> PairingTokenIssueResponse:
     """Mint a fresh pairing token. Returns the plaintext ONCE.
 
@@ -195,20 +213,31 @@ async def issue_pairing_token(
             },
         )
 
-    # Tenant scope check — same guard as `read_pairing_token` /
-    # `revoke_pairing_token` below, but performed BEFORE the insert
-    # this time (bugfix, QA batch pairing): row-level security scopes
-    # the post-insert `session.refresh()` SELECT to the admin's
-    # `sucursales_permitidas`, so issuing for an out-of-scope
-    # `uuid_sucursal` used to INSERT an orphaned, never-readable row
-    # and then crash with an unhandled 500 (`Could not refresh
-    # instance`) instead of a clean 403 — losing the rate-limit budget
-    # and leaving a dead row behind. Reject up front instead.
-    if (
-        payload.uuid_sucursal is not None
-        and ctx.sucursal_uuid is not None
-        and payload.uuid_sucursal != ctx.sucursal_uuid
-    ):
+    # Tenant scope check (2026-10-08 fix on top of 982209d8): the
+    # admin's permitted branches are ``BranchScope.permitidas`` —
+    # read fresh from ``prod.usuarios_sucursal`` for ``admin-``
+    # issuers, NOT ``ctx.sucursal_uuid`` (the
+    # ``X-Sucursal-Context`` header). The frontend's BranchSelector
+    # (apps/web_admin/src/lib/sucursal-context.tsx) sends the header
+    # from localStorage regardless of which row the admin clicks, so
+    # ``ctx.sucursal_uuid`` is decoupled from the action target.
+    # Comparing against ``permitidas`` is what makes a multi-branch
+    # admin's "issue token for branch B while sitting on branch A in
+    # the picker" work.
+    #
+    # ``payload.uuid_sucursal is None`` is the pre-branch issuance
+    # case (issuance BEFORE the branch is created in the DB) — the
+    # model allows NULL on the FK and the rate-limit + return-plaintext
+    # path stays open. No scope check.
+    #
+    # Performing this BEFORE the insert (preserved from 982209d8):
+    # ``session.refresh(row)`` after a successful ``commit()`` is
+    # scoped by the tenant listener to ``ctx.sucursal_uuid`` when
+    # present, so an out-of-scope INSERT would orphan the row and
+    # then crash with an unhandled 500 (``Could not refresh
+    # instance``) — losing the rate-limit budget AND leaving a dead
+    # row behind. Reject up front instead.
+    if payload.uuid_sucursal is not None and not scope.allows(payload.uuid_sucursal):
         raise HTTPException(
             status_code=403,
             detail={"error": "tenant_scope_violation"},
@@ -266,6 +295,7 @@ async def read_pairing_token(
     pairing_token_uuid: uuid_lib.UUID = Path(...),  # noqa: B008
     ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
+    scope: BranchScope = Depends(require_branch_scope),  # noqa: B008
 ) -> PairingTokenReadPublic:
     """Return the row's audit metadata. ``pairing_token_hash`` is NEVER on the wire.
 
@@ -293,12 +323,14 @@ async def read_pairing_token(
             detail={"error": "not_found", "uuid": str(pairing_token_uuid)},
         )
 
-    # Tenant scope check — the admin's permitted branches filter.
-    if (
-        row.uuid_sucursal is not None
-        and ctx.sucursal_uuid is not None
-        and row.uuid_sucursal != ctx.sucursal_uuid
-    ):
+    # Tenant scope check (2026-10-08 fix on top of 982209d8): use
+    # ``scope.permitidas`` (the admin's currently-open
+    # ``usuarios_sucursal`` rows) instead of ``ctx.sucursal_uuid``
+    # (the ``X-Sucursal-Context`` header). A pre-branch issuance
+    # (``row.uuid_sucursal IS NULL``) is universally readable by
+    # every admin — no branch was ever assigned, so any holder of
+    # ``gestionar_dian`` may inspect the metadata.
+    if row.uuid_sucursal is not None and not scope.allows(row.uuid_sucursal):
         raise HTTPException(
             status_code=403,
             detail={"error": "tenant_scope_violation"},
@@ -333,6 +365,7 @@ async def revoke_pairing_token(
     pairing_token_uuid: uuid_lib.UUID = Path(...),  # noqa: B008
     ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
+    scope: BranchScope = Depends(require_branch_scope),  # noqa: B008
 ) -> None:
     """Record the revocation in ``revoked_sync_jwts`` (INSERT, never UPDATE).
 
@@ -355,12 +388,12 @@ async def revoke_pairing_token(
             detail={"error": "not_found", "uuid": str(pairing_token_uuid)},
         )
 
-    # Tenant scope check (admin's permitted branches).
-    if (
-        row.uuid_sucursal is not None
-        and ctx.sucursal_uuid is not None
-        and row.uuid_sucursal != ctx.sucursal_uuid
-    ):
+    # Tenant scope check (2026-10-08 fix on top of 982209d8): use
+    # ``scope.permitidas`` (the admin's currently-open
+    # ``usuarios_sucursal`` rows). The pre-branch case
+    # (``row.uuid_sucursal IS NULL``) is universally revokable by
+    # every admin — no branch was ever assigned.
+    if row.uuid_sucursal is not None and not scope.allows(row.uuid_sucursal):
         raise HTTPException(
             status_code=403,
             detail={"error": "tenant_scope_violation"},
@@ -413,6 +446,7 @@ async def revoke_branch_sync_token(
     uuid_sucursal: uuid_lib.UUID = Path(...),  # noqa: B008
     ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
+    scope: BranchScope = Depends(require_branch_scope),  # noqa: B008
 ) -> None:
     """PR8c wire-up — inserts a ``revoked_sync_jwts`` row for the branch's JWT.
 
@@ -433,6 +467,17 @@ async def revoke_branch_sync_token(
     the revocation row's filter (``expires_at > now``) drops it from
     the active set.
     """
+    # Tenant scope check (2026-10-08 fix on top of 982209d8): the
+    # path uuid is the branch whose sync-agent JWT the admin wants
+    # to kill. Same rule as the other 3 endpoints — ``scope.permitidas``
+    # (the admin's currently-open ``usuarios_sucursal`` rows), not
+    # ``ctx.sucursal_uuid`` (the ``X-Sucursal-Context`` header).
+    if not scope.allows(uuid_sucursal):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "tenant_scope_violation"},
+        )
+
     now_naive = _now_naive()
     now_iso = now_naive.isoformat()
     expires_at = now_naive + timedelta(hours=JWT_OVERLAP_HOURS)

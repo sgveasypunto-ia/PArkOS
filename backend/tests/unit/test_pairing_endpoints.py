@@ -35,7 +35,11 @@ from parkos_core.api.rate_limit_pairing import default_limiter
 from parkos_core.api.v1 import pairing as pairing_module
 from parkos_core.auth.jwt_issuer_guard import requires_issuer
 from parkos_core.auth.permissions import require_permission
-from parkos_core.auth.tenancy import TenantContext
+from parkos_core.auth.tenancy import (
+    BranchScope,
+    TenantContext,
+    require_branch_scope,
+)
 from parkos_core.db.engine import get_session
 
 # Import the specific dep instances used in pairing.py — overriding
@@ -46,6 +50,7 @@ _manage_perm_dep = pairing_module._manage_perm_dep
 
 ACTOR_UUID = uuid_lib.UUID("00000000-0000-0000-0000-0000000000c1")
 SUCURSAL_UUID = uuid_lib.UUID("00000000-0000-0000-0000-0000000000a1")
+OTHER_SUCURSAL_UUID = uuid_lib.UUID("00000000-0000-0000-0000-0000000000b2")
 TOKEN_UUID = uuid_lib.UUID("00000000-0000-0000-0000-0000000000d1")
 
 
@@ -140,6 +145,19 @@ def app(fake_session: MagicMock) -> FastAPI:
     async def _perm_override():
         return {"sub": str(ACTOR_UUID), "iss": "admin-test"}
 
+    # ``require_branch_scope`` (PR-A, 2026-10-08 fix on top of 982209d8):
+    # by default the admin's permitidas set is just the branch the test
+    # session is "sitting on" (``SUCURSAL_UUID``). Tests that need a
+    # multi-branch scope override the dependency directly on the returned
+    # ``app`` (see e.g. ``TestIssuePairingToken::
+    # test_admin_with_multi_branch_scope_can_issue_for_any_branch``).
+    async def _scope_override() -> BranchScope:
+        return BranchScope(
+            actor_uuid=ACTOR_UUID,
+            issuer_prefix="admin-",
+            permitidas=frozenset({SUCURSAL_UUID}),
+        )
+
     # Override the SPECIFIC dep instances stored on the router (not the
     # ``requires_issuer("admin-")`` factory call, which returns a new
     # function each time).
@@ -147,6 +165,7 @@ def app(fake_session: MagicMock) -> FastAPI:
     app.dependency_overrides[get_tenant_ctx] = _tenant_override
     app.dependency_overrides[_admin_issuer_dep] = _issuer_override
     app.dependency_overrides[_manage_perm_dep] = _perm_override
+    app.dependency_overrides[require_branch_scope] = _scope_override
 
     # The endpoint also depends on ``default_limiter.check`` directly;
     # reset the limiter for each test so the bucket is fresh.
@@ -211,19 +230,88 @@ class TestIssuePairingToken:
     def test_rejects_out_of_scope_sucursal_before_insert(
         self, client: TestClient, fake_session: MagicMock
     ):
-        """Regression (QA batch pairing): issuing for a `uuid_sucursal`
-        outside the admin's tenant scope must 403 BEFORE inserting —
-        not INSERT an orphaned, never-readable row and then crash the
-        post-insert `session.refresh()` with an unhandled 500."""
-        other_sucursal = uuid_lib.UUID("00000000-0000-0000-0000-0000000000b2")
+        """Regression (982209d8, 2026-10-02 + 2026-10-08 fix): issuing
+        for a ``uuid_sucursal`` outside the admin's tenant scope must
+        403 BEFORE inserting — not INSERT an orphaned, never-readable
+        row and then crash the post-insert ``session.refresh()`` with
+        an unhandled 500.
+
+        Tenant scope is ``BranchScope.permitidas`` (the admin's
+        currently-open ``usuarios_sucursal`` rows, read fresh from the
+        DB on every request), NOT ``ctx.sucursal_uuid`` (the
+        ``X-Sucursal-Context`` header). The default fixture sets
+        ``permitidas = {SUCURSAL_UUID}`` so ``OTHER_SUCURSAL_UUID``
+        is out of scope regardless of the header value.
+        """
         resp = client.post(
             "/admin/pairing-tokens",
-            json={"uuid_sucursal": str(other_sucursal), "ttl_hours": 24},
+            json={"uuid_sucursal": str(OTHER_SUCURSAL_UUID), "ttl_hours": 24},
             headers={"X-Sucursal-Context": str(SUCURSAL_UUID)},
         )
         assert resp.status_code == 403, resp.text
         assert resp.json()["detail"]["error"] == "tenant_scope_violation"
         assert len(fake_session.added) == 0
+
+    def test_admin_with_multi_branch_scope_can_issue_for_any_branch(
+        self, client: TestClient, fake_session: MagicMock, app: FastAPI
+    ):
+        """The bug the user reported (2026-10-08): an admin whose
+        ``usuarios_sucursal`` rows cover MORE than the branch in their
+        ``X-Sucursal-Context`` header MUST be able to issue a token
+        for any of those branches. Previously the check compared
+        ``ctx.sucursal_uuid`` (header) directly to the body, so a
+        multi-branch admin got a spurious 403 whenever the picker sat
+        on a different branch than the action target.
+
+        With ``permitidas = {SUCURSAL_UUID, OTHER_SUCURSAL_UUID}`` the
+        admin may issue for either, and the response's ``uuid_sucursal``
+        echoes the body, not the header.
+        """
+        async def _multi_scope_override() -> BranchScope:
+            return BranchScope(
+                actor_uuid=ACTOR_UUID,
+                issuer_prefix="admin-",
+                permitidas=frozenset({SUCURSAL_UUID, OTHER_SUCURSAL_UUID}),
+            )
+
+        app.dependency_overrides[require_branch_scope] = _multi_scope_override
+
+        # Header is SUCURSAL_UUID; body is OTHER_SUCURSAL_UUID. Both
+        # are in permitidas; expect 201.
+        resp = client.post(
+            "/admin/pairing-tokens",
+            json={"uuid_sucursal": str(OTHER_SUCURSAL_UUID), "ttl_hours": 24},
+            headers={"X-Sucursal-Context": str(SUCURSAL_UUID)},
+        )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["uuid_sucursal"] == str(OTHER_SUCURSAL_UUID)
+
+        # And the inverse: header is OTHER_SUCURSAL_UUID, body is
+        # SUCURSAL_UUID. Still in permitidas; expect 201.
+        resp = client.post(
+            "/admin/pairing-tokens",
+            json={"uuid_sucursal": str(SUCURSAL_UUID), "ttl_hours": 24},
+            headers={"X-Sucursal-Context": str(OTHER_SUCURSAL_UUID)},
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["uuid_sucursal"] == str(SUCURSAL_UUID)
+
+    def test_pre_branch_issuance_with_null_uuid_sucursal_is_unscoped(
+        self, client: TestClient, fake_session: MagicMock
+    ):
+        """``uuid_sucursal: null`` is the pre-branch issuance case
+        (issuance BEFORE the branch is created in the DB). It is
+        unconditionally allowed: the model accepts NULL on the FK,
+        and the ``scope.allows`` call is short-circuited by the
+        ``payload.uuid_sucursal is not None`` guard."""
+        resp = client.post(
+            "/admin/pairing-tokens",
+            json={"uuid_sucursal": None, "ttl_hours": 24},
+            headers={"X-Sucursal-Context": str(SUCURSAL_UUID)},
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["uuid_sucursal"] is None
 
     def test_rate_limit_6th_returns_429(self, client: TestClient):
         """6th request within the hour returns 429."""
@@ -312,6 +400,30 @@ class TestReadPairingToken:
         )
         assert resp.status_code == 404
 
+    def test_out_of_scope_row_returns_403(
+        self, client: TestClient, fake_session: MagicMock
+    ):
+        """2026-10-08 fix: tenant scope is ``scope.permitidas`` (the
+        admin's currently-open ``usuarios_sucursal`` rows), not
+        ``ctx.sucursal_uuid`` (the ``X-Sucursal-Context`` header). A
+        row bound to a branch the admin cannot see must 403, not 200.
+
+        The default fixture sets ``permitidas = {SUCURSAL_UUID}`` so
+        a row whose ``uuid_sucursal = OTHER_SUCURSAL_UUID`` is out of
+        scope.
+        """
+        row = _make_row(uuid=TOKEN_UUID, uuid_sucursal=OTHER_SUCURSAL_UUID)
+        fake_session.execute = AsyncMock(
+            side_effect=[_result_with_scalar(row), _result_with_scalar(None)]
+        )
+
+        resp = client.get(
+            f"/admin/pairing-tokens/{TOKEN_UUID}",
+            headers={"X-Sucursal-Context": str(SUCURSAL_UUID)},
+        )
+        assert resp.status_code == 403, resp.text
+        assert resp.json()["detail"]["error"] == "tenant_scope_violation"
+
 
 # ---------------------------------------------------------------------------
 # POST /admin/pairing-tokens/{uuid}/revoke
@@ -354,6 +466,26 @@ class TestRevokePairingToken:
         )
         assert resp.status_code == 404
 
+    def test_out_of_scope_row_returns_403(
+        self, client: TestClient, fake_session: MagicMock
+    ):
+        """2026-10-08 fix: same shape as the GET counterpart — a
+        revocation request for a row bound to a branch outside the
+        admin's permitidas set must 403, not 204."""
+        row = _make_row(uuid=TOKEN_UUID, uuid_sucursal=OTHER_SUCURSAL_UUID)
+        fake_session.execute = AsyncMock(
+            return_value=_result_with_scalar(row)
+        )
+
+        resp = client.post(
+            f"/admin/pairing-tokens/{TOKEN_UUID}/revoke",
+            headers={"X-Sucursal-Context": str(SUCURSAL_UUID)},
+        )
+        assert resp.status_code == 403, resp.text
+        assert resp.json()["detail"]["error"] == "tenant_scope_violation"
+        # No revocation row was INSERTed.
+        assert len(fake_session.added) == 0
+
 
 # ---------------------------------------------------------------------------
 # POST /admin/sucursales/{uuid}/revoke-sync (PR8c wire-up)
@@ -394,11 +526,40 @@ class TestRevokeSync:
         async def _perm_override():
             return {"sub": str(ACTOR_UUID), "iss": "admin-test"}
 
+        # Default: only SUCURSAL_UUID is in permitidas. Tests that
+        # need a different set override ``require_branch_scope`` on
+        # the returned ``app``.
+        async def _scope_override() -> BranchScope:
+            return BranchScope(
+                actor_uuid=ACTOR_UUID,
+                issuer_prefix="admin-",
+                permitidas=frozenset({SUCURSAL_UUID}),
+            )
+
         app.dependency_overrides[get_session] = _session_override
         app.dependency_overrides[get_tenant_ctx] = _tenant_override
         app.dependency_overrides[_admin_issuer_dep] = _issuer_override
         app.dependency_overrides[_manage_perm_dep] = _perm_override
+        app.dependency_overrides[require_branch_scope] = _scope_override
         return app
+
+    def test_out_of_scope_branch_returns_403(
+        self, fake_session: MagicMock
+    ) -> None:
+        """2026-10-08 fix: the 4th endpoint takes the branch in the
+        URL path. Revoking a sync-agent JWT for a branch outside the
+        admin's permitidas set must 403, not 204."""
+        app = self._make_app(fake_session)
+        c = TestClient(app)
+        resp = c.post(
+            f"/admin/sucursales/{OTHER_SUCURSAL_UUID}/revoke-sync",
+            headers={"X-Sucursal-Context": str(SUCURSAL_UUID)},
+            json={"jwt_kid": "k1", "jwt_uuid": "j1"},
+        )
+        assert resp.status_code == 403, resp.text
+        assert resp.json()["detail"]["error"] == "tenant_scope_violation"
+        # No revocation row INSERTed.
+        assert len(fake_session.added) == 0
 
     def test_returns_204_and_inserts_revoked_sync_jwt_row(
         self, fake_session: MagicMock

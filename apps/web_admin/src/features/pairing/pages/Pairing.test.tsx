@@ -265,4 +265,39 @@ describe('Pairing page', () => {
       ).toHaveTextContent('Sin información');
     });
   });
+
+  it('evicts a stale local record when GET 404s (2026-10-08 UX fix)', async () => {
+    // Regression for the user-reported DevTools noise: a cached UUID
+    // that no longer exists on the server (DB reseeded, token issued
+    // in a different browser, etc.) used to keep firing GET 404s on
+    // every page load. The fix: on the first 404, delete the
+    // localStorage entry so the next render finds no record and the
+    // SWR key becomes null (no further GETs).
+    seedLocalStorage();
+    mockedList.mockResolvedValue([SUC_PENDIENTE]);
+    mockedGetPairingToken.mockRejectedValue(new PairingTokenNotFoundError(TOKEN_PENDIENTE));
+
+    expect(
+      (JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? '{}') as Record<string, unknown>)[
+        SUC_PENDIENTE.uuid as string
+      ],
+    ).toBeDefined();
+
+    render(<Pairing />, { wrapper });
+    await waitFor(() => {
+      expect(
+        screen.getByTestId(`pairing-status-${SUC_PENDIENTE.uuid as string}`),
+      ).toHaveTextContent('Sin información');
+    });
+
+    // The cache entry for the stale UUID has been evicted; sibling
+    // entries for unrelated sucursales are untouched.
+    const remaining = JSON.parse(
+      window.localStorage.getItem(STORAGE_KEY) ?? '{}',
+    ) as Record<string, unknown>;
+    expect(remaining[SUC_PENDIENTE.uuid as string]).toBeUndefined();
+    expect(remaining[SUC_PAREADA.uuid as string]).toBeDefined();
+    expect(remaining[SUC_REVOCADA.uuid as string]).toBeDefined();
+    expect(remaining[SUC_EXPIRADA.uuid as string]).toBeDefined();
+  });
 });

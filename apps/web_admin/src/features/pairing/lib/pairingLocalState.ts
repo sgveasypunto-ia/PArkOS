@@ -61,3 +61,20 @@ export function setLastTokenUuid(sucursalUuid: string, pairingTokenUuid: string)
   map[sucursalUuid] = { pairingTokenUuid, issuedAt: new Date().toISOString() };
   writeMap(map);
 }
+
+/**
+ * Evicts the cached pairing-token uuid for one sucursal.
+ *
+ * Called by `<Pairing />` when `GET /admin/pairing-tokens/{uuid}` returns 404
+ * (``PairingTokenNotFoundError``) so the next render stops re-firing the
+ * lookup. The 404 itself is the correct response — the row really doesn't
+ * exist (DB was reseeded, token was issued in a different browser, etc.) —
+ * but the local record is now stale and would otherwise keep the network
+ * panel noisy. Idempotent: removing a non-existent key is a no-op.
+ */
+export function deleteLocalRecord(sucursalUuid: string): void {
+  const map = readMap();
+  if (!(sucursalUuid in map)) return;
+  delete map[sucursalUuid];
+  writeMap(map);
+}

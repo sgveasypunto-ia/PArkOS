@@ -51,7 +51,11 @@ import { GenerarPairingTokenModal } from '../components/GenerarPairingTokenModal
 import { RevocarPairingModal } from '../components/RevocarPairingModal';
 import { PairingTokenNotFoundError, getPairingToken } from '../api/pairingApi';
 import type { PairingTokenIssueResponse, PairingTokenRead } from '../api/pairingSchema';
-import { getLastTokenUuid, setLastTokenUuid } from '../lib/pairingLocalState';
+import {
+  deleteLocalRecord,
+  getLastTokenUuid,
+  setLastTokenUuid,
+} from '../lib/pairingLocalState';
 
 type PairingStatus = 'sinInformacion' | 'pendiente' | 'pareada' | 'revocado' | 'expirado';
 
@@ -110,7 +114,25 @@ function PairingRow({ sucursal, localVersion, onGenerar, onRevocar }: PairingRow
     { revalidateOnFocus: false },
   );
 
+  // 2026-10-08 UX fix: when the cached UUID no longer exists on the
+  // server (DB was reseeded, token was issued in a different browser,
+  // etc.) the GET returns 404 — the row genuinely doesn't exist, so
+  // the server's response is correct. The localStorage record is
+  // now stale; evict it once and force this row to re-render so
+  // ``getLastTokenUuid`` returns null on the next pass (SWR key
+  // becomes null → no further GETs, badge collapses to
+  // ``sinInformacion``). Without this, every page load keeps
+  // firing the 404 — the network panel fills up and the user
+  // can't tell which rows are "real" 404s vs. resolved ones.
+  const [evicted, setEvicted] = useState(false);
   const notFound = error instanceof PairingTokenNotFoundError;
+  useEffect(() => {
+    if (notFound && !evicted) {
+      deleteLocalRecord(sucursal.uuid);
+      setEvicted(true);
+    }
+  }, [notFound, evicted, sucursal.uuid]);
+
   const status = derivePairingStatus({
     hasLocalRecord: pairingTokenUuid !== null,
     notFound,
