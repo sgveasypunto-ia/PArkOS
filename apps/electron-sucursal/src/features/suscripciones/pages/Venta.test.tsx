@@ -297,6 +297,22 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     expect((screen.getByTestId('venta-placa-input-0') as HTMLInputElement).value).toBe('ABC123');
   });
 
+  it('T4b: pago submit -> 422 generico con mensaje del servidor -> vuelve al paso 5 y lo muestra', async () => {
+    const mod = await import('../hooks/useVentaSuscripcion');
+    mockTrigger.mockRejectedValueOnce(
+      new mod.VentaSuscripcionValidationError('La placa ABC123 ya existe como vehículo'),
+    );
+
+    renderVenta();
+    await hastaPago();
+    await click('pago-confirmar-stub');
+    expect(screen.getByTestId('venta-paso-5')).toBeDefined();
+    expect(screen.getByTestId('venta-placas-error').textContent).toBe(
+      'La placa ABC123 ya existe como vehículo',
+    );
+    expect((screen.getByTestId('venta-placa-input-0') as HTMLInputElement).value).toBe('ABC123');
+  });
+
   it('T5: cliente + tipo + plan + cantidad + placas -> advances to step 6 (Pago)', async () => {
     renderVenta();
     await hastaPago();

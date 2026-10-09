@@ -45,6 +45,7 @@ export {
   VentaSuscripcionPlacaRepetidaError,
   VentaSuscripcionTipoIncompatibleError,
   VentaSuscripcionCantidadMaximaError,
+  VentaSuscripcionValidationError,
 } from './ventaSuscripcionErrors';
 
 /**
@@ -57,6 +58,8 @@ import {
   VentaSuscripcionPlacaRepetidaError,
   VentaSuscripcionTipoIncompatibleError,
   VentaSuscripcionCantidadMaximaError,
+  VentaSuscripcionValidationError,
+  extraerMensajeDetail422,
 } from './ventaSuscripcionErrors';
 
 export interface UseVentaSuscripcionReturn {
@@ -114,6 +117,15 @@ function parseBackendErrorBody(body: string): BackendErrorBody | null {
   }
 }
 
+function extraerMensaje422(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { detail?: unknown };
+    return extraerMensajeDetail422(parsed.detail !== undefined ? parsed.detail : parsed);
+  } catch {
+    return '';
+  }
+}
+
 /**
  * SWR fetcher — synchronous-looking wrapper around the POST. Uses
  * SWR's mutation hook to expose `isMutating` for the wizard Confirm
@@ -155,6 +167,10 @@ async function mutateFn(
             parsed?.cantidad_maxima_vehiculos ?? 0,
           );
         }
+        // Defecto 5.13: cualquier otro 422 (detail string, lista Pydantic u
+        // objeto con código desconocido) se tipa para que el wizard lo
+        // muestre en vez de perderlo en la consola.
+        throw new VentaSuscripcionValidationError(extraerMensaje422(err.body));
       }
     }
     throw err;
