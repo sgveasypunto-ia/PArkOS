@@ -284,9 +284,9 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     expect(screen.getByTestId('venta-cliente-numero-error').textContent).toMatch(/al menos 5 caracteres/);
   });
 
-  it('T4: pago submit -> 422 typed error -> revert to step 5 (Placas) with inline placa group error', async () => {
+  it('T4: pago submit -> 422 typed error SIN placa identificable -> revert to step 5 (Placas) with group alert', async () => {
     const mod = await import('../hooks/useVentaSuscripcion');
-    mockTrigger.mockRejectedValueOnce(new mod.VentaSuscripcionDuplicatePlateError('ABC123'));
+    mockTrigger.mockRejectedValueOnce(new mod.VentaSuscripcionDuplicatePlateError(''));
 
     renderVenta();
     await hastaPago();
@@ -311,6 +311,117 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
       'La placa ABC123 ya existe como vehículo',
     );
     expect((screen.getByTestId('venta-placa-input-0') as HTMLInputElement).value).toBe('ABC123');
+  });
+
+  describe('T4c: 422 que identifica una placa -> error pegado al input de esa placa', () => {
+    async function hastaPagoDosPlacas(): Promise<void> {
+      await paso1();
+      await paso2();
+      await paso3(PLAN_ANY);
+      await change('venta-cantidad-input', '2');
+      await click('venta-paso-4-siguiente');
+      await change('venta-placa-input-0', 'ABC123');
+      await change('venta-placa-input-1', 'XYZ987');
+      await click('venta-paso-5-siguiente');
+    }
+    const input = (i: number): HTMLInputElement =>
+      screen.getByTestId(`venta-placa-input-${i}`) as HTMLInputElement;
+    const MSG_DUP = 'suscripciones:venta.errors.suscripcion_duplicada_placa';
+
+    it('suscripcion_duplicada_placa con placa -> aria-invalid + descripcion + foco en ESE input', async () => {
+      const mod = await import('../hooks/useVentaSuscripcion');
+      mockTrigger.mockRejectedValueOnce(new mod.VentaSuscripcionDuplicatePlateError('XYZ987'));
+      renderVenta();
+      await hastaPagoDosPlacas();
+      await click('pago-confirmar-stub');
+
+      expect(screen.getByTestId('venta-paso-5')).toBeDefined();
+      expect(input(1)).toHaveAttribute('aria-invalid', 'true');
+      expect(input(1)).toHaveAccessibleDescription(MSG_DUP);
+      expect(input(1)).toHaveFocus();
+      expect(input(0)).not.toHaveAttribute('aria-invalid', 'true');
+      expect(input(0)).not.toHaveAccessibleDescription();
+      expect(screen.queryByTestId('venta-placas-error')).toBeNull();
+      expect(input(0).value).toBe('ABC123');
+      expect(input(1).value).toBe('XYZ987');
+    });
+
+    it('compara normalizado (trim + mayuscula)', async () => {
+      const mod = await import('../hooks/useVentaSuscripcion');
+      mockTrigger.mockRejectedValueOnce(new mod.VentaSuscripcionDuplicatePlateError('  abc123 '));
+      renderVenta();
+      await hastaPagoDosPlacas();
+      await click('pago-confirmar-stub');
+      expect(input(0)).toHaveAttribute('aria-invalid', 'true');
+      expect(input(0)).toHaveAccessibleDescription(MSG_DUP);
+      expect(input(0)).toHaveFocus();
+    });
+
+    it('placa_duplicada_en_venta con placa -> error de campo', async () => {
+      const mod = await import('../hooks/useVentaSuscripcion');
+      mockTrigger.mockRejectedValueOnce(new mod.VentaSuscripcionPlacaRepetidaError('ABC123'));
+      renderVenta();
+      await hastaPagoDosPlacas();
+      await click('pago-confirmar-stub');
+      expect(input(0)).toHaveAccessibleDescription(
+        'suscripciones:venta.errors.placa_duplicada_en_venta',
+      );
+      expect(screen.queryByTestId('venta-placas-error')).toBeNull();
+    });
+
+    it('tipo_vehiculo_incompatible con placa y 422 generico con placa -> error de campo', async () => {
+      const mod = await import('../hooks/useVentaSuscripcion');
+      mockTrigger.mockRejectedValueOnce(
+        new mod.VentaSuscripcionTipoIncompatibleError(['a', 'b'], 'XYZ987'),
+      );
+      renderVenta();
+      await hastaPagoDosPlacas();
+      await click('pago-confirmar-stub');
+      expect(input(1)).toHaveAccessibleDescription(
+        'suscripciones:venta.errors.tipo_vehiculo_incompatible',
+      );
+
+      mockTrigger.mockRejectedValueOnce(
+        new mod.VentaSuscripcionValidationError('Placa rechazada por el servidor', 'ABC123'),
+      );
+      await click('venta-paso-5-siguiente');
+      await click('pago-confirmar-stub');
+      expect(input(0)).toHaveAccessibleDescription('Placa rechazada por el servidor');
+      expect(input(1)).not.toHaveAttribute('aria-invalid', 'true');
+    });
+
+    it('placa que no coincide con ningun campo -> conserva la alerta de grupo', async () => {
+      const mod = await import('../hooks/useVentaSuscripcion');
+      mockTrigger.mockRejectedValueOnce(new mod.VentaSuscripcionDuplicatePlateError('ZZZ000'));
+      renderVenta();
+      await hastaPagoDosPlacas();
+      await click('pago-confirmar-stub');
+      expect(screen.getByTestId('venta-placas-error').textContent).toBe(MSG_DUP);
+      expect(input(0)).not.toHaveAttribute('aria-invalid', 'true');
+      expect(input(1)).not.toHaveAttribute('aria-invalid', 'true');
+    });
+
+    it('sin placa identificable -> alerta de grupo', async () => {
+      const mod = await import('../hooks/useVentaSuscripcion');
+      mockTrigger.mockRejectedValueOnce(new mod.VentaSuscripcionDuplicatePlateError(''));
+      renderVenta();
+      await hastaPagoDosPlacas();
+      await click('pago-confirmar-stub');
+      expect(screen.getByTestId('venta-placas-error').textContent).toBe(MSG_DUP);
+      expect(input(0)).not.toHaveAttribute('aria-invalid', 'true');
+    });
+
+    it('editar la placa con error limpia el error de campo', async () => {
+      const mod = await import('../hooks/useVentaSuscripcion');
+      mockTrigger.mockRejectedValueOnce(new mod.VentaSuscripcionDuplicatePlateError('XYZ987'));
+      renderVenta();
+      await hastaPagoDosPlacas();
+      await click('pago-confirmar-stub');
+      expect(input(1)).toHaveAttribute('aria-invalid', 'true');
+      await change('venta-placa-input-1', 'XYZ988');
+      expect(input(1)).not.toHaveAttribute('aria-invalid', 'true');
+      expect(input(1)).not.toHaveAccessibleDescription();
+    });
   });
 
   it('T5: cliente + tipo + plan + cantidad + placas -> advances to step 6 (Pago)', async () => {

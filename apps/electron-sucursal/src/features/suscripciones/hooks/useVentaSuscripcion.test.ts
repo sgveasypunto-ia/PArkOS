@@ -272,6 +272,29 @@ describe('useVentaSuscripcion — REQ-OPS-177 + REQ-OPS-179', () => {
       const caught = await disparar422('<html>boom</html>');
       expect(caught).toBeInstanceOf(VentaSuscripcionValidationError);
       expect((caught as VentaSuscripcionValidationError).mensaje).toBe('');
+      expect((caught as VentaSuscripcionValidationError).placa).toBe('');
+    });
+
+    it('detail objeto con código desconocido y placa -> expone la placa', async () => {
+      const caught = await disparar422(
+        JSON.stringify({ detail: { error: 'vehiculo_existente', placa: 'QAH001', message: 'x' } }),
+      );
+      expect(caught).toBeInstanceOf(VentaSuscripcionValidationError);
+      expect((caught as VentaSuscripcionValidationError).placa).toBe('QAH001');
+    });
+
+    it('tipo_vehiculo_incompatible con placa -> expone la placa; sin placa queda vacía', async () => {
+      const conPlaca = await disparar422(
+        JSON.stringify({
+          detail: { error: 'tipo_vehiculo_incompatible', placa: 'ABC123', tipos_encontrados: ['a'] },
+        }),
+      );
+      expect(conPlaca).toBeInstanceOf(VentaSuscripcionTipoIncompatibleError);
+      expect((conPlaca as VentaSuscripcionTipoIncompatibleError).placa).toBe('ABC123');
+      const sinPlaca = await disparar422(
+        JSON.stringify({ detail: { error: 'tipo_vehiculo_incompatible', tipos_encontrados: ['a'] } }),
+      );
+      expect((sinPlaca as VentaSuscripcionTipoIncompatibleError).placa).toBe('');
     });
   });
 });

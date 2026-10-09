@@ -160,6 +160,7 @@ async function mutateFn(
         if (code === 'tipo_vehiculo_incompatible') {
           throw new VentaSuscripcionTipoIncompatibleError(
             parsed?.tipos_encontrados ?? [],
+            typeof parsed?.placa === 'string' ? parsed.placa : '',
           );
         }
         if (code === 'cantidad_maxima_excedida') {
@@ -170,7 +171,10 @@ async function mutateFn(
         // Defecto 5.13: cualquier otro 422 (detail string, lista Pydantic u
         // objeto con código desconocido) se tipa para que el wizard lo
         // muestre en vez de perderlo en la consola.
-        throw new VentaSuscripcionValidationError(extraerMensaje422(err.body));
+        throw new VentaSuscripcionValidationError(
+          extraerMensaje422(err.body),
+          typeof parsed?.placa === 'string' ? parsed.placa : '',
+        );
       }
     }
     throw err;
