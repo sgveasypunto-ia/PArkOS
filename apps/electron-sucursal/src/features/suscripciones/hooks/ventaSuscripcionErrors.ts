@@ -53,15 +53,18 @@ export class VentaSuscripcionPlacaRepetidaError extends Error {
 /**
  * 422 `tipo_vehiculo_incompatible` — `plan.mismo_tipo_vehiculo=true`
  * but the placas resolve to distinct `uuid_tipo_vehiculo` (F1.12
- * REQ-OPS-087). Carries the list of distinct tipos found.
+ * REQ-OPS-087). Carries the list of distinct tipos found and, when the
+ * server can single one out, the offending `placa` ('' otherwise).
  */
 export class VentaSuscripcionTipoIncompatibleError extends Error {
   public readonly status = 422;
   public readonly tipos_encontrados: string[];
-  constructor(tipos_encontrados: string[]) {
+  public readonly placa: string;
+  constructor(tipos_encontrados: string[], placa = '') {
     super('tipo_vehiculo_incompatible');
     this.name = 'VentaSuscripcionTipoIncompatibleError';
     this.tipos_encontrados = tipos_encontrados;
+    this.placa = placa;
   }
 }
 
@@ -86,15 +89,18 @@ export class VentaSuscripcionCantidadMaximaError extends Error {
  * (`[{loc, msg}]`) u objeto con un código/mensaje desconocido. Lleva el
  * mensaje legible del servidor para mostrarlo junto al campo de placas;
  * `mensaje` queda vacío si el cuerpo no trae nada utilizable (la UI usa
- * entonces un texto genérico).
+ * entonces un texto genérico). `placa` es la placa que el cuerpo señala
+ * ('' si no identifica ninguna): permite pegar el mensaje a su input.
  */
 export class VentaSuscripcionValidationError extends Error {
   public readonly status = 422;
   public readonly mensaje: string;
-  constructor(mensaje: string) {
+  public readonly placa: string;
+  constructor(mensaje: string, placa = '') {
     super(mensaje || 'venta_suscripcion_422');
     this.name = 'VentaSuscripcionValidationError';
     this.mensaje = mensaje;
+    this.placa = placa;
   }
 }
 

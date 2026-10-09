@@ -146,6 +146,8 @@
     },
     "errors": {
       "suscripcion_duplicada_placa": "Esta placa ya tiene una suscripción vigente",
+      "placa_duplicada_en_venta": "Hay una placa repetida en la venta; cada vehículo debe tener una placa distinta.",
+      "validacion_servidor": "El servidor rechazó los datos de la venta. Revisa las placas.",
       "tipo_vehiculo_incompatible": "Este plan exige que todas las placas sean del mismo tipo",
       "cantidad_maxima_excedida": "Cantidad máxima de vehículos excedida",
       "placa_formato_invalido": "Formato de placa inválido",

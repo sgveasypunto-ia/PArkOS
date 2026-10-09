@@ -32,7 +32,7 @@
  * On a charged sale the receipt is shown and then `onSuccess` (embedded) or a
  * navigation to `/suscripciones` runs.
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { z } from 'zod';
@@ -267,6 +267,14 @@ export function Venta({
   // Generic inline error for the placas step -- shared by both duplicate-plate
   // 422 (server response) and invalid-format (local Zod).
   const [placaGroupError, setPlacaGroupError] = useState<string | null>(null);
+  // Error del servidor atribuido a UNA placa concreta (422 con `placa`): se
+  // pega al input de ese índice (aria-invalid + aria-describedby) y recibe el
+  // foco al volver al paso 5. Sin placa identificable se usa `placaGroupError`.
+  const [placaFieldError, setPlacaFieldError] = useState<{
+    index: number;
+    message: string;
+  } | null>(null);
+  const [placaFoco, setPlacaFoco] = useState<number | null>(null);
   // PT-1: payment form values, kept while the operator steps back from the
   // payment step (and restored when returning to it).
   const [pagoDraft, setPagoDraft] = useState<PagoFormValues | null>(null);
@@ -344,6 +352,7 @@ export function Venta({
     setCantidadError(null);
     setPlacasError(null);
     setPlacaGroupError(null);
+    setPlacaFieldError(null);
     setState((s) => ({ ...s, paso: (s.paso - 1) as VentaStepState['paso'] }));
   };
 
@@ -433,6 +442,7 @@ export function Venta({
     if (n !== state.cantidad_vehiculos) setPagoDraft(null);
     setPlacasInputs((prev) => Array.from({ length: n }, (_, i) => prev[i] ?? ''));
     setPlacaGroupError(null);
+    setPlacaFieldError(null);
     setState((s) => ({
       ...s,
       paso: 5,
@@ -444,6 +454,7 @@ export function Venta({
   const handlePaso5Siguiente = (): void => {
     // paso 5 = Placas -- validate exactly N placas (N from step 4), each
     // matching the auto/moto regex AND the vehicle type chosen at step 2.
+    setPlacaFieldError(null);
     const n = state.cantidad_vehiculos ?? 1;
     const parsed = buildPlacasSchema(n).safeParse({ placas: placasInputs });
     if (!parsed.success) {
@@ -589,13 +600,34 @@ export function Venta({
               : t('suscripciones:venta.errors.cantidad_maxima_excedida', {
                   defaultValue: 'Cantidad máxima de vehículos excedida',
                 });
-        setPlacaGroupError(msg);
+        // Si el 422 identifica una placa que está en el formulario, el mensaje
+        // va pegado a ese input; si no, queda la alerta de grupo.
+        const placaError = 'placa' in err ? err.placa : '';
+        const norm = (p: string): string => p.trim().toUpperCase();
+        const idx = placaError
+          ? placasInputs.findIndex((p) => norm(p) === norm(placaError))
+          : -1;
+        if (idx >= 0) {
+          setPlacaGroupError(null);
+          setPlacaFieldError({ index: idx, message: msg });
+          setPlacaFoco(idx);
+        } else {
+          setPlacaFieldError(null);
+          setPlacaGroupError(msg);
+        }
         setState((s) => ({ ...s, paso: 5 }));
       } else {
         throw err;
       }
     }
   };
+
+  // Foco al input de la placa rechazada una vez el paso 5 está montado.
+  useEffect(() => {
+    if (state.paso !== 5 || placaFoco === null) return;
+    document.getElementById(`venta-placa-input-${placaFoco}`)?.focus();
+    setPlacaFoco(null);
+  }, [state.paso, placaFoco]);
 
   const mostrarVolver = !ventaCompletada && (state.paso > 1 || Boolean(onCancel));
 
@@ -918,6 +950,10 @@ export function Venta({
                   value={placa}
                   maxLength={6}
                   autoCapitalize="characters"
+                  aria-invalid={placaFieldError?.index === i ? true : undefined}
+                  aria-describedby={
+                    placaFieldError?.index === i ? `venta-placa-error-${i}` : undefined
+                  }
                   onChange={(e) => {
                     const raw = e.target.value.toUpperCase();
                     // Mirror the turnoSchema regex: keep only valid
@@ -930,10 +966,21 @@ export function Venta({
                         return next;
                       });
                       setPlacasError(null);
+                      setPlacaFieldError((cur) => (cur?.index === i ? null : cur));
                     }
                   }}
                   placeholder="ABC123"
                 />
+                {placaFieldError?.index === i && (
+                  <p
+                    id={`venta-placa-error-${i}`}
+                    data-testid={`venta-placa-error-${i}`}
+                    className="text-sm text-destructive"
+                    role="alert"
+                  >
+                    {placaFieldError.message}
+                  </p>
+                )}
               </div>
             ))}
           </div>
