@@ -495,6 +495,9 @@ export function Venta({
       ...base,
       cobrar_ahora: true,
       medio_pago: 'datafono',
+      // El backend exige el voucher del datáfono en `referencia`
+      // (sin él responde 400 `voucher_requerido`).
+      referencia: values.voucher?.trim(),
     };
   };
 

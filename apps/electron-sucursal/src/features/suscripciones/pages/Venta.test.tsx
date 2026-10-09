@@ -119,6 +119,10 @@ interface PagoStubProps {
   onDraftChange?: (v: unknown) => void;
   clientePrefill?: { fe?: boolean };
 }
+const pagoStub = vi.hoisted(() => ({
+  medio_pago: 'efectivo' as 'efectivo' | 'datafono',
+  voucher: '',
+}));
 vi.mock('../../facturacion/components/PagoModal', () => ({
   PagoModal: ({ onSubmit, total_cop, draft, onDraftChange, clientePrefill }: PagoStubProps) => (
     <div data-testid="pago-modal">
@@ -139,7 +143,7 @@ vi.mock('../../facturacion/components/PagoModal', () => ({
         data-testid="pago-confirmar-stub"
         onClick={() =>
           onSubmit({
-            medio_pago: 'efectivo',
+            medio_pago: pagoStub.medio_pago,
             monto_recibido_cop: total_cop,
             // Mirrors the real PagoModal default: `p?.fe ?? false`.
             fe: clientePrefill?.fe ?? false,
@@ -147,7 +151,7 @@ vi.mock('../../facturacion/components/PagoModal', () => ({
             dv: '',
             nombre_cliente: 'Consumidor final',
             email_cliente: '',
-            voucher: '',
+            voucher: pagoStub.voucher,
           })
         }
       >
@@ -246,6 +250,8 @@ const FACTURA_BASE = {
 beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
+  pagoStub.medio_pago = 'efectivo';
+  pagoStub.voucher = '';
   mockIsMutating.mockReturnValue(false);
   mockTrigger.mockResolvedValue({
     uuid_subscripcion: '00000000-0000-0000-0000-0000000000b1',
@@ -368,6 +374,27 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     expect(arg.cobrar_ahora).toBe(true);
     // The FE is always emitted by the backend; `false` = standard customer.
     expect(arg.emitir_factura_electronica).toBe(false);
+  });
+
+  it('T7c (6.4): datafono envía el voucher como `referencia`; efectivo no la envía', async () => {
+    pagoStub.medio_pago = 'datafono';
+    pagoStub.voucher = '  TEST123 ';
+    renderVenta();
+    await hastaPago();
+    await click('pago-confirmar-stub');
+    const arg = mockTrigger.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(arg.medio_pago).toBe('datafono');
+    expect(arg.referencia).toBe('TEST123');
+  });
+
+  it('T7d (6.4): efectivo no manda `referencia` aunque el voucher quede en el borrador', async () => {
+    pagoStub.medio_pago = 'efectivo';
+    pagoStub.voucher = 'RESIDUAL';
+    renderVenta();
+    await hastaPago();
+    await click('pago-confirmar-stub');
+    const arg = mockTrigger.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(arg).not.toHaveProperty('referencia');
   });
 
   it('T7b: la factura a nombre del cliente llega desmarcada por defecto', async () => {
