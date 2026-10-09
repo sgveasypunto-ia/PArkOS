@@ -693,6 +693,10 @@
       "addPlaceholder": "Elegí una sucursal…",
       "add": "Agregar",
       "noneAvailable": "No hay sucursales disponibles para asignar."
+    },
+    "sucursalesAsignadas": {
+      "searchPlaceholder": "Buscar por nombre, prefijo o UUID…",
+      "emptyFilter": "Sin resultados para la búsqueda."
     }
   },
   "audit": {
