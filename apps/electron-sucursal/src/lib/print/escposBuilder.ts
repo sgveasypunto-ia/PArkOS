@@ -12,7 +12,7 @@
  *   2. ...document body (UTF-8)...
  *   3. `0x1B 0x61 0x01` — ESC `a` 1 (centered, for header)
  *   4. `0x1B 0x21 0x30` — ESC `!` 0x30 (text 2x height for sellos)
- *   5. `0x1B 0x45` / `0x1B 0x46` — bold on / off
+ *   5. `0x1B 0x45 0x01` / `0x1B 0x45 0x00` — ESC `E` n, bold on / off
  *   6. ...document body (UTF-8)...
  *   7. `0x1D 0x56 0x00` — GS `V` 0 (partial cut)
  *   8. `0x0A` — LF (line feed)
@@ -69,6 +69,7 @@ import {
   type ArqueoPayload,
   type TiqueteTipo,
 } from './escposTemplates';
+import { escNegrita } from './ticketBase';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Error classes
@@ -125,14 +126,14 @@ export function escLeft(): Buffer {
   return Buffer.from([0x1b, 0x61, 0x00]);
 }
 
-/** `0x1B 0x45` — ESC `E` — Bold on. */
+/** `0x1B 0x45 0x01` — ESC `E` 1 — Bold on (single definition: `escNegrita`). */
 export function escBoldOn(): Buffer {
-  return Buffer.from([0x1b, 0x45]);
+  return escNegrita(true);
 }
 
-/** `0x1B 0x46` — ESC `F` — Bold off. */
+/** `0x1B 0x45 0x00` — ESC `E` 0 — Bold off (single definition: `escNegrita`). */
 export function escBoldOff(): Buffer {
-  return Buffer.from([0x1b, 0x46]);
+  return escNegrita(false);
 }
 
 /** `0x1B 0x21 0x30` — ESC `!` 0x30 — Text 2x height (DEC-SUC-04 sellos). */
@@ -392,7 +393,7 @@ function buildReimpresionBody(payload: ReimpresionPayload): Buffer {
   // ***'` (with U+00D3 accent per `plan.md:2006` verbatim copy) and a
   // subline `'--- COPIA AUTORIZADA ---'` is emitted between sello and
   // motivo. The inner body is wrapped with `escBoldOn()`/`escBoldOff()`
-  // (0x1B 0x45 / 0x1B 0x46) so the entire reimpreso body is visually
+  // (0x1B 0x45 0x01 / 0x1B 0x45 0x00) so the entire reimpreso body is visually
   // distinct from the original tiquete. The dispatch key remains
   // `'reimpresion'` (REQ-OPS-175 drift anchor — NOT `'reimprimir'`).
   const innerSucursalEncabezado = payload.payload.sucursal.encabezado;

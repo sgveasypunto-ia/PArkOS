@@ -42,8 +42,8 @@ describe('escposBuilder byte fixtures', () => {
     expect(escCenter()).toEqual(Buffer.from([0x1b, 0x61, 0x01]));
   });
 
-  it('esc_bold_on returns Buffer [0x1B, 0x45]', () => {
-    expect(escBoldOn()).toEqual(Buffer.from([0x1b, 0x45]));
+  it('esc_bold_on returns Buffer [0x1B, 0x45, 0x01]', () => {
+    expect(escBoldOn()).toEqual(Buffer.from([0x1b, 0x45, 0x01]));
   });
 
   it('esc_text_2x returns Buffer [0x1B, 0x21, 0x30]', () => {
