@@ -45,6 +45,8 @@ import {
 } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 
+import { BaseCajaEditor } from '@/features/configuracion-caja/components/BaseCajaEditor';
+import { useBasesCajaSucursales } from '@/features/configuracion-caja/hooks/useBasesCajaSucursales';
 import { SucursalFormHarness } from '@/features/sucursales/components/SucursalForm';
 import { useTipoSucursal } from '@/features/tipo-sucursal/hooks/useTipoSucursal';
 import {
@@ -112,6 +114,8 @@ export default function SeleccionarSucursal(): JSX.Element {
 
   // Admin table: factory endpoint (full bi-temporal shape needed for edit).
   const listForAdmin = useSucursalesDirectorio();
+  // Base de caja por sucursal (override) + default global, en una sola consulta.
+  const basesCaja = useBasesCajaSucursales();
 
   // -------------------------------------------------------------------------
   // Picker derived state
@@ -386,6 +390,41 @@ export default function SeleccionarSucursal(): JSX.Element {
             </Card>
           )}
 
+          {/* Base de caja: cada sucursal puede tener más o menos base. La
+              propia de la fila gana; la sucursal sin base propia hereda esta
+              por defecto. */}
+          <Card className="mb-4" data-testid="base-caja-global-card">
+            <CardContent className="flex flex-wrap items-center justify-between gap-3 py-3">
+              <div className="space-y-0.5">
+                <p className="text-sm font-medium">
+                  {t('baseCaja.global.titulo', 'Base de caja por defecto')}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {t(
+                    'baseCaja.global.ayuda',
+                    'La reciben las sucursales que no tienen una base propia. Cada sucursal puede tener la suya en la tabla.',
+                  )}
+                </p>
+              </div>
+              <BaseCajaEditor
+                testId="base-caja-global"
+                base={basesCaja.baseGlobal}
+                origen={basesCaja.baseGlobal === null ? 'sin_configurar' : 'propia'}
+                onGuardar={(valor) => basesCaja.guardar(null, valor)}
+              />
+            </CardContent>
+          </Card>
+
+          {basesCaja.error !== undefined && (
+            <p
+              role="alert"
+              className="mb-3 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              data-testid="base-caja-error-carga"
+            >
+              {t('baseCaja.errorCarga', 'No se pudieron cargar las bases de caja.')}
+            </p>
+          )}
+
           {listForAdmin.error !== undefined && (
             <p
               role="alert"
@@ -459,6 +498,9 @@ export default function SeleccionarSucursal(): JSX.Element {
                     <th className="px-3 py-2">
                       {t('sucursal.col.ciudad', 'Ciudad')}
                     </th>
+                    <th className="px-3 py-2">
+                      {t('sucursal.col.baseCaja', 'Base de caja por turno')}
+                    </th>
                     <th className="px-3 py-2 text-right">
                       {t('sucursal.col.actions', 'Acciones')}
                     </th>
@@ -478,6 +520,14 @@ export default function SeleccionarSucursal(): JSX.Element {
                         {s.prefijo_nombre ?? '—'}
                       </td>
                       <td className="px-3 py-2">{s.ciudad ?? '—'}</td>
+                      <td className="px-3 py-2">
+                        <BaseCajaEditor
+                          testId={`sucursal-base-${s.uuid}`}
+                          base={basesCaja.baseDe(s.uuid).base}
+                          origen={basesCaja.baseDe(s.uuid).origen}
+                          onGuardar={(valor) => basesCaja.guardar(s.uuid, valor)}
+                        />
+                      </td>
                       <td className="px-3 py-2 text-right">
                         <div className="flex justify-end gap-2">
                           <Button
