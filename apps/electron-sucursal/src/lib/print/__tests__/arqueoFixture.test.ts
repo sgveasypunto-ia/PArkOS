@@ -34,6 +34,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
+import { copPlano } from './copPlano';
 import {
   build,
   EscposInvalidTipoError,
@@ -42,7 +43,6 @@ import {
 } from '../escposBuilder';
 import {
   arqueoPayloadSchema,
-  formatCOP,
   formatFechaCorta,
   type ArqueoPayload,
 } from '../escposTemplates';
@@ -91,19 +91,19 @@ describe('HU-F10.1 — escposBuilder.build("arqueo", payload) byte fixture', () 
     expect(utf8).toContain('Sesion: abcdef0');
 
     // Base + esperado + reportado + diferencia + tolerancia efectivo (lines 6-10)
-    expect(utf8).toContain(`Base: ${formatCOP(50_000)}`);
-    expect(utf8).toContain(`Esperado efectivo: ${formatCOP(120_000)}`);
-    expect(utf8).toContain(`Reportado efectivo: ${formatCOP(118_000)}`);
+    expect(utf8).toContain(`Base: ${copPlano(50_000)}`);
+    expect(utf8).toContain(`Esperado efectivo: ${copPlano(120_000)}`);
+    expect(utf8).toContain(`Reportado efectivo: ${copPlano(118_000)}`);
     // Sign prefix MUST be `-` for negative, `+` for non-negative (NEVER `±`).
-    expect(utf8).toContain(`Diferencia efectivo: -${formatCOP(2_000)}`);
+    expect(utf8).toContain(`Diferencia efectivo: -${copPlano(2_000)}`);
 
     // Datafono block (lines 11) — diferencia_datafono === 0 emits `+`
     // sign per spec ("sign MUST be `+` for non-negative, `-` for
     // negative — NEVER `±`").
-    expect(utf8).toContain(`Esperado datafono: ${formatCOP(30_000)}`);
-    expect(utf8).toContain(`Reportado datafono: ${formatCOP(30_000)}`);
-    expect(utf8).toContain(`Diferencia datafono: +${formatCOP(0)}`);
-    expect(utf8).toContain(`Tolerancia datafono: ${formatCOP(500)}`);
+    expect(utf8).toContain(`Esperado datafono: ${copPlano(30_000)}`);
+    expect(utf8).toContain(`Reportado datafono: ${copPlano(30_000)}`);
+    expect(utf8).toContain(`Diferencia datafono: +${copPlano(0)}`);
+    expect(utf8).toContain(`Tolerancia datafono: ${copPlano(500)}`);
 
     // Justificacion (line 12) — only when present
     expect(utf8).toContain('Justificacion: Faltante en caja menor');
@@ -130,7 +130,7 @@ describe('HU-F10.1 — escposBuilder.build("arqueo", payload) byte fixture', () 
       valor_reportado_efectivo: 122_000,
     });
     const utf8 = buf.toString('utf8');
-    expect(utf8).toContain(`Diferencia efectivo: +${formatCOP(2_000)}`);
+    expect(utf8).toContain(`Diferencia efectivo: +${copPlano(2_000)}`);
     expect(utf8).not.toContain(`Diferencia efectivo: ±`);
   });
 

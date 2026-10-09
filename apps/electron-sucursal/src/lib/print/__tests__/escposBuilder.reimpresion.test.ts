@@ -9,10 +9,10 @@
  *   T2: buffer contains the subline `'--- COPIA AUTORIZADA ---'`
  *       between sello and motivo — currently FAIL because the subline
  *       does not exist on dev.
- *   T3: bold marca (escBoldOn `0x1B 0x45 0x01` + escBoldOff `0x1B 0x45 0x00`)
- *       wraps the inner body — currently FAIL because the inner body
- *       is concatenated AFTER the header without a wrapping
- *       bold-on/bold-off pair around it.
+ *   T3: the REIMPRESIÓN legend is bold (escBoldOn `0x1B 0x45 0x01` + escBoldOff
+ *       `0x1B 0x45 0x00`). Intentional change (80 mm): the inner body is NO
+ *       longer wrapped in bold, so the reprint looks like the original ticket
+ *       plus the legend.
  *
  * Drift guard (REQ-OPS-175): the dispatcher key is `'reimpresion'`
  * (NOT `'reimprimir'`). The literal `'reimprimir'` MUST return 0
@@ -32,8 +32,6 @@ function makeReimpresionEntradaPayload(): ReimpresionPayload {
   return {
     motivo: 'Cliente solicita reimpresión por deterioro del tiquete original',
     folioOriginal: '00000000-0000-4000-8000-000000000001',
-    qrDataUrl: 'data:image/png;base64,AAA',
-    logoDataUrl: 'data:image/png;base64,BBB',
     empresa: {
       nombre: 'Parkos Demo S.A.S.',
       nit: '900123456-7',
@@ -80,35 +78,25 @@ describe('buildReimpresionBuffer — subline (HU-F8.3, REQ-OPS-172)', () => {
 // T3 — Bold marca wrapping (REQ-OPS-172)
 // ──────────────────────────────────────────────────────────────────────────
 
-describe('buildReimpresionBuffer — bold marca wrapping (HU-F8.3, REQ-OPS-172)', () => {
-  it('T3 — escBoldOn (0x1B 0x45 0x01) + escBoldOff (0x1B 0x45 0x00) wrap the inner body', () => {
+describe('buildReimpresionBuffer — bold legend (HU-F8.3, REQ-OPS-172)', () => {
+  it('T3 — the sello is wrapped by escBoldOn/escBoldOff and the inner body is NOT bold', () => {
     const payload = makeReimpresionEntradaPayload();
     const buf = build('reimpresion', payload);
 
-    // Opcode byte sequences
-    const boldOnBytes = escBoldOn();
-    const boldOffBytes = escBoldOff();
-    expect(boldOnBytes).toEqual(Buffer.from([0x1b, 0x45, 0x01]));
-    expect(boldOffBytes).toEqual(Buffer.from([0x1b, 0x45, 0x00]));
+    expect(escBoldOn()).toEqual(Buffer.from([0x1b, 0x45, 0x01]));
+    expect(escBoldOff()).toEqual(Buffer.from([0x1b, 0x45, 0x00]));
 
-    // Locate the sello with accent (we already asserted its presence)
     const selloIdx = buf.indexOf(Buffer.from('*** REIMPRESIÓN ***', 'utf8'));
     expect(selloIdx).toBeGreaterThanOrEqual(0);
+    // The last bold switch BEFORE the sello turns bold on; the first AFTER turns it off.
+    const onBefore = buf.lastIndexOf(escBoldOn(), selloIdx);
+    expect(onBefore).toBeGreaterThanOrEqual(0);
+    expect(buf.indexOf(escBoldOff(), selloIdx)).toBeGreaterThan(selloIdx);
 
-    // The first escBoldOn AFTER the sello MUST exist (this is the
-    // start of the bold marca wrapping the inner body)
-    const boldOnAfterSello = buf.indexOf(boldOnBytes, selloIdx);
-    expect(boldOnAfterSello).toBeGreaterThan(selloIdx);
-
-    // The inner body "Folio:" line MUST appear AFTER that bold-on
-    const folioIdx = buf.indexOf(Buffer.from('Folio:'), boldOnAfterSello);
-    expect(folioIdx).toBeGreaterThan(boldOnAfterSello);
-
-    // An escBoldOff MUST appear AFTER the inner body content (before cut)
-    const cutIdx = buf.indexOf(Buffer.from([0x1d, 0x56, 0x00]));
-    const boldOffBeforeCut = buf.lastIndexOf(boldOffBytes, cutIdx);
-    expect(boldOffBeforeCut).toBeGreaterThan(folioIdx);
-    expect(boldOffBeforeCut).toBeLessThan(cutIdx);
+    // The original "Folio:" line is regular weight: bold is OFF at that point.
+    const folioIdx = buf.indexOf(Buffer.from('Folio: '));
+    const lastSwitch = Math.max(buf.lastIndexOf(escBoldOn(), folioIdx), buf.lastIndexOf(escBoldOff(), folioIdx));
+    expect(buf.subarray(lastSwitch, lastSwitch + 3)).toEqual(escBoldOff());
   });
 });
 

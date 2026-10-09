@@ -1,10 +1,10 @@
 /**
  * Unit tests for F7.3 — Tiquete de salida-mensualidad CU-15SM byte-level fixtures.
  *
- * Covers the 15 conceptual fields per `plan.md:1810` + the 2
- * DEC-SUC-26 additions (QR + logo) + the DEC-SUC-27 sello invariant
- * (`*** PAGO CON MENSUALIDAD ***` wrapped by `escText2x()` /
- * `escTextReset()`) — see REQ-OPS-159.
+ * Covers the 15 conceptual fields per `plan.md:1810` + the DEC-SUC-27 sello
+ * invariant (`*** PAGO CON MENSUALIDAD ***`, bold and centred on the 80 mm
+ * ticket; the former QR + logo markers and the 2x text were removed on
+ * purpose) — see REQ-OPS-159.
  *
  * The 15-key byte-presence table:
  *   1. Encabezado       (payload.sucursal.encabezado — DEC-SUC-28 dynamic)
@@ -13,8 +13,7 @@
  *   4. NIT              (payload.empresa.nit)
  *   5. Régimen          (payload.empresa.regimen)
  *   6. Operario         (payload.operario)
- *   7. Sello            (literal "*** PAGO CON MENSUALIDAD ***" wrapped by
- *                        escText2x [0x1B 0x21 0x30] + escTextReset [0x1B 0x21 0x00])
+ *   7. Sello            (literal "*** PAGO CON MENSUALIDAD ***", bold)
  *   7b. Tipo de operación (literal "Tipo: MENSUALIDAD", bold — pedido del operador)
  *   8. Folio            (payload.folio)
  *   9. Fecha            (date-only, dd/MM/yyyy)
@@ -54,8 +53,6 @@ function makeSalidaMensualidadPayload(
     placa: 'ABC12D',
     fechaEntrada: '2026-09-01T00:00:00Z',
     fechaSalida: '2026-09-16T08:00:00Z',
-    qrDataUrl: 'data:image/png;base64,CCC',
-    logoDataUrl: 'data:image/png;base64,DDD',
     empresa: {
       nombre: 'Parkos Demo S.A.S.',
       nit: '900123456-7',
@@ -79,7 +76,7 @@ function makeSalidaMensualidadPayload(
 // ──────────────────────────────────────────────────────────────────────────
 
 describe('buildSalidaMensualidadBuffer — CU-15SM 15-field byte presence (HU-F7.3 / REQ-OPS-159)', () => {
-  it('T5 — emits all 15 CU-15SM conceptual fields + QR + logo markers', () => {
+  it('T5 — emits all 15 CU-15SM conceptual fields', () => {
     const payload = makeSalidaMensualidadPayload();
     const buf = build('salida-mensualidad', payload);
 
@@ -137,9 +134,9 @@ describe('buildSalidaMensualidadBuffer — CU-15SM 15-field byte presence (HU-F7
     expect(
       buf.indexOf(Buffer.from(`Observaciones: ${payload.observaciones}`)),
     ).toBeGreaterThanOrEqual(0);
-    // DEC-SUC-26 — QR + logo markers
-    expect(buf.indexOf(Buffer.from(';QR:'))).toBeGreaterThanOrEqual(0);
-    expect(buf.indexOf(Buffer.from(';LOGO:'))).toBeGreaterThanOrEqual(0);
+    // 80 mm: no QR / logo markers (intentional change)
+    expect(buf.indexOf(Buffer.from(';QR:'))).toBe(-1);
+    expect(buf.indexOf(Buffer.from(';LOGO:'))).toBe(-1);
   });
 });
 
@@ -148,18 +145,15 @@ describe('buildSalidaMensualidadBuffer — CU-15SM 15-field byte presence (HU-F7
 // ──────────────────────────────────────────────────────────────────────────
 
 describe('buildSalidaMensualidadBuffer — sello opcode sequence (DEC-SUC-27)', () => {
-  it('T6 — "*** PAGO CON MENSUALIDAD ***" preceded by 0x1B 0x21 0x30 and followed by 0x1B 0x21 0x00', () => {
+  it('T6 — "*** PAGO CON MENSUALIDAD ***" is bold (ESC E 1 ... ESC E 0), never 2x text (ESC ! n)', () => {
     const payload = makeSalidaMensualidadPayload();
     const buf = build('salida-mensualidad', payload);
-    const text2xIdx = buf.indexOf(Buffer.from([0x1b, 0x21, 0x30]));
     const selloIdx = buf.indexOf(Buffer.from('*** PAGO CON MENSUALIDAD ***'));
-    const textResetIdx = buf.indexOf(
-      Buffer.from([0x1b, 0x21, 0x00]),
-      text2xIdx + 3, // search starts AFTER the 0x1B 0x21 0x30 opcode
-    );
-    expect(text2xIdx).toBeGreaterThanOrEqual(0);
-    expect(selloIdx).toBeGreaterThan(text2xIdx);
-    expect(textResetIdx).toBeGreaterThan(selloIdx);
+    const boldOn = buf.lastIndexOf(Buffer.from([0x1b, 0x45, 0x01]), selloIdx);
+    expect(selloIdx).toBeGreaterThanOrEqual(0);
+    expect(boldOn).toBeGreaterThanOrEqual(0);
+    expect(buf.indexOf(Buffer.from([0x1b, 0x45, 0x00]), selloIdx)).toBeGreaterThan(selloIdx);
+    expect(buf.indexOf(Buffer.from([0x1b, 0x21]))).toBe(-1);
   });
 
   it('T6.distinct — CU-15SM sello MUST NOT appear in CU-15S buffer (separate rutas)', () => {
@@ -208,27 +202,14 @@ describe('buildSalidaMensualidadBuffer — DEC-SUC-28 dynamic header', () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// QR + logo markers (DEC-SUC-26)
+// 80 mm format: brand logos, no QR
 // ──────────────────────────────────────────────────────────────────────────
 
-describe('buildSalidaMensualidadBuffer — DEC-SUC-26 QR + logo', () => {
-  it('emits ";QR:" marker with qrDataUrl payload verbatim', () => {
-    const payload = makeSalidaMensualidadPayload();
-    const buf = build('salida-mensualidad', payload);
-    expect(
-      buf.indexOf(Buffer.from(`;QR:${payload.qrDataUrl}`)),
-    ).toBeGreaterThanOrEqual(0);
-  });
-
-  it('emits ";LOGO:OK" marker when logoDataUrl is non-empty (cached logo)', () => {
-    const payload = makeSalidaMensualidadPayload();
-    const buf = build('salida-mensualidad', payload);
-    expect(buf.indexOf(Buffer.from(';LOGO:OK'))).toBeGreaterThanOrEqual(0);
-  });
-
-  it('emits ";LOGO:▢" placeholder glyph when logoDataUrl is empty (cold cache)', () => {
-    const payload = makeSalidaMensualidadPayload({ logoDataUrl: '' });
-    const buf = build('salida-mensualidad', payload);
-    expect(buf.indexOf(Buffer.from(';LOGO:\u25A2'))).toBeGreaterThanOrEqual(0);
+describe('buildSalidaMensualidadBuffer — 80 mm format', () => {
+  it('no QR marker nor QR command; the easypunto brand opens and closes the ticket', () => {
+    const buf = build('salida-mensualidad', makeSalidaMensualidadPayload());
+    expect(buf.indexOf(Buffer.from(';QR:'))).toBe(-1);
+    expect(buf.indexOf(Buffer.from([0x1d, 0x28, 0x6b]))).toBe(-1);
+    expect(buf.toString('utf8').match(/easypunto/g)).toHaveLength(2);
   });
 });

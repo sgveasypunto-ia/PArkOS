@@ -50,6 +50,6 @@ describe('reprint ticket prints the Bogotá hour of the stored naive UTC instant
     expect(build('reimpresion', payload).toString('utf8')).toContain('Hora: 16:07');
   });
   it('HTML says Hora: 16:07', () => {
-    expect(renderEntradaTiqueteHtml(payload.payload)).toContain('<p>Hora: 16:07</p>');
+    expect(renderEntradaTiqueteHtml(payload.payload)).toContain('>Hora: 16:07</p>');
   });
 });

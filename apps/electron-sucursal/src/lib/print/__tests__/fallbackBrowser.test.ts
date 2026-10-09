@@ -3,7 +3,7 @@
  *
  * Verifies:
  *   1. The `<style>` element is injected into `document.head` with the
- *      DEC-SUC-08 verbatim `@page { size: 80mm auto; margin: 2mm }` rule.
+ *      `@page { size: 80mm auto; margin: 0 }` rule (80 mm base; the 2 mm margin was removed on purpose).
  *   2. `window.print()` is called exactly once.
  *   3. The injected `<style>` is removed after the print call.
  */
@@ -18,8 +18,6 @@ function validSalidaMensualidadPayload(): SalidaMensualidadPayload {
     placa: 'ABC12D',
     fechaEntrada: '2026-09-01T00:00:00Z',
     fechaSalida: '2026-09-16T08:00:00Z',
-    qrDataUrl: 'data:image/png;base64,CCC',
-    logoDataUrl: 'data:image/png;base64,DDD',
     empresa: {
       nombre: 'Parkos Demo S.A.S.',
       nit: '900123456-7',
@@ -72,7 +70,7 @@ describe('fallbackBrowser.print("entrada", payload)', () => {
       | undefined;
     expect(injectedNode).toBeDefined();
     expect(injectedNode?.textContent).toBe(PAGE_RULE);
-    expect(PAGE_RULE).toBe('@page { size: 80mm auto; margin: 2mm }');
+    expect(PAGE_RULE).toBe('@page { size: 80mm auto; margin: 0 }');
   });
 
   it('calls window.print() exactly once', () => {
@@ -98,16 +96,16 @@ describe('fallbackBrowser.print — Tipo de operación (pedido del operador)', (
     vi.spyOn(window, 'print').mockImplementation(() => undefined);
   });
 
-  it('renders <strong>Tipo: ROTACIÓN</strong> in the salida fallback HTML', () => {
+  it('renders the bold line Tipo: ROTACIÓN in the salida fallback HTML', () => {
     print('salida', validSalidaPayload());
     const container = document.getElementById('parkos-escpos-fallback-container');
-    expect(container?.innerHTML).toContain('<strong>Tipo: ROTACIÓN</strong>');
+    expect(container?.innerHTML).toMatch(/font-weight:bold;[^"]*">Tipo: ROTACIÓN<\/p>/);
   });
 
-  it('renders <strong>Tipo: MENSUALIDAD</strong> in the salida-mensualidad fallback HTML', () => {
+  it('renders the bold line Tipo: MENSUALIDAD in the salida-mensualidad fallback HTML', () => {
     print('salida-mensualidad', validSalidaMensualidadPayload());
     const container = document.getElementById('parkos-escpos-fallback-container');
-    expect(container?.innerHTML).toContain('<strong>Tipo: MENSUALIDAD</strong>');
+    expect(container?.innerHTML).toMatch(/font-weight:bold;[^"]*">Tipo: MENSUALIDAD<\/p>/);
   });
 });
 

@@ -37,9 +37,10 @@
  *     factura (decisión de alcance explícita, no un bug — reversar un
  *     cobro real es un flujo aparte de factura_pagos.reverse_payment,
  *     fuera de esta HU).
- *   - `escposBuilder.build('reimpresion', payload)` + `window.bridge
- *     .imprimir(...)` — reimpresión real del tiquete de entrada
- *     (best-effort, DEC-SUC-27, mismo patrón que `<IngresoPanel />`).
+ *   - `imprimirTiquete('reimpresion', payload)` — reimpresión real del
+ *     tiquete de entrada en 80 mm (ESC/POS por el bridge o HTML +
+ *     `window.print`), con la leyenda REIMPRESIÓN y su número (últimos 8
+ *     dígitos del uuid de la reimpresión); best-effort, DEC-SUC-27.
  *
  * El operador NUNCA tipea un UUID: la búsqueda resuelve `uuid_ingreso`
  * automáticamente.
@@ -107,7 +108,10 @@ import { resolverIngresoReimpresion } from '../lib/resolverIngresoReimpresion';
 import { formatCOP } from '../../caja/lib/format';
 import { ejecutarImpresion } from '../../../lib/print/avisoImpresion';
 import { imprimirTiquete } from '../../../lib/print/tiquetePrint';
-import { buildReimpresionEntradaPayload } from '../../../lib/print/printBuilder';
+import {
+  buildReimpresionEntradaPayload,
+  numeroReimpresionCorto,
+} from '../../../lib/print/printBuilder';
 import { resolverTarifaHoraDeTipo } from '../../../lib/print/tarifaHoraEntrada';
 import { resolverContextoImpresion } from '../../../lib/print/contextoImpresion';
 import { formatFechaHoraCorta } from '../../caja/lib/format';
@@ -153,15 +157,21 @@ function identificadorDe(ingreso: Ingreso): string {
 async function imprimirReimpresionEntrada(
   ingreso: Ingreso,
   motivo: string,
+  uuidReimpresion: string,
 ): Promise<void> {
   await ejecutarImpresion('el tiquete reimpreso', async () => {
     const tarifaHora = await resolverTarifaHoraDeTipo(ingreso.uuid_tipo_vehiculo);
     return imprimirTiquete(
       'reimpresion',
-      buildReimpresionEntradaPayload(ingreso, motivo, {
-        ...(await resolverContextoImpresion()),
-        tarifaHora,
-      }),
+      buildReimpresionEntradaPayload(
+        ingreso,
+        motivo,
+        {
+          ...(await resolverContextoImpresion()),
+          tarifaHora,
+        },
+        numeroReimpresionCorto(uuidReimpresion),
+      ),
       { ticketId: ingreso.uuid },
     );
   });
@@ -361,7 +371,7 @@ export function ReimprimirTiquete(): JSX.Element {
         // Best-effort (DEC-SUC-27) — el cobro y la reimpresión ya quedaron
         // registrados; un fallo de impresión avisa (con reintento) sin
         // bloquear ni revertir el flujo.
-        await imprimirReimpresionEntrada(ingresoEncontrado, motivoConfirmado);
+        await imprimirReimpresionEntrada(ingresoEncontrado, motivoConfirmado, out.uuid);
         // La factura del servicio se imprime completa (detalle de impuestos);
         // nunca lanza y avisa si falla.
         void ejecutarImpresion('la factura', () => imprimirFactura(factura));
@@ -401,7 +411,7 @@ export function ReimprimirTiquete(): JSX.Element {
       });
       setResultado(out);
       // Best-effort print (DEC-SUC-27), igual que el flujo con cobro.
-      await imprimirReimpresionEntrada(ingresoEncontrado, motivoConfirmado);
+      await imprimirReimpresionEntrada(ingresoEncontrado, motivoConfirmado, out.uuid);
     } catch (err) {
       setErrorMsg(
         esIngresoYaTieneSalida(err)

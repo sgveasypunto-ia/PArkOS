@@ -92,3 +92,28 @@ export function separadorTicket(cols: number = TICKET_COLUMNAS): string {
 export function escNegrita(on: boolean): Buffer {
   return Buffer.from([0x1b, 0x45, on ? 0x01 : 0x00]);
 }
+
+/** `ESC @` — initialize the printer (reset state). */
+export function escInit(): Buffer {
+  return Buffer.from([0x1b, 0x40]);
+}
+
+/** `ESC a 1` — centre alignment on. */
+export function escCenter(): Buffer {
+  return Buffer.from([0x1b, 0x61, 0x01]);
+}
+
+/** `ESC a 0` — left alignment (reset). */
+export function escLeft(): Buffer {
+  return Buffer.from([0x1b, 0x61, 0x00]);
+}
+
+/** `GS V 0` — partial cut. */
+export function cutPartial(): Buffer {
+  return Buffer.from([0x1d, 0x56, 0x00]);
+}
+
+/** `LF` — line feed (after the cut, recommended for the print buffer). */
+export function lf(): Buffer {
+  return Buffer.from([0x0a]);
+}
