@@ -7,10 +7,12 @@
  * `tipo_cliente_permitido` (str ≤64 opt), `uuid_tipo_vehiculo` (uuid opt;
  * NULL = plan válido para cualquier tipo de vehículo, PT-2).
  *
- * LIMITACIÓN: el router genérico usa `exclude_none`, por lo que una
- * actualización NO puede volver a poner `uuid_tipo_vehiculo` en NULL.
- * Un plan con tipo asignado no puede volver a "Cualquiera": hay que crear
- * un plan nuevo (`validateUpdate` lo comunica antes de enviar).
+ * Ambos selects (`uuid_tipo_vehiculo`, `tipo_cliente_permitido`) se
+ * rinden SIN opción vacía: el router genérico usa `exclude_none`, así
+ * que un plan con tipo asignado no puede volver a NULL — había que
+ * crear un plan nuevo. Mostrar "Cualquiera" como opción era confuso
+ * porque la rama de "volver a Cualquiera" siempre reventaba tarde
+ * (vía `validateUpdate` o 422 del backend). Se sacó.
  */
 import { createElement } from 'react';
 
@@ -43,17 +45,18 @@ export const tipoSubscripcionesConfig: CatalogConfig = {
       optionsResource: 'tipo-persona',
       optionsLabelKey: 'tipo',
       optionsValueKey: 'tipo',
-      emptyOptionLabel: 'Cualquiera',
-      hint: 'Filtrá los planes por tipo de persona. Dejalo en "Cualquiera" para no restringir.',
+      allowEmpty: false,
+      hint: 'Filtrá los planes por tipo de persona.',
     },
     {
       name: 'uuid_tipo_vehiculo',
       label: 'Tipo de vehículo',
       type: 'select',
+      required: true,
       optionsResource: 'tipos-vehiculo',
       optionsLabelKey: 'tipo',
-      emptyOptionLabel: 'Cualquiera',
-      hint: 'Un plan con tipo asignado no puede volver a "Cualquiera"; cree un plan nuevo.',
+      allowEmpty: false,
+      hint: 'Elegí el tipo de vehículo al que aplica este plan.',
     },
   ],
   columns: [
@@ -83,14 +86,6 @@ export const tipoSubscripcionesConfig: CatalogConfig = {
     mismo_tipo_vehiculo: false,
     tipo_cliente_permitido: '',
     uuid_tipo_vehiculo: '',
-  },
-  validateUpdate: (previous, next) => {
-    const hadType =
-      typeof previous.uuid_tipo_vehiculo === 'string' && previous.uuid_tipo_vehiculo !== '';
-    const wantsAny = next.uuid_tipo_vehiculo === undefined || next.uuid_tipo_vehiculo === '';
-    return hadType && wantsAny
-      ? 'Un plan con tipo de vehículo asignado no puede volver a "Cualquiera". Cree un plan nuevo para eso.'
-      : null;
   },
   toCreatePayload: (form) => ({
     tipo: String(form.tipo ?? '').trim(),

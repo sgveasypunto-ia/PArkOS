@@ -46,6 +46,13 @@ export interface CatalogField {
   /** `select` only: label of the empty option (value ''). */
   emptyOptionLabel?: string;
   /**
+   * `select` only: when `false`, the empty option is NOT rendered and the
+   * user must pick one of the offered values. Defaults to `true` (the
+   * historical behavior). Use `false` for fields where "no value" is not
+   * a legal UI state (e.g. `uuid_tipo_vehiculo` once a plan is assigned).
+   */
+  allowEmpty?: boolean;
+  /**
    * `select` only: literal option list. Use when the values are a fixed
    * enum not driven by another catalog (e.g. `tipo_calculo` ∈
    * {'', 'porcentaje', 'fijo'}).
