@@ -2,7 +2,9 @@
 
 > **Audience**: F6.1 implementer (`feature/hu-f6-1-flujo-ingreso`).
 > **Status**: Documentation only — no F6.1 code change ships in F6.2.
-> **Contract binding**: `escposBuilder.build('entrada', payload)` + `bridge.imprimir({ buffer })`.
+> **Contract binding**: `tiquetePrint.imprimirTiquete('entrada', payload)` (ESC/POS por `bridge.imprimir({ buffer })` o HTML + `window.print`).
+>
+> **Formato vigente (80 mm)**: todos los tickets de la app (ingreso, reimpresion, salida, salida con mensualidad, recibo de pago, arqueo parcial, factura y cierres) comparten una sola base (`lib/print/ticketBase.ts`): rollo termico de 80 mm, area imprimible de 72 mm / 576 dots, 48 columnas Font A, logo easypunto en encabezado y pie, **sin QR**. El tiquete se construye como lista de lineas (`lib/print/tiqueteLineas.ts`) y la misma lista alimenta ESC/POS (`escposBuilder.build`) y HTML (`fallbackBrowser.renderTiqueteHtml`). Las secciones 3 y 4 de este documento describian el diseno anterior (logo del cache `documentos` y QR) y quedan solo como historia.
 
 ## 1. Call chain (F6.1 Principal.tsx → F6.2 → F5.1)
 
@@ -27,16 +29,11 @@
 │        fechaHora: new Date().toISOString(),                                │
 │      })                                                                       │
 │                                                                              │
-│   3. buffer = escposBuilder.build('entrada', payload)                       │
-│      → returns Buffer (DEC-SUC-08 byte stream)                             │
-│                                                                              │
-│   4. await bridge.imprimir({                                                │
-│        buffer: buffer.toString('base64'),                                  │
-│        timeoutMs: 500,                                                       │
-│      })                                                                       │
-│      → ok:true   → A-05 hook (backend concern, F6.2 documents payload)    │
-│      → ok:false  → fallbackBrowser.print('entrada', payload)               │
-│                  → DOM injection + window.print() (one shot)                │
+│   3. imprimirTiquete('entrada', payload, { ticketId })                      │
+│      → Electron: escposBuilder.build(...) + logo raster → base64           │
+│        → bridge.imprimir({ buffer, ticketId, cut })                        │
+│      → navegador: fallbackBrowser.renderTiqueteHtml(...) → window.print()  │
+│      → fallo: aviso visible con reintento (avisoImpresion.ejecutarImpresion)│
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -79,41 +76,27 @@ per `modelo_datos_er.mmd` lines 386-404. The SHA256 hash chain
 shape contract only. The operator UI shows a transient banner until
 the endpoint lands.
 
-## 3. `electron-store` documents cache contract
+## 3. `electron-store` documents cache contract (historico)
 
-Per `design.md` §"A-01 integration: fetch `documentos` for logo + póliza
-RC" and the spec scenario "Logo + Póliza RC MUST come from `documentos`":
+El tiquete ya no imprime el logo del cache `documentos`: la marca es el logo easypunto
+(`lib/print/marcaTicket.ts`), en encabezado y pie. `documentos` solo alimenta la
+`polizaRC` (tipo `certificado`) cuando el llamador usa `buildEntradaPayload()`.
 
-| Field | Value |
-|-------|-------|
-| Cache key | `parkos.documents.v1` |
-| TTL | 24 h |
-| Refresh trigger | TTL expiry OR cache miss |
-| Source | `GET /documentos?uuid_sucursal={X}&tipo=logo` and `tipo=certificado` |
-| Strategy | `Promise.all([logo, certificado])` on cold cache; sequential reads NOT required |
-| Failure mode | Empty array → `logoDataUrl = ''` → builder renders `▢` placeholder (DEC-SUC-08) |
+## 4. QR (retirado)
 
-The builder is PURE (F5.2 R4). It NEVER hits the `documentos` ER or
-the cache. The caller (F6.1) is responsible for hydration.
-
-## 4. ABIERTO-01 QR content
-
-Default content (per ABIERTO-01): `parkos://ingreso/<ingreso.uuid>?placa=<ingreso.placa>`.
-
-The QR rasterizer is the CALLER's responsibility — production callers
-use a `qrcode` library to produce `data:image/png;base64,...`. The
-builder accepts the resulting data-URL string verbatim.
-
-`buildEntradaPayload()` ships a deterministic base64 sentinel for unit
-tests; production callers MUST overwrite the `qrDataUrl` value before
-calling `escposBuilder.build('entrada', payload)`.
+El tiquete de entrada no lleva QR y el payload ya no tiene `qrDataUrl` ni `logoDataUrl`.
+Antecedentes (verificados con `rg` sobre `apps/` y `backend/`): el QR nunca se leia en
+ninguna parte (no hay escaner, ni busqueda por folio a partir de un QR, ni dependencia
+`qrcode`); en produccion `printBuilder` pasaba `qrDataUrl: ''`, asi que ESC/POS imprimia una
+linea literal `;QR:` y el HTML una `<img alt="QR ingreso">` vacia. La salida se identifica
+por placa / consecutivo / folio.
 
 ## 5. Mensualidad handling
 
 `buildEntradaPayload()` derives `esMensualidad` from
 `ingreso.uuid_subscripcion_cliente IS NOT NULL` (DEC-SUC-21 — `tipo_entrada`
 MUST NOT be persisted as a column on `ingreso`). The builder emits a
-bold `MENSUALIDAD` tag under the sello when `esMensualidad === true`.
+bold `Tipo: MENSUALIDAD` / `Tipo: ROTACIÓN` line under the sello (siempre explicita).
 
 **Caller side**: no action required. The factory handles the boolean
 transparently.
@@ -132,7 +115,7 @@ separate ER migration (`modelo_datos_er.mmd` change) and NOT F6.2 scope.
 |------|-------|--------------|
 | `escpos_payload_missing_field` | `EscposPayloadMissingFieldError` | Bubble to operator UI; surface the field path from `error.issues` |
 | `escpos_invalid_tipo` | `EscposInvalidTipoError` | Bubble to caller; F6.2 inherits from F5.2 |
-| `bridge_imprimir_failure` | Typed result `{ok:false, error:'printer_offline' \| 'printer_disconnected' \| 'invalid_payload', queueId?}` | Fallback to `fallbackBrowser.print('entrada', payload)`; UI shows transient banner |
+| `bridge_imprimir_failure` | Typed result `{ok:false, error:'printer_offline' \| 'printer_disconnected' \| 'invalid_payload', queueId?}` | `imprimirTiquete` devuelve `{ ok: false }` y `ejecutarImpresion` muestra el aviso con reintento |
 
 ## 8. Out of scope (F6.2)
 
@@ -146,6 +129,8 @@ separate ER migration (`modelo_datos_er.mmd` change) and NOT F6.2 scope.
 | File | Role |
 |------|------|
 | `apps/electron-sucursal/src/lib/print/escposTemplates.ts` | `EntradaPayload`, `TiqueteEntradaCampos`, `buildEntradaPayload()` |
-| `apps/electron-sucursal/src/lib/print/escposBuilder.ts` | `build('entrada', payload)` → Buffer |
-| `apps/electron-sucursal/src/lib/print/fallbackBrowser.ts` | `print('entrada', payload)` → DOM + window.print() |
+| `apps/electron-sucursal/src/lib/print/tiqueteLineas.ts` | `construirEntrada(payload)` → lineas 80 mm (fuente unica de ESC/POS y HTML) |
+| `apps/electron-sucursal/src/lib/print/escposBuilder.ts` | `build('entrada', payload, marca?)` → Buffer (validacion Zod + ESC/POS 80 mm) |
+| `apps/electron-sucursal/src/lib/print/fallbackBrowser.ts` | `renderTiqueteHtml` / `print('entrada', payload)` → HTML 80 mm + window.print() |
+| `apps/electron-sucursal/src/lib/print/tiquetePrint.ts` | `imprimirTiquete(tipo, payload, { ticketId })`: ruta unica por canal |
 | `apps/electron-sucursal/src/renderer/i18n/locales/operacion.json` | `tiquete_entrada_titulo`, `ingreso_registrado_exitoso`, `ingreso_observaciones_forzado` |
