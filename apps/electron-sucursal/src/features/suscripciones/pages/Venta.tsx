@@ -67,6 +67,7 @@ import { desglosarIvaIncluido } from '../lib/ivaIncluido';
 import { useTiposVehiculo } from '../../catalogos/hooks/useTiposVehiculo';
 import { feWarningMessage } from '../../facturacion/lib/feEstado';
 import { hoyBogotaISO } from '../lib/fechaInicio';
+import { VigenciaResumen } from '../components/VigenciaResumen';
 import { buildClienteVentaPayload } from '../lib/clienteVentaPayload';
 import { validarIdentificacion } from '../../../lib/validation/identificacion';
 import { validarNitModulo11 } from '../../../lib/validation/nit';
@@ -1041,6 +1042,12 @@ export function Venta({
               monto: formatCopDecimal(totalPlan),
             })}
           </p>
+          {selectedPlan && (
+            <VigenciaResumen
+              fechaInicio={state.fecha_inicio_cobertura ?? hoyBogotaISO()}
+              duracionDias={selectedPlan.duracion_dias}
+            />
+          )}
           {desgloseIva !== null && ivaVigente.porcentaje !== null && (
             <p
               className="text-sm text-muted-foreground"
