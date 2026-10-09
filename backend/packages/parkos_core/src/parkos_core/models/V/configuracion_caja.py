@@ -11,9 +11,13 @@ Explicit ER exception (DEC-ADM-12), same shape as its two siblings
 validated at the Pydantic edge, not here), ``denominaciones_permitidas``
 (JSONB array of ints, UI-validated).
 
-BR1 (plan.md HU-F13.3): ``base_inicial_sugerida`` is a reference value the
-sucursal UI pre-fills when opening an arqueo. It never replaces
-``sesion.valor_inicial_efectivo`` / ``valor_inicial_datafono`` (untouched).
+``base_inicial_sugerida`` is the base de caja every shift of the branch opens
+with (the operator does not type it). ``POST /caja-sesion/sesiones`` resolves it
+server-side (branch override, then global default) and records it in
+``sesion.valor_inicial_efectivo`` -- the column stays the source of truth for
+each shift, so changing the parameter never alters a shift already open. The
+row is cloud-authored and travels ``cloud_to_branch`` through the sync catalog
+(migration 0099). ``valor_inicial_datafono`` always starts at 0.
 
 BR2: the descuadre alert threshold already lives in
 ``configuracion_tolerancias.tolerancia_efectivo`` / ``tolerancia_datafono``

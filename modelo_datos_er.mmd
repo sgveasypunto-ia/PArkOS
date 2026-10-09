@@ -451,8 +451,8 @@
         %% [V] Configuración operativa de caja por sede: base inicial sugerida, redondeo, denominaciones permitidas; close+insert para cambios de política (migración 0066)
         %% Business
         uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
-        uuid uuid_sucursal FK "sede dueña de la configuración"
-        decimal base_inicial_sugerida "monto sugerido para apertura de turno (en COP)"
+        uuid uuid_sucursal FK "UK01 (uuid_sucursal, vigente_desde) - NULL = default global; valor = override por sucursal"
+        decimal base_inicial_sugerida "base de caja con la que abre cada turno de la sede (en COP); el operador no la digita"
         string redondeo "política de redondeo: ninguno | centena | decena"
         json denominaciones_permitidas "denominaciones de billetes/monedas aceptadas (lista de enteros en COP)"
         %% Audit
@@ -1184,6 +1184,7 @@
     sucursal ||--o{ resolucion_facturacion : "resolución DIAN propia"
     sucursal ||--o{ configuracion_tolerancias : "override individual"
     sucursal ||--o{ configuracion_seguridad : "override individual"
+    sucursal ||--o{ configuracion_caja : "override individual"
     sucursal ||--o{ cantidad_vehiculos_sucursal : "cupo"
     tipos_vehiculo ||--o{ cantidad_vehiculos_sucursal : "tipo"
 

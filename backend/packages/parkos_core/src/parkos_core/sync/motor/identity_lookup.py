@@ -228,6 +228,14 @@ async def _resolve_generic(
     return (await session.execute(stmt)).scalars().first()
 
 
+async def _resolve_configuracion_caja(
+    session: AsyncSession, payload: dict[str, Any]
+) -> Any | None:
+    from ...models.V.configuracion_caja import ConfiguracionCaja
+
+    return await _resolve_nullable_uuid_sucursal_scope(ConfiguracionCaja, session, payload)
+
+
 #: table name -> resolver, for the entries needing SPECIAL handling (SQL
 #: functional-index normalization, or a NULL natural-key value that is
 #: itself a meaningful identity). Every other ``natural_key``-declaring
@@ -240,6 +248,7 @@ _RESOLVERS: dict[str, Any] = {
     "vehiculos": _resolve_vehiculos,
     "configuracion_tolerancias": _resolve_configuracion_tolerancias,
     "configuracion_seguridad": _resolve_configuracion_seguridad,
+    "configuracion_caja": _resolve_configuracion_caja,
 }
 
 
