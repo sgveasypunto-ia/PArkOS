@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useForm } from 'react-hook-form';
+import { Controller, useForm } from 'react-hook-form';
+import { useTranslation } from 'react-i18next';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -22,6 +23,7 @@ interface UsuarioFormProps {
 }
 
 export function UsuarioForm({ usuario }: UsuarioFormProps) {
+  const { t } = useTranslation();
   const { mutate } = useSWRConfig();
   const navigate = useNavigate();
 
@@ -33,6 +35,7 @@ export function UsuarioForm({ usuario }: UsuarioFormProps) {
   const {
     register,
     handleSubmit,
+    control,
     formState: { errors, isSubmitting },
   } = useForm<UsuarioUpdate>({
     resolver: zodResolver(usuarioUpdateSchema),
@@ -114,8 +117,26 @@ export function UsuarioForm({ usuario }: UsuarioFormProps) {
       </div>
 
       <div>
-        <Label htmlFor="rol">Rol</Label>
-        <Input id="rol" {...register('rol')} />
+        <Label htmlFor="rol">{t('admin.rol', 'Rol')}</Label>
+        <Controller
+          control={control}
+          name="rol"
+          render={({ field }) => (
+            <select
+              id="rol"
+              {...field}
+              value={field.value ?? 'operador'}
+              data-testid="usuario-form-rol"
+              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <option value="operador">{t('admin.rol.operador', 'Operador de sucursal')}</option>
+              <option value="admin">{t('admin.rol.admin', 'Administrador')}</option>
+            </select>
+          )}
+        />
+        {errors.rol && (
+          <p className="text-sm text-red-600 mt-1">{errors.rol.message}</p>
+        )}
       </div>
 
       <div className="flex items-center gap-3">

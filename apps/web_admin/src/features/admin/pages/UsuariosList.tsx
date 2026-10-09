@@ -39,6 +39,7 @@ import { useSucursalOptions } from '@/features/sucursales/hooks/useSucursalesDir
 
 import { AdminUsuarioTable } from '../components/AdminUsuarioTable';
 import { AdminUsuarioSucursalesManager } from '../components/AdminUsuarioSucursalesManager';
+import { SucursalFilterCombobox } from '../components/SucursalFilterCombobox';
 import {
   ESTADOS,
   ROLES,
@@ -149,22 +150,23 @@ export default function UsuariosList(): JSX.Element {
           </select>
         </label>
 
-        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-          {t('gestionUsuarios.filtros.sucursalLabel', 'Sucursal')}
-          <select
-            data-testid="admin-filter-sucursal"
+        <div data-testid="admin-filter-sucursal-wrap">
+          <SucursalFilterCombobox
+            options={branchDirectory.options.map((s) => ({
+              uuid: s.uuid,
+              nombre: s.nombre,
+            }))}
             value={filtros.sucursal}
-            onChange={(e) => setFiltros((f) => ({ ...f, sucursal: e.target.value }))}
-            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            <option value="">{t('gestionUsuarios.filtros.todas', 'Todas')}</option>
-            {branchDirectory.options.map((s) => (
-              <option key={s.uuid} value={s.uuid}>
-                {s.nombre ?? s.uuid}
-              </option>
-            ))}
-          </select>
-        </label>
+            onChange={(uuid) => setFiltros((f) => ({ ...f, sucursal: uuid }))}
+            label={t('gestionUsuarios.filtros.sucursalLabel', 'Sucursal')}
+            placeholder={t(
+              'gestionUsuarios.filtros.sucursalCombobox.search',
+              'Buscar por nombre, prefijo o UUID…',
+            )}
+            allLabel={t('gestionUsuarios.filtros.todas', 'Todas')}
+            testId="admin-filter-sucursal"
+          />
+        </div>
 
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
           {t('gestionUsuarios.filtros.estadoLabel', 'Estado')}
