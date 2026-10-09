@@ -142,6 +142,9 @@
     "errorCierreDiaNoAceptaSesion": "Cierre diario ya registrado para hoy — consulte el reporte.",
     "errorPermisoInsuficiente": "No tiene permiso para cerrar esta sucursal — contacte al administrador del sistema.",
     "retry": "Reintentar",
+    "sesionesAbiertasUna": "Hay {{count}} sesión abierta. Ciérrela antes de hacer el cierre diario.",
+    "sesionesAbiertasVarias": "Hay {{count}} sesiones abiertas. Ciérrelas antes de hacer el cierre diario.",
+    "totalSesionesAbiertas": "{{abiertas}} abiertas de {{total}} sesiones",
     "tabla": {
       "caption": "Sesiones del día",
       "cajero": "Cajero",
