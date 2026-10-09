@@ -148,6 +148,7 @@
     "tabla": {
       "caption": "Sesiones del día",
       "cajero": "Cajero",
+      "apertura": "Apertura",
       "base": "Base",
       "esperado": "Esperado",
       "reportado": "Reportado",

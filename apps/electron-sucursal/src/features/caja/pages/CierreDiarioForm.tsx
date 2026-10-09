@@ -161,8 +161,8 @@ export function CierreDiarioForm(props: {
                   })}
                 </th>
                 <th scope="col" className="px-3 py-2 text-left">
-                  {t('caja:cierreDiario.tabla.base', {
-                    defaultValue: 'Base',
+                  {t('caja:cierreDiario.tabla.apertura', {
+                    defaultValue: 'Apertura',
                   })}
                 </th>
                 <th scope="col" className="px-3 py-2 text-right">
