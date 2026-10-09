@@ -91,6 +91,9 @@ export const VentaSuscripcionCreateSchema = z
         ...ventaCreateBase,
         cobrar_ahora: z.literal(true),
         medio_pago: z.enum(['efectivo', 'datafono']),
+        // Voucher del datáfono (backend `referencia`); obligatorio allá
+        // cuando `medio_pago='datafono'` (400 `voucher_requerido`).
+        referencia: z.string().trim().min(1).max(255).optional(),
         emitir_factura_electronica: z.boolean().optional(),
       })
       .strict(),
