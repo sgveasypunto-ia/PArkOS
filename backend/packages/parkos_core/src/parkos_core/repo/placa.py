@@ -30,7 +30,6 @@ PR not in scope of this bug-remediation.
 """
 from __future__ import annotations
 
-import re
 import uuid as uuid_lib
 
 from sqlalchemy import select
@@ -38,10 +37,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.V.tipos_vehiculo import TiposVehiculo
 
-# Module-level constants (A-03 / KD-V2). Future cat-tabla swap is a
-# one-file edit.
-FORMATO_AUTO = re.compile(r"^[A-Z]{3}[0-9]{3}$")  # ABC123
-FORMATO_MOTO = re.compile(r"^[A-Z]{3}[0-9]{2}[A-Z]$")  # ABC12D
+# Module-level constants (A-03 / KD-V2). The single definition lives in
+# ``placa_formato`` (pure, shared with the request schemas); re-exported here
+# so existing imports keep working.
+from .placa_formato import FORMATO_AUTO, FORMATO_MOTO
 
 
 async def detectar_tipo_vehiculo(
@@ -71,9 +70,9 @@ async def detectar_tipo_vehiculo(
     """
     if placa is None:
         return None
-    if FORMATO_AUTO.match(placa):
+    if FORMATO_AUTO.fullmatch(placa):
         tipo_nombre = "carro"
-    elif FORMATO_MOTO.match(placa):
+    elif FORMATO_MOTO.fullmatch(placa):
         tipo_nombre = "moto"
     else:
         return None

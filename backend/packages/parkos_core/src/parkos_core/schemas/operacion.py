@@ -45,6 +45,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
+from ._placa import PlacaVehiculo
 from .common import FilterBase, ReadListBase, _Base
 
 
@@ -443,7 +444,7 @@ class IngresoCreateForzado(_Base):
     # uuid_sucursal defaults to ctx.sucursal_uuid in the handler
     # (KD-3 chain); the field is Optional here.
     uuid_sucursal: uuid_lib.UUID | None = None
-    placa: str | None = None
+    placa: PlacaVehiculo | None = None
     # Server overwrites via V5 (regex-derived UUID wins over client value).
     uuid_tipo_vehiculo: uuid_lib.UUID | None = None
     uuid_subscripcion_cliente: uuid_lib.UUID | None = None
@@ -569,7 +570,7 @@ class SalidaCreateForzado(_Base):
     """
 
     uuid_ingreso: uuid_lib.UUID         # REQUIRED -- ingreso to close
-    placa: str | None = None            # OPTIONAL -- V3 confirmation
+    placa: PlacaVehiculo | None = None  # OPTIONAL -- V3 confirmation
     observaciones: str | None = None    # OPTIONAL -- KD-FORZADO-01 prefix
     forzado: bool = False               # OPTIONAL -- bypass V2/V5
 

@@ -427,18 +427,18 @@ class TestVehiculos:
         assert c.placa == "ABC123"
         assert c.uuid_tipo_vehiculo == TIPO_VEHICULO_UUID
 
-    def test_create_max_length_placa(self) -> None:
-        """REQ-OP-06: international plates up to 16 chars."""
-        placa = "A" * 16
-        c = VehiculosCreate(placa=placa, uuid_tipo_vehiculo=TIPO_VEHICULO_UUID)
-        assert len(c.placa) == 16
+    def test_create_rejects_16_char_placa(self) -> None:
+        """Defecto validar-placa-api: ya no se admite el rango 1-16 de REQ-OP-06;
+        la placa sigue el formato auto/moto del front (``PlacaVehiculo``)."""
+        with pytest.raises(ValidationError):
+            VehiculosCreate(placa="A" * 16, uuid_tipo_vehiculo=TIPO_VEHICULO_UUID)
 
     def test_create_rejects_empty_placa(self) -> None:
         with pytest.raises(ValidationError):
             VehiculosCreate(placa="", uuid_tipo_vehiculo=TIPO_VEHICULO_UUID)
 
     def test_create_rejects_long_placa(self) -> None:
-        """REQ-OP-06: 17+ chars must fail (max_length=16)."""
+        """17+ chars must fail (formato auto/moto)."""
         with pytest.raises(ValidationError):
             VehiculosCreate(placa="X" * 17, uuid_tipo_vehiculo=TIPO_VEHICULO_UUID)
 
@@ -456,7 +456,7 @@ class TestVehiculos:
         assert u.placa == "XYZ789"
 
     def test_update_rejects_long_placa(self) -> None:
-        """Update shape carries the same constraint."""
+        """Update shape carries the same constraint (formato auto/moto)."""
         with pytest.raises(ValidationError):
             VehiculosUpdate(placa="X" * 17, uuid_tipo_vehiculo=TIPO_VEHICULO_UUID)
 
