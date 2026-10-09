@@ -40,7 +40,7 @@ export function CobradoEnTurno({
       className={className}
     >
       <div className="flex items-center justify-between">
-        <span className="text-muted-foreground/90 text-sm">
+        <span className="text-muted-foreground text-sm">
           {t('miTurno.cobrado.efectivo')}
         </span>
         <span

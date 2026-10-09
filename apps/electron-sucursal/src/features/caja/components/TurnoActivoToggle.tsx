@@ -186,7 +186,7 @@ function ResumenTurno({
       data-testid="turno-activo-resumen"
       className="mt-3 border-t border-border/40 pt-3"
     >
-      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
+      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
         {t('caja:dashboard.turnoActivoResumenTitulo', {
           defaultValue: 'Resumen del turno',
         })}
@@ -200,7 +200,7 @@ function ResumenTurno({
           data-testid="turno-activo-resumen-row-ingresos"
           className="flex items-center justify-between py-1.5"
         >
-          <span className="text-muted-foreground/90 text-sm">
+          <span className="text-muted-foreground text-sm">
             {t('operacion:miTurno.kpis.ingresos', {
               defaultValue: 'Ingresos en mi turno',
             })}
@@ -213,7 +213,7 @@ function ResumenTurno({
           data-testid="turno-activo-resumen-row-salidas"
           className="flex items-center justify-between py-1.5"
         >
-          <span className="text-muted-foreground/90 text-sm">
+          <span className="text-muted-foreground text-sm">
             {t('operacion:miTurno.kpis.salidas', {
               defaultValue: 'Salidas en mi turno',
             })}
@@ -226,7 +226,7 @@ function ResumenTurno({
           data-testid="turno-activo-resumen-row-cupos-libres"
           className="flex items-center justify-between py-1.5"
         >
-          <span className="text-muted-foreground/90 text-sm">
+          <span className="text-muted-foreground text-sm">
             {t('operacion:miTurno.kpis.cuposLibres', {
               defaultValue: 'Cupos libres en la sucursal',
             })}

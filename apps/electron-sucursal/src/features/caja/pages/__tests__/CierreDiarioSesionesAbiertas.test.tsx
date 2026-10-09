@@ -109,4 +109,18 @@ describe('CierreDiarioForm — sesiones abiertas (Caja bug 4)', () => {
     expect(filas[0].querySelector('span')?.className).toContain('bg-warning');
     expect(filas[1].querySelector('span')?.className).toContain('bg-success');
   });
+
+  it('el encabezado de la columna de hora dice "Apertura", no "Base"', () => {
+    render(<Host sesiones={[ABIERTA]} reportado={0} />);
+    const encabezados = screen
+      .getAllByRole('columnheader')
+      .map((th) => th.textContent?.trim());
+    expect(encabezados).toContain('Apertura');
+    expect(encabezados).not.toContain('Base');
+    // La celda de esa columna muestra una hora, no un monto.
+    const celdas = screen
+      .getByTestId('cierre-diario-sesion-row')
+      .querySelectorAll('td');
+    expect(celdas[1]?.textContent).not.toMatch(/\$/);
+  });
 });
