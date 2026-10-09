@@ -50,6 +50,7 @@ import {
   useVentaSuscripcion,
   VentaSuscripcionDuplicatePlateError,
   VentaSuscripcionTipoIncompatibleError,
+  VentaSuscripcionValidationError,
 } from './useVentaSuscripcion';
 import { useAuthStore } from '@parkos/ui-kit/store';
 
@@ -210,5 +211,67 @@ describe('useVentaSuscripcion — REQ-OPS-177 + REQ-OPS-179', () => {
 
     expect(useAuthStore.getState().clear).toHaveBeenCalledTimes(1);
     expect(dispatched).toContain('parkos:auth:cleared');
+  });
+
+  describe('422 con cualquier forma de detail (defecto 5.13)', () => {
+    async function disparar422(body: string): Promise<unknown> {
+      const { ParkosHttpError } = await import('@parkos/ui-kit/fetch');
+      mockFetch.mockRejectedValueOnce(
+        new ParkosHttpError(422, body, '/api/v1/clientes/venta-suscripcion'),
+      );
+      const { result } = renderHook(() => useVentaSuscripcion());
+      let caught: unknown;
+      await act(async () => {
+        try {
+          await result.current.trigger(inputBase);
+        } catch (e) {
+          caught = e;
+        }
+      });
+      return caught;
+    }
+
+    it('detail string -> VentaSuscripcionValidationError con ese mensaje', async () => {
+      const caught = await disparar422(JSON.stringify({ detail: 'El vehículo ya existe' }));
+      expect(caught).toBeInstanceOf(VentaSuscripcionValidationError);
+      expect((caught as VentaSuscripcionValidationError).mensaje).toBe('El vehículo ya existe');
+    });
+
+    it('detail lista Pydantic -> une los msg con su campo', async () => {
+      const caught = await disparar422(
+        JSON.stringify({
+          detail: [
+            { loc: ['body', 'placas', 0], msg: 'placa inválida', type: 'value_error' },
+            { loc: ['body', 'cliente', 'nombre'], msg: 'campo requerido', type: 'missing' },
+          ],
+        }),
+      );
+      expect(caught).toBeInstanceOf(VentaSuscripcionValidationError);
+      const msg = (caught as VentaSuscripcionValidationError).mensaje;
+      expect(msg).toContain('placa inválida');
+      expect(msg).toContain('campo requerido');
+    });
+
+    it('detail objeto con código desconocido y message -> usa message', async () => {
+      const caught = await disparar422(
+        JSON.stringify({ detail: { error: 'vehiculo_existente', message: 'La placa ABC123 ya existe' } }),
+      );
+      expect(caught).toBeInstanceOf(VentaSuscripcionValidationError);
+      expect((caught as VentaSuscripcionValidationError).mensaje).toBe('La placa ABC123 ya existe');
+    });
+
+    it('detail objeto solo con código desconocido -> usa el código', async () => {
+      const caught = await disparar422(
+        JSON.stringify({ detail: { error: 'plan_duracion_dias_invalido' } }),
+      );
+      expect(caught).toBeInstanceOf(VentaSuscripcionValidationError);
+      expect((caught as VentaSuscripcionValidationError).mensaje).toBe('plan_duracion_dias_invalido');
+    });
+
+    it('cuerpo no JSON o vacío -> VentaSuscripcionValidationError con mensaje vacío', async () => {
+      const caught = await disparar422('<html>boom</html>');
+      expect(caught).toBeInstanceOf(VentaSuscripcionValidationError);
+      expect((caught as VentaSuscripcionValidationError).mensaje).toBe('');
+    });
   });
 });

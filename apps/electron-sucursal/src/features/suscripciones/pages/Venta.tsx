@@ -57,6 +57,7 @@ import {
   VentaSuscripcionDuplicatePlateError,
   VentaSuscripcionTipoIncompatibleError,
   VentaSuscripcionCantidadMaximaError,
+  VentaSuscripcionValidationError,
   type VentaSuscripcionCreate,
 } from '../hooks/useVentaSuscripcion';
 import { useTiposSubscripciones } from '../hooks/useTiposSubscripciones';
@@ -548,7 +549,8 @@ export function Venta({
       if (
         err instanceof VentaSuscripcionDuplicatePlateError ||
         err instanceof VentaSuscripcionTipoIncompatibleError ||
-        err instanceof VentaSuscripcionCantidadMaximaError
+        err instanceof VentaSuscripcionCantidadMaximaError ||
+        err instanceof VentaSuscripcionValidationError
       ) {
         // Revert to the placas step (paso 5) so the operator sees which
         // input was rejected without losing the rest of the wizard state.
@@ -557,6 +559,12 @@ export function Venta({
             ? t('suscripciones:venta.errors.suscripcion_duplicada_placa', {
                 defaultValue: 'Esta placa ya tiene una suscripción vigente',
               })
+            : err instanceof VentaSuscripcionValidationError
+              ? err.mensaje ||
+                t('suscripciones:venta.errors.validacion_servidor', {
+                  defaultValue:
+                    'El servidor rechazó los datos de la venta. Revisa las placas.',
+                })
             : err instanceof VentaSuscripcionTipoIncompatibleError
               ? t('suscripciones:venta.errors.tipo_vehiculo_incompatible', {
                   defaultValue:

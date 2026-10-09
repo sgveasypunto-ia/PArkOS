@@ -65,3 +65,63 @@ export class VentaSuscripcionCantidadMaximaError extends Error {
     this.max = max;
   }
 }
+
+/**
+ * 422 sin código tipado (defecto 5.13) — cualquier otra respuesta
+ * `422` de la venta: `detail` como string, lista de errores Pydantic
+ * (`[{loc, msg}]`) u objeto con un código/mensaje desconocido. Lleva el
+ * mensaje legible del servidor para mostrarlo junto al campo de placas;
+ * `mensaje` queda vacío si el cuerpo no trae nada utilizable (la UI usa
+ * entonces un texto genérico).
+ */
+export class VentaSuscripcionValidationError extends Error {
+  public readonly status = 422;
+  public readonly mensaje: string;
+  constructor(mensaje: string) {
+    super(mensaje || 'venta_suscripcion_422');
+    this.name = 'VentaSuscripcionValidationError';
+    this.mensaje = mensaje;
+  }
+}
+
+function nombreCampo(loc: unknown): string {
+  if (!Array.isArray(loc)) return '';
+  const partes = loc.filter((p) => p !== 'body' && p !== 'query');
+  return partes.map(String).join('.');
+}
+
+/**
+ * Convierte el `detail` de un 422 (FastAPI/Pydantic) a texto legible.
+ * Soporta string, lista de errores de validación y objeto (`message`,
+ * `msg`, `detail` o el código `error`). Devuelve '' si no hay nada útil.
+ */
+export function extraerMensajeDetail422(detail: unknown): string {
+  if (typeof detail === 'string') return detail.trim();
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (typeof item === 'string') return item.trim();
+        if (item && typeof item === 'object') {
+          const { msg, loc } = item as { msg?: unknown; loc?: unknown };
+          if (typeof msg === 'string' && msg) {
+            const campo = nombreCampo(loc);
+            return campo ? `${campo}: ${msg}` : msg;
+          }
+        }
+        return '';
+      })
+      .filter(Boolean)
+      .join('; ');
+  }
+  if (detail && typeof detail === 'object') {
+    const o = detail as Record<string, unknown>;
+    for (const clave of ['message', 'msg', 'mensaje']) {
+      const v = o[clave];
+      if (typeof v === 'string' && v.trim()) return v.trim();
+    }
+    if (o.detail !== undefined) return extraerMensajeDetail422(o.detail);
+    if (typeof o.error === 'string') return o.error;
+  }
+  return '';
+}
+
