@@ -89,6 +89,52 @@ function etiquetaFe(estado: string): string {
   }
 }
 
+/**
+ * Razon social para el ticket: sin caracteres de control (un ESC/GS en el
+ * nombre se ejecutaria como comando de la impresora) y con espacios colapsados.
+ */
+function sanearTexto(valor: string): string {
+  const sinControl = Array.from(valor, (c) => {
+    const code = c.charCodeAt(0);
+    return code < 0x20 || code === 0x7f ? ' ' : c;
+  }).join('');
+  return sinControl.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * `Empresa: <valor>` ajustado al ancho termico: parte en palabras, las lineas de
+ * continuacion llevan sangria de 2 y una palabra mas larga que la linea se corta.
+ */
+function lineasEmpresa(valor: string, cols: number): string[] {
+  const prefijo = 'Empresa: ';
+  const out: string[] = [];
+  let actual = prefijo;
+  let vacia = true;
+  for (let palabra of valor.split(' ')) {
+    while (true) {
+      const candidata = vacia ? actual + palabra : `${actual} ${palabra}`;
+      if (candidata.length <= cols) {
+        actual = candidata;
+        vacia = false;
+        break;
+      }
+      if (!vacia) {
+        out.push(actual);
+        actual = '  ';
+        vacia = true;
+        continue;
+      }
+      const espacio = cols - actual.length;
+      out.push(actual + palabra.slice(0, espacio));
+      palabra = palabra.slice(espacio);
+      actual = '  ';
+      if (palabra === '') break;
+    }
+  }
+  if (!vacia) out.push(actual);
+  return out;
+}
+
 /** The single document model. Pure: same input, same lines. */
 export function construirFactura(f: FacturaRead): FacturaLinea[] {
   const s = f.datos_sucursal;
@@ -132,6 +178,9 @@ export function construirFactura(f: FacturaRead): FacturaLinea[] {
     const v = f.datos_vehiculo;
     sep();
     if (v.placa) texto(`Placa: ${v.placa}`, { negrita: true });
+    // Cliente empresa dueño de la suscripcion: solo su razon social (sin NIT ni datos personales).
+    const empresaSusc = sanearTexto(v.empresa_suscripcion ?? '');
+    if (empresaSusc) for (const l of lineasEmpresa(empresaSusc, FACTURA_COLUMNAS)) texto(l);
     if (v.fecha_ingreso) texto(`Entrada: ${formatFechaCorta(v.fecha_ingreso)}`);
     if (v.fecha_salida) texto(`Salida: ${formatFechaCorta(v.fecha_salida)}`);
     if (v.minutos !== null && v.minutos !== undefined) texto(`Tiempo: ${tiempo(v.minutos)}`);

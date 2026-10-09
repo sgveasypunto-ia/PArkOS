@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  FACTURA_COLUMNAS,
   construirFactura,
   facturaAEscpos,
   facturaAHtml,
@@ -84,6 +85,59 @@ describe('construirFactura / facturaATexto', () => {
     const txt = norm(facturaATexto(construirFactura({ ...FACTURA_BASE, total: 100, subtotal: 100 })));
     expect(txt).not.toMatch(/IVA d/);
     expect(txt).toMatch(/TOTAL \$ ?100/);
+  });
+});
+
+describe('empresa dueña de la suscripcion (ticket de salida)', () => {
+  const conEmpresa = (empresa: string | null | undefined) => ({
+    ...FACTURA_MENSUALIDAD_CERO,
+    datos_vehiculo: {
+      ...(FACTURA_MENSUALIDAD_CERO.datos_vehiculo as NonNullable<
+        typeof FACTURA_MENSUALIDAD_CERO.datos_vehiculo
+      >),
+      ...(empresa === undefined ? {} : { empresa_suscripcion: empresa }),
+    },
+  });
+
+  it('empresa con suscripcion vigente: imprime la razon social junto a la placa', () => {
+    const txt = norm(facturaATexto(construirFactura(conEmpresa('Acme Parqueos SAS'))));
+    expect(txt).toContain('Empresa: Acme Parqueos SAS');
+    expect(txt.indexOf('Placa:')).toBeLessThan(txt.indexOf('Empresa:'));
+  });
+
+  it.each([[null], [undefined], ['   ']])(
+    'sin empresa (%j): conserva el ticket actual sin linea Empresa',
+    (valor) => {
+      const txt = norm(facturaATexto(construirFactura(conEmpresa(valor as string | null | undefined))));
+      expect(txt).not.toContain('Empresa:');
+      expect(txt).toContain('Placa:');
+    },
+  );
+
+  it('razon social larga: se ajusta al ancho termico sin cortar palabras ni perder texto', () => {
+    const largo = 'Inversiones y Representaciones Internacionales del Caribe Colombiano SAS';
+    const lineas = facturaATexto(construirFactura(conEmpresa(largo))).split('\n');
+    const i = lineas.findIndex((l) => l.startsWith('Empresa:'));
+    const bloque: string[] = [];
+    for (let k = i; k < lineas.length && (k === i || lineas[k]?.startsWith('  ')); k++) {
+      bloque.push(lineas[k] as string);
+    }
+    expect(bloque.length).toBeGreaterThan(1);
+    for (const l of bloque) expect(l.length).toBeLessThanOrEqual(FACTURA_COLUMNAS);
+    const unido = bloque.map((l) => l.trim()).join(' ').replace(/^Empresa: /, '');
+    expect(unido).toBe(largo);
+  });
+
+  it('sanea caracteres de control (no inyecta comandos ESC/POS) y escapa HTML', () => {
+    const malo = 'Acme\x1b@\x1dV\x00 <b>&Co';
+    const buf = facturaAEscpos(conEmpresa(malo));
+    const idx = buf.indexOf('Empresa: ');
+    const fin = buf.indexOf(0x0a, idx);
+    const linea = buf.subarray(idx, fin);
+    expect([...linea].every((b) => b >= 0x20 && b !== 0x7f)).toBe(true);
+    const html = facturaAHtml(conEmpresa(malo));
+    expect(html).toContain('&lt;b&gt;&amp;Co');
+    expect(html).not.toContain('<b>&Co');
   });
 });
 
