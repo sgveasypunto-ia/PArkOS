@@ -61,6 +61,8 @@ from ...models.V.impuestos import Impuestos
 from ...models.V.sucursal import Sucursal
 from ...repo.fe_emision import FeEmisionResultado
 from ...repo.nit_modulo11 import dv_esperado
+from ...repo.subscripcion_activa import resolver_empresa_suscripcion
+from ...runtime.tiempo import hoy_bogota
 from ...schemas.clientes import VentaSuscripcionCreate
 from ...schemas.facturacion import (
     FacturaCreate,
@@ -326,6 +328,12 @@ async def build_display_factura(
             fecha_ingreso=ingreso_row.fecha_ingreso,
             fecha_salida=salida_row.fecha_salida,
             minutos=minutos,
+            empresa_suscripcion=await resolver_empresa_suscripcion(
+                session,
+                placa=ingreso_row.placa,
+                uuid_sucursal=new_factura.uuid_sucursal,
+                as_of=hoy_bogota(salida_row.fecha_salida),
+            ),
         )
 
     # ---- 5) Cliente display (NULL for consumidor final) ----

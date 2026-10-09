@@ -715,6 +715,10 @@ class FacturaDisplayVehiculo(_Base):
     fecha_ingreso: datetime | None
     fecha_salida: datetime | None
     minutos: int | None  # server-computed wall-clock minutes
+    # Razon social de la empresa dueña de la suscripcion vigente de la placa
+    # (solo clientes empresa / NIT); None para persona natural, sin suscripcion
+    # o vencida. Campo opcional: no rompe a los consumidores existentes.
+    empresa_suscripcion: str | None = None
 
 
 class FacturaDisplayCliente(_Base):

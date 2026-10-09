@@ -92,6 +92,9 @@ const datosVehiculoSchema = z.object({
   fecha_ingreso: z.string().nullable(),
   fecha_salida: z.string().nullable(),
   minutos: z.number().int().nullable(),
+  // Razon social de la empresa dueña de la suscripcion vigente de la placa
+  // (solo clientes empresa). Opcional: backends anteriores no lo envian.
+  empresa_suscripcion: z.string().nullable().optional(),
 });
 
 const impuestoDisplaySchema = z.object({
