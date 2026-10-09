@@ -1,6 +1,11 @@
 /**
  * `<MiTurnoPanel />` — operator-facing per-turn widget (HU-F12.1).
  *
+ * NO MONTADO: ningún archivo de producción lo importa (sólo tests). El
+ * "Mi turno" visible es el popover `TurnoActivoToggle` del encabezado,
+ * que reutiliza `<CobradoEnTurno />`. Se conserva sin borrar porque aún
+ * lo referencian tests y el e2e `mi-turno.spec.ts`.
+ *
  * Además de las métricas operativas (ingresos, salidas, cupos libres),
  * muestra el dinero cobrado en efectivo durante el turno
  * (`total_cobrado_efectivo_cop`), de sólo lectura. El datáfono NO se
@@ -31,7 +36,6 @@
  */
 import { useTranslation } from 'react-i18next';
 
-import { formatCOP } from '../../caja/lib/format';
 import {
   Card,
   CardContent,
@@ -41,6 +45,8 @@ import {
 
 import { useMiTurno } from '../hooks/useMiTurno';
 import { useOcupacion } from '../hooks/useOcupacion';
+
+import { CobradoEnTurno } from './CobradoEnTurno';
 
 export interface MiTurnoPanelProps {
   /**
@@ -67,9 +73,6 @@ export function MiTurnoPanel({
   // Defensive `?? 0` keeps the type narrow in case the SWR shape drifts.
   const ingresos = data?.ingresos_count ?? 0;
   const salidas = data?.salidas_count ?? 0;
-  const efectivoCobrado =
-    isLoaded && data ? formatCOP(data.total_cobrado_efectivo_cop) : '—';
-  const cobradoConError = !isLoaded && error !== undefined;
 
   // Cupos libres = sum de `disponible` a través de los tipos
   // admin-configured (cupo_maximo > 0). Unconfigured tipos
@@ -139,29 +142,12 @@ export function MiTurnoPanel({
             </span>
           </li>
         </ul>
-        <section
-          role="region"
-          aria-label={t('miTurno.cobrado.regionLabel')}
-          data-testid="mi-turno-cobrado"
+        <CobradoEnTurno
+          data={data}
+          error={error}
+          isLoaded={isLoaded}
           className="mt-1 border-t border-border/40 px-0 pt-2.5"
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-muted-foreground/90 text-sm">
-              {t('miTurno.cobrado.efectivo')}
-            </span>
-            <span
-              className="font-mono text-xl font-semibold tabular-nums tracking-tight"
-              data-testid="mi-turno-cobrado-efectivo-value"
-            >
-              {efectivoCobrado}
-            </span>
-          </div>
-          {cobradoConError && (
-            <p role="alert" className="mt-1 text-xs text-destructive">
-              {t('miTurno.cobrado.error')}
-            </p>
-          )}
-        </section>
+        />
       </CardContent>
     </Card>
   );
