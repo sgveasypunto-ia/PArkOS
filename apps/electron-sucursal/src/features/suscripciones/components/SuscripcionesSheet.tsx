@@ -41,6 +41,7 @@ import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 
 import type { SubscripcionCupoDetalle } from '../api/cuposApi';
 import { useAgregarVehiculoSuscripcion } from '../hooks/useAgregarVehiculoSuscripcion';
+import { coincideBusqueda } from '../lib/busquedaSuscripcion';
 import { useBuscarSuscripcionPorIdentificacion } from '../hooks/useBuscarSuscripcionPorIdentificacion';
 import { useQuitarVehiculoSuscripcion } from '../hooks/useQuitarVehiculoSuscripcion';
 import { useSuscripcionesActivas } from '../hooks/useSuscripcionesActivas';
@@ -80,6 +81,9 @@ export function SuscripcionesSheet(): JSX.Element {
   const [renovarOrigen, setRenovarOrigen] = useState<'list' | 'cupos'>('list');
 
   const buscar = useBuscarSuscripcionPorIdentificacion();
+
+  // Defecto 7.5: el input filtra la lista por nombre O identificación.
+  const listaFiltrada = (data ?? []).filter((s) => coincideBusqueda(s.cliente, numeroIdentificacion));
   const agregar = useAgregarVehiculoSuscripcion();
   const quitar = useQuitarVehiculoSuscripcion();
 
@@ -156,6 +160,13 @@ export function SuscripcionesSheet(): JSX.Element {
     event.preventDefault();
     const trimmed = numeroIdentificacion.trim();
     if (!trimmed) return;
+    // Por nombre (o identificación parcial) la lista ya cargada decide:
+    // 1 coincidencia -> abre sus cupos; varias -> se elige en la lista.
+    if (listaFiltrada.length > 1) return;
+    if (listaFiltrada.length === 1) {
+      handleVerCupos(listaFiltrada[0]);
+      return;
+    }
     try {
       const found = await buscar.trigger(trimmed);
       if (found) {
@@ -287,11 +298,11 @@ export function SuscripcionesSheet(): JSX.Element {
                   value={numeroIdentificacion}
                   onChange={(e) => setNumeroIdentificacion(e.target.value)}
                   placeholder={t('suscripciones:sheet.buscarPlaceholder', {
-                    defaultValue: 'Número de identificación',
+                    defaultValue: 'Nombre o número de identificación',
                   })}
                   data-testid="suscripciones-buscar-input"
                   aria-label={t('suscripciones:sheet.buscarPlaceholder', {
-                    defaultValue: 'Número de identificación',
+                    defaultValue: 'Nombre o número de identificación',
                   })}
                 />
                 <Button
@@ -408,7 +419,7 @@ export function SuscripcionesSheet(): JSX.Element {
               )}
               {data && data.length > 0 && (
                 <ul className="space-y-2" data-testid="suscripciones-sheet-list">
-                  {data.map((s) => (
+                  {listaFiltrada.map((s) => (
                     <li key={s.uuid}>
                       <button
                         type="button"
