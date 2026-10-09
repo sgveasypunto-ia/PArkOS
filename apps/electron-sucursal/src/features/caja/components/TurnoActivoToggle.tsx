@@ -39,6 +39,7 @@ import { useTranslation } from 'react-i18next';
 
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 
+import { CobradoEnTurno } from '../../operacion/components/CobradoEnTurno';
 import { useMiTurno } from '../../operacion/hooks/useMiTurno';
 import { useOcupacion } from '../../operacion/hooks/useOcupacion';
 import type { SesionRead } from '../api/sesionActivaApi';
@@ -61,7 +62,8 @@ export function TurnoActivoToggle({
   // si el `<MiTurnoPanel />` sigue montado en otra ruta.
   const uuidSesion = sesion?.uuid ?? null;
   const uuidSucursal = sesion?.uuid_sucursal ?? null;
-  const { data: miTurnoData } = useMiTurno(uuidSesion);
+  const miTurno = useMiTurno(uuidSesion);
+  const miTurnoData = miTurno.data;
   const { data: ocupacionData } = useOcupacion(uuidSucursal);
 
   const ingresosTurno = miTurnoData.ingresos_count;
@@ -142,6 +144,12 @@ export function TurnoActivoToggle({
           ingresosTurno={ingresosTurno}
           salidasTurno={salidasTurno}
           cuposLibres={cuposLibres}
+        />
+        <CobradoEnTurno
+          data={miTurno.data}
+          error={miTurno.error}
+          isLoaded={miTurno.isLoaded}
+          className="mt-2 border-t border-border/40 pt-2.5"
         />
       </PopoverContent>
     </Popover>

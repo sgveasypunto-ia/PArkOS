@@ -166,3 +166,82 @@ describe('<TurnoActivoToggle /> — fix superposición sobre placa-card', () => 
     expect(trigger).toHaveAttribute('aria-expanded', 'true');
   });
 });
+
+describe('<TurnoActivoToggle /> — Cobrado en efectivo (resumen del turno)', () => {
+  async function abrir(): Promise<void> {
+    render(<TurnoActivoToggle sesion={baseSesion} />);
+    fireEvent.click(screen.getByTestId('turno-activo-toggle'));
+    await screen.findByTestId('turno-activo-toggle-details');
+  }
+
+  it('C1: muestra la region accesible con el efectivo cobrado en COP es-CO', async () => {
+    useMiTurnoMock.mockReturnValue({
+      ...MI_TURNO_OK,
+      data: { ...MI_TURNO_OK.data, total_cobrado_efectivo_cop: 50000 },
+      isLoaded: true,
+    });
+    useOcupacionMock.mockReturnValue(OCUPACION_OK);
+    await abrir();
+
+    const region = screen.getByRole('region', { name: 'Dinero cobrado en mi turno' });
+    expect(region).toHaveTextContent('Cobrado en efectivo');
+    const valor = screen.getByTestId('mi-turno-cobrado-efectivo-value');
+    expect(valor.textContent).toMatch(/\$/);
+    expect(valor.textContent).toMatch(/50\.000/);
+  });
+
+  it('C2: efectivo real en cero renderiza $ 0', async () => {
+    useMiTurnoMock.mockReturnValue({ ...MI_TURNO_OK, isLoaded: true });
+    useOcupacionMock.mockReturnValue(OCUPACION_OK);
+    await abrir();
+    expect(screen.getByTestId('mi-turno-cobrado-efectivo-value').textContent).toMatch(/\$\s?0$/);
+  });
+
+  it('C3: sin datos cargados muestra em dash, nunca un cero falso', async () => {
+    useMiTurnoMock.mockReturnValue({ ...MI_TURNO_OK, isLoaded: false });
+    useOcupacionMock.mockReturnValue(OCUPACION_OK);
+    await abrir();
+    expect(screen.getByTestId('mi-turno-cobrado-efectivo-value').textContent).toBe('—');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('C4: error sin datos previos muestra em dash y alerta accesible', async () => {
+    useMiTurnoMock.mockReturnValue({
+      ...MI_TURNO_OK,
+      error: new Error('server error'),
+      isLoaded: false,
+    });
+    useOcupacionMock.mockReturnValue(OCUPACION_OK);
+    await abrir();
+    expect(screen.getByTestId('mi-turno-cobrado-efectivo-value').textContent).toBe('—');
+    expect(screen.getByRole('alert')).toHaveTextContent('No se pudo cargar el dinero cobrado');
+  });
+
+  it('C5: con datos previos y error de refresco conserva el valor sin alerta', async () => {
+    useMiTurnoMock.mockReturnValue({
+      ...MI_TURNO_OK,
+      data: { ...MI_TURNO_OK.data, total_cobrado_efectivo_cop: 50000 },
+      error: new Error('x'),
+      isLoaded: true,
+    });
+    useOcupacionMock.mockReturnValue(OCUPACION_OK);
+    await abrir();
+    expect(screen.getByTestId('mi-turno-cobrado-efectivo-value').textContent).toMatch(/50\.000/);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('C6: no muestra datafono ni total general', async () => {
+    useMiTurnoMock.mockReturnValue({
+      ...MI_TURNO_OK,
+      data: { ...MI_TURNO_OK.data, total_cobrado_efectivo_cop: 50000, total_cobrado_datafono_cop: 30000 },
+      isLoaded: true,
+    });
+    useOcupacionMock.mockReturnValue(OCUPACION_OK);
+    await abrir();
+    const details = screen.getByTestId('turno-activo-toggle-details');
+    expect(details.textContent).not.toMatch(/30\.000/);
+    expect(screen.queryByTestId('mi-turno-cobrado-datafono-value')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('mi-turno-cobrado-total-value')).not.toBeInTheDocument();
+    expect(screen.getByTestId('turno-activo-resumen-row-ingresos')).toHaveTextContent('5');
+  });
+});
