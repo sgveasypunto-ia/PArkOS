@@ -122,6 +122,17 @@ describe('<TurnoActivoToggle /> — fix superposición sobre placa-card', () => 
     expect(screen.getByTestId('turno-activo-resumen-cupos-libres-value')).toHaveTextContent('9');
   });
 
+  it('T4b: el panel explica que la base la configura la administración y a quién consultar', async () => {
+    setupHooks();
+    render(<TurnoActivoToggle sesion={baseSesion} />);
+    fireEvent.click(screen.getByTestId('turno-activo-toggle'));
+    await screen.findByTestId('turno-activo-toggle-details');
+
+    const nota = screen.getByTestId('turno-activo-details-base-nota');
+    expect(nota).toHaveTextContent('configurada por administración');
+    expect(nota).toHaveTextContent('supervisor o el administrador del sistema');
+  });
+
   it('T5: click de nuevo en el trigger cierra el panel', async () => {
     setupHooks();
     render(<TurnoActivoToggle sesion={baseSesion} />);
