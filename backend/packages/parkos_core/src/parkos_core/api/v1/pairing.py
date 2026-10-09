@@ -73,6 +73,7 @@ from ...auth.tenancy import (
     require_branch_scope,
 )
 from ...auth.tokens import JWT_OVERLAP_HOURS
+from ...db.tenancy import suspend_tenant_context
 from ...models.A.pairing_tokens import PairingToken
 from ...models.A.revoked_sync_jwts import RevokedSyncJwt
 from ...repo.pairing import (
@@ -273,7 +274,20 @@ async def issue_pairing_token(
     )
     session.add(row)
     await session.commit()
-    await session.refresh(row)
+    # 2026-10-09: suspend the tenant context for the post-commit
+    # ``session.refresh`` so the do_orm_execute listener doesn't add
+    # ``WHERE uuid_sucursal = :ctx`` to the refresh SELECT. With the
+    # multi-branch scope fix above, the inserted row's
+    # ``uuid_sucursal`` can legitimately differ from the admin's
+    # ``X-Sucursal-Context`` (the row is bound to the body branch,
+    # the context is bound to the picker branch). The refresh SELECT
+    # against our own just-written row is in-process and carries no
+    # cross-tenant leak risk; this is the same pattern as
+    # ``empresa.py:1580`` and ``factura_display.py:205`` (see
+    # ``suspend_tenant_context``'s own docstring for the real defect
+    # this wraps).
+    with suspend_tenant_context():
+        await session.refresh(row)
 
     return PairingTokenIssueResponse(
         token=plaintext,
@@ -521,6 +535,15 @@ async def _load_pairing_token(
     DESC`` so the most recent partition row wins (the partition key
     changes daily; only the current-month partition typically has the
     live row).
+
+    2026-10-09: the do_orm_execute listener would auto-add
+    ``WHERE uuid_sucursal = :ctx`` to this SELECT, hiding rows that
+    are in a permitted branch other than the one in the active
+    ``X-Sucursal-Context`` header. Suspend the context so the PK
+    lookup is unfiltered; the caller (the per-endpoint scope check
+    that follows this load) is the single source of truth for the
+    "may the actor see this row" question. Same rationale as
+    :func:`extract_sucursales_permitidas_fresh`'s wrap.
     """
     stmt = (
         select(PairingToken)
@@ -528,7 +551,8 @@ async def _load_pairing_token(
         .order_by(PairingToken.fecha_retencion_hasta.desc())
         .limit(1)
     )
-    result = await session.execute(stmt)
+    with suspend_tenant_context():
+        result = await session.execute(stmt)
     return result.scalar_one_or_none()
 
 

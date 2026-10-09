@@ -241,6 +241,33 @@ async def extract_sucursales_permitidas_fresh(
     Index plan: the existing UK on ``usuarios_sucursal`` (uuid_usuario,
     uuid_sucursal, vigente_desde) covers the predicate. ~1ms per query.
     No in-memory cache needed at admin-UI request volumes.
+
+    Tenant listener caveat (2026-10-09 fix): the
+    :func:`install_tenant_event_listener` hook auto-adds
+    ``WHERE uuid_sucursal = :ctx`` to every SELECT that touches a table
+    carrying ``uuid_sucursal`` — and ``prod.usuarios_sucursal`` does.
+    When the caller already bound a tenant context (e.g. an admin
+    request with ``X-Sucursal-Context: B`` set in
+    :func:`auth.tenancy.get_tenant_ctx`), the listener would silently
+    filter this SELECT down to ``WHERE uuid_sucursal = B`` and the
+    function would return just ``[B]`` instead of the full permitted
+    set. Downstream code (``require_branch_scope``, every
+    ``BranchScope.permitidas`` consumer) would then reject the admin's
+    other permitted branches with spurious 403
+    ``tenant_scope_violation``. The fix is to suspend the tenant
+    ContextVar for the duration of THIS SELECT so the listener sees
+    ``ctx_uuid = None`` and short-circuits. This is safe — the function
+    is scope-defining (it tells you what the scope IS), so re-applying
+    the (now-stale) scope to read it would be circular.
+
+    All callers in the codebase expect the unfiltered result; the
+    function lives in the same module as the listener and the
+    ``suspend_tenant_context`` helper, so wrapping here is the single
+    point of truth. Tested end-to-end via
+    ``tests/integration/test_admin_usuarios_scope.py`` style flows
+    (an admin with 2+ rows in ``usuarios_sucursal`` issuing
+    cross-branch operations must succeed regardless of
+    ``X-Sucursal-Context``).
     """
     # Lazy import: keeps the import graph shallow so this module stays
     # importable without pulling the [V] model registry. The handler
@@ -252,7 +279,8 @@ async def extract_sucursales_permitidas_fresh(
         UsuariosSucursal.uuid_usuario == actor_uuid,
         UsuariosSucursal.vigente_hasta.is_(None),
     )
-    rows = (await session.execute(stmt)).scalars().all()
+    with suspend_tenant_context():
+        rows = (await session.execute(stmt)).scalars().all()
     return list(rows)
 
 

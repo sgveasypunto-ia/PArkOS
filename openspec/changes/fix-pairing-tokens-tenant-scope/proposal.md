@@ -33,6 +33,52 @@ gate del botón Revocar` is preserved where correct:
   `usuarios_sucursal` rows can issue/read/revoke a token for B while their picker
   sits on A.
 
+## Two follow-on listener-sabotage fixes (2026-10-09, same change set)
+
+After layering the `require_branch_scope` swap on top of `982209d8`, two more
+bugs surfaced under the same admin-multi-branch flow that the original fix
+intended to enable. Both are caused by the `do_orm_execute` listener in
+`db/tenancy.py:179-194` auto-adding `WHERE uuid_sucursal = :ctx` to every
+SELECT that touches a table carrying `uuid_sucursal` — the listener is correct
+for the *body* of business reads (it's how `/empresa/sucursal` and
+`/operacion/ocupacion` achieve single-tenant reads), but the pairing surface
+needs the SELECT to be scope-unfiltered because the explicit `scope.allows`
+check is the single source of truth for "may this actor see this row".
+
+### `db/tenancy.py:extract_sucursales_permitidas_fresh` — the scope-defining SELECT
+
+The function queries `prod.usuarios_sucursal` to read the admin's full
+permitted set. With a tenant context bound (any `admin-` request that
+arrived with `X-Sucursal-Context: B`), the listener would add
+`WHERE uuid_sucursal = B` to that SELECT, returning just B (or empty).
+`BranchScope.permitidas` was then `{B}` and the explicit `scope.allows(A)`
+check rejected A. The fix is to wrap the SELECT in
+`with suspend_tenant_context():` — the function's whole purpose is to read
+the full set; no caller would want the filtered result. This benefits all
+9 call sites of the function (admin_views, auditoria, reporteria,
+workflows_alerta, admin_usuarios, auth/tenancy itself) — none of them
+currently wrap their call.
+
+### `pairing.py:session.refresh` and `_load_pairing_token` — the new-code holes
+
+Two more SELECTs in `pairing.py` itself fall foul of the same listener:
+
+- **`session.refresh(row)` after `commit()`**: with the new code, the row is
+  bound to the body's branch (A) but the tenant context is the header's
+  branch (B). The refresh SELECT then filters by `WHERE uuid_sucursal = B`
+  and the row's PK doesn't satisfy it → `InvalidRequestError: Could not
+  refresh instance` (500). Wrap in `with suspend_tenant_context():` — same
+  pattern as `empresa.py:1580` and `_factura_display.py:205`.
+- **`_load_pairing_token`** (the PK lookup for GET and revoke): the listener
+  filters the SELECT by the active context, so a row in branch A is
+  invisible when the header is B. Wrap in
+  `with suspend_tenant_context():` so the explicit `scope.allows` check
+  is the single source of truth for the read.
+
+`revoked_sync_jwts` is NOT wrapped: it has no `uuid_sucursal` column, so the
+listener doesn't filter it. The earlier draft wrap was speculative and
+removed.
+
 Plus a small UX fix in `Pairing.tsx`: when the cached `pairingTokenUuid` resolves
 to a 404, evict the stale `localStorage` record so subsequent renders don't
 re-fire the 404 (the response is correct — the row really doesn't exist — but the
@@ -43,17 +89,30 @@ network panel and the per-row state stay clean).
 ### Backend — `backend/packages/parkos_core/src/parkos_core/api/v1/pairing.py`
 
 1. Import `BranchScope` and `require_branch_scope` from `...auth.tenancy`.
-2. Add `scope: BranchScope = Depends(require_branch_scope)` to all three
+2. Import `suspend_tenant_context` from `...db.tenancy`.
+3. Add `scope: BranchScope = Depends(require_branch_scope)` to all four
    endpoints (`issue_pairing_token`, `read_pairing_token`,
-   `revoke_pairing_token`).
-3. Replace each narrow check:
+   `revoke_pairing_token`, `revoke_branch_sync_token`).
+4. Replace each narrow check:
    - POST: `if payload.uuid_sucursal is not None and not scope.allows(payload.uuid_sucursal): raise 403`
    - GET: `if not scope.allows(row.uuid_sucursal): raise 403` (after the
      existing 404-not-found check; 403 vs 404 contract preserved so the public
      API behavior on truly-missing rows is unchanged).
    - revoke: same as GET.
-4. The `uuid_sucursal is None` issuance case (pre-branch) stays unrestricted, as
-   before.
+   - revoke-sync: `if not scope.allows(uuid_sucursal): raise 403` (branch is
+     in the URL path).
+5. Wrap `session.refresh(row)` in `with suspend_tenant_context():` (the
+   refresh needs to see our own just-written row regardless of tenant
+   context).
+6. Wrap the SELECT inside `_load_pairing_token` in
+   `with suspend_tenant_context():` (the explicit `scope.allows` check is
+   the single source of truth for the read).
+
+### Backend — `backend/packages/parkos_core/src/parkos_core/db/tenancy.py`
+
+1. Wrap the SELECT inside `extract_sucursales_permitidas_fresh` in
+   `with suspend_tenant_context():`. This benefits all 9 call sites of
+   the function, not just `pairing.py`.
 
 ### Tests — `backend/tests/unit/test_pairing_endpoints.py`
 
@@ -69,13 +128,18 @@ network panel and the per-row state stay clean).
    `permitidas = {SUCURSAL_UUID}`, row `uuid_sucursal=other_sucursal` → 403.
 5. Add `TestRevokePairingToken::test_out_of_scope_row_returns_403`: same shape.
 
+### Tests — `backend/tests/integration/test_pairing_admin_scope_db.py` (new)
+
+Real-Postgres integration test that exercises the listener-sabotage path end
+to end. Requires a clean DB (TRUNCATE) so it can't run against the live
+cloud DB without `PARKOS_DOCKER_TEST=1` + a fresh schema. Will run
+unattended in CI once the testcontainer image with `pg_partman` is wired.
+
 ### Frontend — `apps/web_admin/src/features/pairing/lib/pairingLocalState.ts` and `pages/Pairing.tsx`
 
-1. Add `deleteLocalRecord(sucursalUuid)` helper that removes one entry from the
-   `easypunto.pairing.lastToken.v1` map.
+1. Add `deleteLocalRecord(sucursalUuid)` to `pairingLocalState.ts`.
 2. In `PairingRow`, when `useSWR` returns `PairingTokenNotFoundError`, call
-   `deleteLocalRecord(sucursal.uuid)` and bump the local version so the row
-   re-renders without the cached UUID (no further GETs).
+   `deleteLocalRecord(sucursal.uuid)` to clean up the cache.
 
 ## Non-goals
 
@@ -85,6 +149,15 @@ network panel and the per-row state stay clean).
 - No new "list pairing tokens by branch" endpoint (still ABIERTO-52).
 - No new pairing-token DB row created for the 404 stale-record case (the row
   really doesn't exist; the frontend just stops asking).
+- No "empty 403 body" debug: the API strips the body in the 403 response in
+  some configurations (likely a middleware). Pre-existing, out of scope.
+- No bulk refactor of the other 8 call sites of
+  `extract_sucursales_permitidas_fresh` (admin_views, auditoria, reporteria,
+  workflows_alerta, admin_usuarios) — those benefit transparently from the
+  function-internal fix; if any of them were already broken, the
+  beneficiary is the same set of admin operations. Verified by a
+  spot-check of `test_admin_usuarios_scope.py` (47 tests pass) and
+  `test_admin_me_fresh_scope.py` (already covered).
 
 ## Risk
 
@@ -100,6 +173,18 @@ network panel and the per-row state stay clean).
   ~80 LOC. The old test happens to still pass with the new check (it sends a
   body `uuid_sucursal` outside the admin's `permitidas` set), but the wording
   changes to make the scenario explicit.
+- **Listener double-wrap**: `suspend_tenant_context` is now used 3 times in
+  `pairing.py` + 1 in `db/tenancy.py`. The ContextVar is request-scoped
+  (per FastAPI task), so there's no global state pollution. Verified by
+  end-to-end HTTP smoke (POST issue + GET + POST revoke + GET after
+  revoke) with the live cloud DB.
+- **Affected call sites of `extract_sucursales_permitidas_fresh`**: the
+  function-internal fix benefits all 9 callers. Pre-existing tests for
+  admin_usuarios scope, admin_me_fresh_scope, etc. all pass without
+  modification (47 + 59 tests, 0 regressions).
 - **Stash / branch hygiene**: dev was 240 commits behind `origin/dev` at session
   start. The fix is layered on top of `982209d8` (already on dev), not on top
-  of the pre-merge local. No revert / reapply.
+  of the pre-merge local. No revert / reapply. Docker image rebuild
+  (`docker compose -f infra/deploy/docker-compose.cloud.yml up -d --build
+  api-admin`) is REQUIRED for the fix to reach the runtime — see
+  AGENTS.md post-merge recipe.
