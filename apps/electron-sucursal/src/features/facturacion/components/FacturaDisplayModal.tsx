@@ -47,7 +47,7 @@ import type { FacturaRead } from '../api/facturaApi';
 import { feEstadoLabel, feWarningMessage } from '../lib/feEstado';
 import { FacturaImpuestosDetalle } from './FacturaImpuestosDetalle';
 import { formatCOP, formatFechaHoraCorta } from '../../caja/lib/format';
-import { imprimirFactura } from '../../../lib/print/facturaPrint';
+import { imprimirFactura, lineasEmpresaTicket } from '../../../lib/print/facturaPrint';
 import {
   conceptoLegible,
   etiquetaSemanticaLineas,
@@ -221,6 +221,19 @@ export function FacturaDisplayModal({
                   <div className="text-sm font-bold tracking-wider">
                     {f.datos_vehiculo.placa ?? '—'}
                   </div>
+                  {lineasEmpresaTicket(f.datos_vehiculo.empresa_suscripcion).length > 0 && (
+                    <div data-testid="factura-display-empresa">
+                      {lineasEmpresaTicket(f.datos_vehiculo.empresa_suscripcion).map((linea, i) => (
+                        <div
+                          key={i}
+                          data-testid="factura-display-empresa-linea"
+                          className="whitespace-pre overflow-hidden"
+                        >
+                          {linea}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <div data-testid="factura-display-minutos">
                     <span className="font-semibold">
                       {t('facturacion:display.tiempo', { defaultValue: 'Tiempo' })}:
