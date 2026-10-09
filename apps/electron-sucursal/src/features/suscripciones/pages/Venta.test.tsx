@@ -482,6 +482,22 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     }
   });
 
+  it('T6b: el paso de pago muestra la vigencia (inicio y fin) en dd/mm/aaaa antes de confirmar', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-01T01:00:00Z'));
+    try {
+      renderVenta();
+      await hastaPago();
+      const bloque = screen.getByTestId('venta-vigencia');
+      // 2026-09-30 (Bogota) + 30 dias - 1 = 2026-10-29
+      expect(screen.getByTestId('venta-vigencia-inicio').textContent).toBe('30/09/2026');
+      expect(screen.getByTestId('venta-vigencia-fin').textContent).toBe('29/10/2026');
+      expect(bloque.textContent).toMatch(/vigencia.titulo/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('T7: confirm -> useVentaSuscripcion.trigger called with full payload', async () => {
     renderVenta();
     await hastaPago();

@@ -142,7 +142,12 @@
       "titulo": "Pago",
       "feSuscriptor": "Facturar a nombre del suscriptor (opcional)",
       "total_a_pagar": "Total a pagar: {{monto}} (IVA incluido)",
-      "iva_incluido": "Incluye IVA {{porcentaje}}%: {{iva}} (base {{base}})"
+      "iva_incluido": "Incluye IVA {{porcentaje}}%: {{iva}} (base {{base}})",
+      "vigencia": {
+        "titulo": "Vigencia de la suscripción",
+        "inicio": "Inicio de cobertura",
+        "fin": "Fin de cobertura"
+      }
     },
     "errors": {
       "suscripcion_duplicada_placa": "Esta placa ya tiene una suscripción vigente",
