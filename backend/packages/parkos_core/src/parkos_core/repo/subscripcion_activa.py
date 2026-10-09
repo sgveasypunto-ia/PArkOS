@@ -150,6 +150,56 @@ async def resolve_active_subscription_for_exit(
     return SubscriptionLookupResult(found=True, subscripcion=subscripcion)
 
 
+async def resolver_empresa_suscripcion(
+    session: AsyncSession,
+    *,
+    placa: str | None,
+    uuid_sucursal: uuid_lib.UUID,
+    as_of: date | None = None,
+) -> str | None:
+    """Razon social de la empresa dueña de la suscripcion vigente de ``placa``.
+
+    Alimenta el tiquete/factura de salida. Devuelve ``None`` (comportamiento
+    previo) si la placa no tiene suscripcion vigente en la sucursal, si esta
+    vencio o no esta activa, o si el cliente no es una empresa (``NIT``, persona
+    juridica). Persona natural nunca expone nombre aqui.
+
+    Los datos de cliente son bi-temporales: ``subscripciones_cliente`` puede
+    apuntar a una version ya cerrada, asi que el nombre se toma de la version
+    vigente de la misma identidad (tipo + numero), con la referenciada como
+    respaldo. Solo se devuelve la razon social, nada mas del cliente.
+    """
+    if not placa:
+        return None
+    lookup = await resolve_active_subscription_for_exit(
+        session, placa=placa, uuid_sucursal=uuid_sucursal, as_of=as_of
+    )
+    sub = lookup.subscripcion
+    if not lookup.found or sub is None or sub.estado != "activo":
+        return None
+
+    referenciado = (
+        await session.execute(select(Clientes).where(Clientes.uuid == sub.uuid_cliente))
+    ).scalar_one_or_none()
+    if referenciado is None or referenciado.tipo_identificador != "NIT":
+        return None
+
+    vigente = (
+        await session.execute(
+            select(Clientes)
+            .where(
+                Clientes.tipo_identificador == referenciado.tipo_identificador,
+                Clientes.numero_identificacion == referenciado.numero_identificacion,
+                Clientes.vigente_hasta.is_(None),
+            )
+            .order_by(Clientes.vigente_desde.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    nombre = ((vigente or referenciado).nombre or "").strip()
+    return nombre or None
+
+
 async def listar_proximas_a_vencer(
     session: AsyncSession,
     *,
