@@ -5,12 +5,14 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { buildEntradaBuffer, buildReimpresionBuffer } from '../escposBuilder';
+import { build, buildEntradaBuffer, buildReimpresionBuffer } from '../escposBuilder';
+import { testidTiquete } from '../fallbackBrowser';
 import {
   buildEntradaPayloadFromResponse,
   buildReimpresionEntradaPayload,
 } from '../printBuilder';
 import { imprimirTiquete } from '../tiquetePrint';
+import { ESCENARIOS_TIQUETE } from './tiqueteFixtures';
 
 const norm = (s: string): string => s.replace(/ /g, ' ').replace(/[ \t]+/g, ' ');
 
@@ -83,7 +85,7 @@ describe('imprimirTiquete', () => {
     });
     expect(res.ok).toBe(true);
     const dom = norm(document.getElementById('parkos-escpos-fallback-container')?.textContent ?? '');
-    expect(dom).toContain('REIMPRESION');
+    expect(dom).toContain('REIMPRESIÓN');
     expect(dom).toContain('tiquete extraviado por el cliente');
   });
 
@@ -100,5 +102,34 @@ describe('imprimirTiquete', () => {
     ).toBe(false);
     expect(ok).not.toHaveBeenCalled();
     expect((await imprimirTiquete('entrada', entrada(), { ticketId: 'x', bridge: undefined })).ok).toBe(false);
+  });
+});
+
+describe('imprimirTiquete: una sola ruta para todos los tickets (80 mm)', () => {
+  beforeEach(() => {
+    window.print = vi.fn();
+  });
+  afterEach(() => {
+    document.getElementById('parkos-escpos-fallback-container')?.remove();
+    vi.restoreAllMocks();
+  });
+
+  it.each(ESCENARIOS_TIQUETE)('%s: Electron envia build() y navegador imprime el HTML 80 mm', async (_n, tipo, payload) => {
+    const imprimir = vi.fn(async () => ({ ok: true, queueId: null }));
+    const res = await imprimirTiquete(tipo, payload, { ticketId: 'tk', bridge: { imprimir } as never });
+    expect(res.ok).toBe(true);
+    const calls = imprimir.mock.calls as unknown as unknown[][];
+    expect((calls[0]![0] as { buffer: string }).buffer).toBe(build(tipo, payload).toString('base64'));
+
+    const imp2 = vi.fn();
+    const res2 = await imprimirTiquete(tipo, payload, {
+      ticketId: 'tk',
+      bridge: { imprimir: Object.assign(imp2, { modo: 'browser' as const }) } as never,
+    });
+    expect(res2.ok).toBe(true);
+    expect(imp2).not.toHaveBeenCalled();
+    const contenedor = document.getElementById('parkos-escpos-fallback-container');
+    expect(contenedor?.querySelector(`[data-testid="${testidTiquete(tipo)}"]`)).not.toBeNull();
+    expect(contenedor?.innerHTML).toContain('@page { size: 80mm auto; margin: 0 }');
   });
 });

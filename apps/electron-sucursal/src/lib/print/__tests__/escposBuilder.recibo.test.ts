@@ -30,11 +30,11 @@ import { describe, it, expect } from 'vitest';
 
 import { build } from '../escposBuilder';
 import {
-  formatCOP,
   formatFecha,
   formatHora,
   type ReciboPagoPayload,
 } from '../escposTemplates';
+import { copPlano } from './copPlano';
 import { validSalidaPayload } from './escposBuilder.test';
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -125,7 +125,7 @@ describe('buildReciboPagoBuffer — same 19 CU-15S fields + numero_recibo + medi
     // 9. Tarifa aplicada
     expect(
       buf.indexOf(
-        Buffer.from(`Tarifa: ${formatCOP(payload.tarifaAplicada)}/hora`),
+        Buffer.from(`Tarifa: ${copPlano(payload.tarifaAplicada)}/hora`),
       ),
     ).toBeGreaterThanOrEqual(0);
     // 10. Fecha (date-only)
@@ -152,15 +152,15 @@ describe('buildReciboPagoBuffer — same 19 CU-15S fields + numero_recibo + medi
     ).toBeGreaterThanOrEqual(0);
     // 14. Subtotal
     expect(
-      buf.indexOf(Buffer.from(`Subtotal: ${formatCOP(payload.subtotal)}`)),
+      buf.indexOf(Buffer.from(`Subtotal: ${copPlano(payload.subtotal)}`)),
     ).toBeGreaterThanOrEqual(0);
     // 15. IVA
     expect(
-      buf.indexOf(Buffer.from(`IVA: ${formatCOP(payload.iva)}`)),
+      buf.indexOf(Buffer.from(`IVA: ${copPlano(payload.iva)}`)),
     ).toBeGreaterThanOrEqual(0);
     // 16. TOTAL
     expect(
-      buf.indexOf(Buffer.from(`TOTAL: ${formatCOP(payload.total)}`)),
+      buf.indexOf(Buffer.from(`TOTAL: ${copPlano(payload.total)}`)),
     ).toBeGreaterThanOrEqual(0);
     // 18. Placa
     expect(buf.indexOf(Buffer.from(`Placa: ${payload.placa}`))).toBeGreaterThanOrEqual(0);
@@ -173,9 +173,11 @@ describe('buildReciboPagoBuffer — same 19 CU-15S fields + numero_recibo + medi
       buf.indexOf(Buffer.from(`Resolucion FE: ${payload.resolucionFE}`)),
     ).toBeGreaterThanOrEqual(0);
 
-    // DEC-SUC-26 — QR + logo markers (mirror CU-15S)
-    expect(buf.indexOf(Buffer.from(';QR:'))).toBeGreaterThanOrEqual(0);
-    expect(buf.indexOf(Buffer.from(';LOGO:'))).toBeGreaterThanOrEqual(0);
+    // 80 mm format (intentional change): no QR / logo markers, brand logos on top and bottom
+    expect(buf.indexOf(Buffer.from(';QR:'))).toBe(-1);
+    expect(buf.indexOf(Buffer.from(';LOGO:'))).toBe(-1);
+    expect(buf.indexOf(Buffer.from([0x1d, 0x28, 0x6b]))).toBe(-1);
+    expect(buf.toString('utf8').match(/easypunto/g)).toHaveLength(2);
 
     // Recibo-specific additions
     expect(

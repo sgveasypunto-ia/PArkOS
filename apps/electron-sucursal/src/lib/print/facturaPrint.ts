@@ -24,7 +24,6 @@
  */
 import type { BridgeSurface } from '../../../electron/bridge';
 import type { FacturaRead } from '../../features/facturacion/api/facturaApi';
-import { cutPartial, escCenter, escInit, escLeft, lf } from './escposBuilder';
 import {
   ANCHO_LOGO_ENCABEZADO,
   ANCHO_LOGO_PIE,
@@ -36,6 +35,11 @@ import {
 } from './marcaTicket';
 import {
   TICKET_ANCHO_IMPRIMIBLE_MM,
+  cutPartial,
+  escCenter,
+  escInit,
+  escLeft,
+  lf,
   TICKET_COLUMNAS,
   ajustarTexto,
   escAreaImprimible,
@@ -45,7 +49,7 @@ import {
 } from './ticketBase';
 import { formatCOPDecimal, formatFechaCorta } from './escposTemplates';
 import { ejecutarImpresion } from './avisoImpresion';
-import { printHtml } from './fallbackBrowser';
+import { printHtml } from './printHtml';
 import {
   conceptoLegible,
   ETIQUETA_SUBTOTAL_BASE,
@@ -67,7 +71,7 @@ export type FacturaLinea =
 
 export function dinero(value: number | null | undefined): string {
   if (value === null || value === undefined) return '—';
-  return formatCOPDecimal(value).replace(/ /g, ' ');
+  return formatCOPDecimal(value).replace(/\u00a0/g, ' ');
 }
 
 /** 0.19 → "19", 0.025 → "2.5", 0.1925 → "19.25" (no trailing zeros). */

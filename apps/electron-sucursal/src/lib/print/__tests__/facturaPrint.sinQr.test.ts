@@ -1,9 +1,8 @@
 /**
  * The printed invoice never carries a QR code (customer requirement: it adds
  * no value). Guards the three outputs of the invoice route: ESC/POS bytes,
- * HTML and the source of the builder itself. The entrada ticket QR lives on
- * another route (escposBuilder entrada / fallbackBrowser entrada) and is NOT
- * covered here on purpose.
+ * HTML and the source of the builder itself. The operation tickets (entrada,
+ * salida, recibo, reimpresion...) are guarded by `tiquetes80mm.test.ts`.
  */
 import { describe, expect, it } from 'vitest';
 

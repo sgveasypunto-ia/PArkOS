@@ -1,47 +1,26 @@
 /**
- * `escposBuilder.ts` — pure renderer-side ESC/POS byte composition.
+ * `escposBuilder.ts` — validation + ESC/POS rendering of the operation tickets.
  *
  * HU-F5.2 (Fase 5 — base de impresión) / DEC-SUC-08.
- * HU-F6.2 (Fase 6 — tiquete de entrada CU-15E) / DEC-SUC-26.
  *
  * Contract (F5.1 `bridge.imprimir` consumer):
- *   `build(tipo, payload) → Buffer`
+ *   `build(tipo, payload, marca?) → Buffer`
  *
- * The returned `Buffer` MUST contain, in order:
- *   1. `0x1B 0x40` — ESC `@` (init)
- *   2. ...document body (UTF-8)...
- *   3. `0x1B 0x61 0x01` — ESC `a` 1 (centered, for header)
- *   4. `0x1B 0x21 0x30` — ESC `!` 0x30 (text 2x height for sellos)
- *   5. `0x1B 0x45 0x01` / `0x1B 0x45 0x00` — ESC `E` n, bold on / off
- *   6. ...document body (UTF-8)...
- *   7. `0x1D 0x56 0x00` — GS `V` 0 (partial cut)
- *   8. `0x0A` — LF (line feed)
- *
- * F6.2 — `buildEntradaBuffer()` (and its underlying `buildEntradaBody`)
- * emits the **17 conceptual fields** in the order specified by
- * `plan.md` lines 1616-1634 plus the 2 DEC-SUC-26 additions (QR + logo)
- * — see `escposTemplates.ts::TiqueteEntradaCampos` for the canonical
- * 17-key shape. The QR + logo data URLs are emitted as text markers
- * (the actual rasterization is the CALLER's responsibility per F5.2
- * R4 purity + the F6.2 design decision "QR encoding is the caller's
- * responsibility"). The builder ALWAYS emits an explicit
- * `Tipo: ROTACIÓN` / `Tipo: MENSUALIDAD` line under the sello, driven
- * by `payload.esMensualidad` (DEC-SUC-21) — an 18th printed field, kept
- * outside the 17-key `TiqueteEntradaCampos` shape (same side-channel
- * pattern it already used when the tag was conditional). The same
- * explicit line was added to `buildSalidaBody`/`buildSalidaMensualidadBody`
- * (operator request: either ticket alone must tell the operator whether
- * that vehicle gets charged).
+ * Every ticket (entrada, salida, salida-mensualidad, reimpresion, recibo_pago,
+ * arqueo) is built as a list of `FacturaLinea` (`tiqueteLineas.ts`) and
+ * rendered by the SAME renderer as the invoice and the cierre de turno
+ * (`facturaPrint.lineasAEscpos`): 80 mm roll, printable area 576 dots, Font A
+ * (48 columns), bold with `ESC E n` (always with its parameter), the easypunto
+ * logo raster on top and bottom (text fallback without `marca`), partial cut.
+ * No double-size text either (it would halve the 48 columns).
  *
  * Purity contract:
  *   - NO DOM, NO `window`, NO `document`, NO `navigator`.
  *   - NO network, NO filesystem, NO USB, NO IPC.
- *   - NO electron / escpos-usb / node:* imports (verified by `grep -E
- *     "from '(electron|escpos-usb|node:)'"` — see `tasks.md` §4.4).
  *   - All timestamps are caller-supplied (no `new Date()`).
  *
  * Error surface (named subclasses for `instanceof` checks):
- *   - `EscposInvalidTipoError` — `tipo` is not in the 5-allowed union.
+ *   - `EscposInvalidTipoError` — `tipo` is not one of the allowed tipos.
  *   - `EscposPayloadMissingFieldError` — Zod parse failed; `err.issues`
  *     carries the underlying Zod issues.
  */
@@ -56,11 +35,6 @@ import {
   reimpresionPayloadSchema,
   reciboPagoPayloadSchema,
   arqueoPayloadSchema,
-  formatCOP,
-  lineasMontos,
-  formatFecha,
-  formatFechaCorta,
-  formatHora,
   type EntradaPayload,
   type SalidaPayload,
   type SalidaMensualidadPayload,
@@ -69,7 +43,19 @@ import {
   type ArqueoPayload,
   type TiqueteTipo,
 } from './escposTemplates';
-import { escNegrita } from './ticketBase';
+import { lineasAEscpos, type FacturaLinea } from './facturaPrint';
+import type { MarcaRaster } from './marcaTicket';
+import {
+  construirArqueoParcial,
+  construirEntrada,
+  construirReimpresion,
+  construirRecibo,
+  construirSalida,
+  construirSalidaMensualidad,
+} from './tiqueteLineas';
+import { cutPartial, escCenter, escInit, escLeft, escNegrita, lf } from './ticketBase';
+
+export type { TiqueteTipo };
 
 // ──────────────────────────────────────────────────────────────────────────
 // Error classes
@@ -108,23 +94,10 @@ export class EscposPayloadMissingFieldError extends Error {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// ESC/POS opcode helpers
+// ESC/POS opcode helpers (single definitions live in `ticketBase.ts`)
 // ──────────────────────────────────────────────────────────────────────────
 
-/** `0x1B 0x40` — ESC `@` — Initialize printer (reset state). */
-export function escInit(): Buffer {
-  return Buffer.from([0x1b, 0x40]);
-}
-
-/** `0x1B 0x61 0x01` — ESC `a` 1 — Center alignment on. */
-export function escCenter(): Buffer {
-  return Buffer.from([0x1b, 0x61, 0x01]);
-}
-
-/** `0x1B 0x61 0x00` — ESC `a` 0 — Left alignment (reset). */
-export function escLeft(): Buffer {
-  return Buffer.from([0x1b, 0x61, 0x00]);
-}
+export { cutPartial, escCenter, escInit, escLeft, lf };
 
 /** `0x1B 0x45 0x01` — ESC `E` 1 — Bold on (single definition: `escNegrita`). */
 export function escBoldOn(): Buffer {
@@ -136,517 +109,17 @@ export function escBoldOff(): Buffer {
   return escNegrita(false);
 }
 
-/** `0x1B 0x21 0x30` — ESC `!` 0x30 — Text 2x height (DEC-SUC-04 sellos). */
-export function escText2x(): Buffer {
-  return Buffer.from([0x1b, 0x21, 0x30]);
-}
-
-/** `0x1B 0x21 0x00` — ESC `!` 0x00 — Text size reset (1x1). */
-export function escTextReset(): Buffer {
-  return Buffer.from([0x1b, 0x21, 0x00]);
-}
-
-/** `0x1D 0x56 0x00` — GS `V` 0 — Partial cut (DEC-SUC-08 close). */
-export function cutPartial(): Buffer {
-  return Buffer.from([0x1d, 0x56, 0x00]);
-}
-
-/** `0x0A` — LF — line feed (after cut, recommended for the print buffer). */
-export function lf(): Buffer {
-  return Buffer.from([0x0a]);
-}
-
 // ──────────────────────────────────────────────────────────────────────────
-// UTF-8 string helper
-// ──────────────────────────────────────────────────────────────────────────
-
-function utf8(text: string): Buffer {
-  return Buffer.from(text, 'utf8');
-}
-
-// ──────────────────────────────────────────────────────────────────────────
-// Body builders per tipo
-// ──────────────────────────────────────────────────────────────────────────
-
-/** Concatenate an array of Buffers into one. */
-function concat(parts: readonly Buffer[]): Buffer {
-  return Buffer.concat(parts);
-}
-
-/** F6.2 — placeholder glyph for missing logo (DEC-SUC-08). */
-const LOGO_PLACEHOLDER_GLYPH = '\u25A2'; // ▢ WHITE SQUARE WITH ROUNDED CORNERS
-
-function buildEntradaBody(payload: EntradaPayload): Buffer {
-  // F6.2 — 17-field layout per `plan.md` lines 1616-1634 + DEC-SUC-26.
-  // The conceptual field names live in
-  // `escposTemplates.ts::TiqueteEntradaCampos` (Spanish ordinals).
-  //
-  // F7.3 (DEC-SUC-28) — the header is `payload.sucursal.encabezado`
-  // (dynamic branch header). NOT the F5.2 "PARKINGOS" constant.
-  //
-  // HU-INGRESO-SIN-PLACA (REQ-OPS-197) — the 12th conceptual field
-  // (doceavo) branches on `payload.variant`:
-  //   - `con-placa`       → `Placa: <placa>` (legacy F6.1).
-  //   - `con-consecutivo` → `Identificación: <consecutivo>` (no-placa).
-  const lines: Buffer[] = [
-    escCenter(),
-    escBoldOn(),
-    utf8(`${payload.sucursal.encabezado}\n`),           // primero (Encabezado)
-    escBoldOff(),
-    utf8(`${payload.empresa.nombre}\n`),                // segundo
-    utf8(`${payload.empresa.direccion}\n`),             // tercero
-    utf8(`NIT ${payload.empresa.nit}\n`),               // cuarto
-    utf8(`${payload.empresa.regimen}\n`),               // quinto
-    utf8(`Operario: ${payload.operario}\n`),            // sexto
-    utf8('\n'),
-    escText2x(),
-    utf8('*** TIQUETE DE ENTRADA ***\n'),               // septimo (sello)
-    escTextReset(),
-  ];
-  // Tipo de operación (ROTACIÓN/MENSUALIDAD) — ALWAYS emitted (pedido del
-  // operador: el tiquete de entrada y los de salida deben dejar explícito
-  // si ese vehículo se cobra o no, con solo mirar cualquiera de los dos).
-  // `esMensualidad` sigue siendo derivado de
-  // `ingreso.uuid_subscripcion_cliente IS NOT NULL` (DEC-SUC-21) — refleja
-  // el estado de la suscripción AL MOMENTO DEL INGRESO. El cobro final en
-  // la salida lo decide `calcular_cotizacion` y puede diferir (ver CU-03M:
-  // una 2da placa simultánea de una suscripción personal paga rotación
-  // aunque haya entrado como "MENSUALIDAD" — no es un bug, ver plan.md).
-  lines.push(escBoldOn());
-  lines.push(
-    utf8(`Tipo: ${payload.esMensualidad === true ? 'MENSUALIDAD' : 'ROTACIÓN'}\n`),
-  );
-  lines.push(escBoldOff());
-  lines.push(utf8('\n'));
-  lines.push(utf8(`Folio: ${payload.folio}\n`));        // octavo
-  // noveno — omitted when the hourly tariff is unknown (never print "$ 0").
-  if (payload.tarifaAplicada !== undefined) {
-    lines.push(utf8(`Tarifa: ${formatCOP(payload.tarifaAplicada)}/hora\n`));
-  }
-  lines.push(utf8(`Fecha: ${formatFecha(payload.fechaEntrada)}\n`)); // decimo
-  lines.push(utf8(`Hora: ${formatHora(payload.fechaEntrada)}\n`));    // onceavo
-  // REQ-OPS-197 — doceavo (12th conceptual field) branches on variant.
-  if (payload.variant === 'con-placa') {
-    lines.push(utf8(`Placa: ${payload.placa}\n`));      // doceavo (legacy)
-  } else {
-    // payload.variant === 'con-consecutivo' — TypeScript narrows.
-    lines.push(utf8(`Identificación: ${payload.consecutivo}\n`)); // doceavo (no-placa)
-  }
-  lines.push(utf8(`Horario: ${payload.horarioAtencion}\n`)); // treceavo
-  if (payload.polizaRC) {
-    lines.push(utf8(`Poliza RC: ${payload.polizaRC}\n`)); // catorceavo
-  }
-  if (payload.observaciones) {
-    lines.push(utf8(`Observaciones: ${payload.observaciones}\n`)); // quinceavo
-  }
-  // F6.2 — DEC-SUC-26: QR + logo. The data URLs are emitted as text
-  // markers — the printer firmware ignores lines starting with `;`
-  // (comment), and the `bridge.imprimir` layer in F5.1 can intercept
-  // these for actual rasterization in a future enhancement. Empty
-  // `logoDataUrl` renders the placeholder glyph (design §"Render-time
-  // guard for missing `documentos` row").
-  const logoText = payload.logoDataUrl === ''
-    ? LOGO_PLACEHOLDER_GLYPH
-    : 'OK';
-  lines.push(utf8(`;QR:${payload.qrDataUrl}\n`));       // qrDataUrl
-  lines.push(utf8(`;LOGO:${logoText}\n`));              // logoDataUrl
-  lines.push(utf8('\n'));
-  lines.push(utf8('Conserve este tiquete para la salida.\n'));
-  return concat(lines);
-}
-
-function buildSalidaBody(payload: SalidaPayload): Buffer {
-  const montos = lineasMontos(payload);
-  // F7.3 (HU-F7.3 / REQ-OPS-158) — 19-field CU-15S layout per
-  // `plan.md:1789-1807` + 2 DEC-SUC-26 additions (QR + logo markers).
-  //
-  // The header is `payload.sucursal.encabezado` (DEC-SUC-28 dynamic),
-  // NOT the F5.2 "PARKINGOS" constant. The `;QR:` + `;LOGO:` text
-  // markers mirror F6.2 — the actual rasterization is the CALLER's
-  // responsibility per F5.2 R4 purity (see
-  // `escposBuilder.ts:223-234` precedent on the entrada body).
-  const lines: Buffer[] = [
-    escCenter(),
-    escBoldOn(),
-    utf8(`${payload.sucursal.encabezado}\n`),                 // 1: Encabezado
-    escBoldOff(),
-    utf8(`${payload.empresa.nombre}\n`),                      // 2: Empresa
-    utf8(`${payload.empresa.direccion}\n`),                   // 3: Dirección
-    utf8(`NIT ${payload.empresa.nit}\n`),                     // 4: NIT
-    utf8(`${payload.empresa.regimen}\n`),                     // 5: Régimen
-    utf8(`Operario: ${payload.operario}\n`),                  // 6: Operario
-    utf8('\n'),
-    escText2x(),
-    utf8('*** SALIDA ***\n'),                                 // 7: Sello
-    escTextReset(),
-    escBoldOn(),
-    utf8('Tipo: ROTACIÓN\n'),                                 // 7b: Tipo de operación (pedido del operador)
-    escBoldOff(),
-    utf8('\n'),
-    utf8(`Folio: ${payload.folio}\n`),                        // 8: Folio
-    utf8(`Tarifa: ${formatCOP(payload.tarifaAplicada)}/hora\n`), // 9: Tarifa
-    utf8(`Fecha: ${formatFecha(payload.fechaEntrada)}\n`),    // 10: Fecha (date-only)
-    utf8(`Hora entrada: ${formatHora(payload.fechaEntrada)}\n`), // 11: Hora entrada
-    utf8(`Hora salida: ${formatHora(payload.fechaSalida)}\n`),  // 12: Hora salida
-    utf8(`Tiempo: ${payload.tiempoTotal}\n`),                 // 13: Tiempo total
-    utf8('\n'),
-    utf8(`${montos.subtotal}\n`),                              // 14: Subtotal (base)
-    ...montos.impuestos.map((l) => utf8(`${l}\n`)),          // 15: Impuestos (nombre, %, base, valor)
-    escBoldOn(),
-    utf8(`${montos.total}\n`),                                // 16: TOTAL
-    escBoldOff(),
-    utf8(`Medio de pago: ${payload.medioPago}\n`),            // 17: Medio de pago
-    utf8(`Placa: ${payload.placa}\n`),                        // 18: Placa
-    utf8(`Horario: ${payload.horarioAtencion}\n`),            // 19a: Horario atención
-  ];
-  if (payload.polizaRC) {
-    lines.push(utf8(`Poliza RC: ${payload.polizaRC}\n`));     // 19b: Póliza RC
-  }
-  lines.push(utf8(`Resolucion FE: ${payload.resolucionFE}\n`));// 19c: Resolución FE
-  if (payload.observaciones) {
-    lines.push(utf8(`Observaciones: ${payload.observaciones}\n`)); // 19d: Observaciones
-  }
-  // F7.3 — DEC-SUC-26 QR + logo markers (mirror F6.2 entrada precedent).
-  // The caller is responsible for the actual rasterization; the buffer
-  // emits the `;`-prefixed text markers only so the printer firmware
-  // ignores them and the F5.1 bridge can intercept for future
-  // rasterization.
-  const logoText = payload.logoDataUrl === ''
-    ? LOGO_PLACEHOLDER_GLYPH
-    : 'OK';
-  lines.push(utf8(`;QR:${payload.qrDataUrl}\n`));
-  lines.push(utf8(`;LOGO:${logoText}\n`));
-  lines.push(utf8('\n'));
-  lines.push(utf8('Gracias por su visita.\n'));
-  return concat(lines);
-}
-
-function buildSalidaMensualidadBody(payload: SalidaMensualidadPayload): Buffer {
-  // F7.3 (HU-F7.3 / REQ-OPS-159) — 15-field CU-15SM layout per
-  // `plan.md:1810` + 2 DEC-SUC-26 additions (QR + logo markers).
-  //
-  // DEC-SUC-27 invariant: the sello `*** PAGO CON MENSUALIDAD ***` is
-  // wrapped by `escText2x()` (text 2x height) before and
-  // `escTextReset()` (1x1 reset) after — visual distinguisher that
-  // prevents the cajero from confusing a tiquete sin cobro with one
-  // cobrado (CU-15S uses `*** SALIDA ***` instead).
-  //
-  // NO monetary fields (DEC-SUC-23): the mensualidad fee is settled
-  // by the subscription, NOT the exit. The buffer MUST NOT contain
-  // `Subtotal:`, `IVA:`, `TOTAL:`, or `Medio de pago:`.
-  //
-  // The header is `payload.sucursal.encabezado` (DEC-SUC-28 dynamic),
-  // NOT the F5.2 "PARKINGOS" constant.
-  const lines: Buffer[] = [
-    escCenter(),
-    escBoldOn(),
-    utf8(`${payload.sucursal.encabezado}\n`),               // 1: Encabezado
-    escBoldOff(),
-    utf8(`${payload.empresa.nombre}\n`),                    // 2: Empresa
-    utf8(`NIT ${payload.empresa.nit}\n`),                   // 4: NIT
-    utf8(`${payload.empresa.direccion}\n`),                 // 3: Dirección
-    utf8(`${payload.empresa.regimen}\n`),                   // 5: Régimen
-    utf8(`Operario: ${payload.operario}\n`),                // 6: Operario
-    utf8('\n'),
-    escText2x(),
-    utf8('*** PAGO CON MENSUALIDAD ***\n'),                 // 7: Sello (DEC-SUC-27)
-    escTextReset(),
-    escBoldOn(),
-    utf8('Tipo: MENSUALIDAD\n'),                            // 7b: Tipo de operación (pedido del operador)
-    escBoldOff(),
-    utf8('\n'),
-    utf8(`Folio: ${payload.folio}\n`),                      // 8: Folio
-    utf8(`Fecha: ${formatFecha(payload.fechaEntrada)}\n`),  // 9: Fecha (date-only)
-    utf8(`Hora entrada: ${formatHora(payload.fechaEntrada)}\n`), // 10: Hora entrada
-    utf8(`Hora salida: ${formatHora(payload.fechaSalida)}\n`),   // 11: Hora salida
-    utf8(`Tiempo: ${payload.tiempoTotal}\n`),               // 12: Tiempo total
-    utf8(`Placa: ${payload.placa}\n`),                      // 13: Placa
-    utf8(`Horario: ${payload.horarioAtencion}\n`),          // 14: Horario atención
-  ];
-  if (payload.polizaRC) {
-    lines.push(utf8(`Poliza RC: ${payload.polizaRC}\n`));   // 15a: Póliza RC
-  }
-  if (payload.observaciones) {
-    lines.push(utf8(`Observaciones: ${payload.observaciones}\n`)); // 15b: Observaciones
-  }
-  // F7.3 — DEC-SUC-26 QR + logo markers (mirror F6.2 entrada precedent).
-  const logoText = payload.logoDataUrl === ''
-    ? LOGO_PLACEHOLDER_GLYPH
-    : 'OK';
-  lines.push(utf8(`;QR:${payload.qrDataUrl}\n`));
-  lines.push(utf8(`;LOGO:${logoText}\n`));
-  lines.push(utf8('\n'));
-  lines.push(utf8('Conserve este tiquete como soporte.\n'));
-  return concat(lines);
-}
-
-function buildReimpresionBody(payload: ReimpresionPayload): Buffer {
-  // F7.3 (DEC-SUC-28) — reimpresion envelopes its inner body (entrada /
-  // salida / salida-mensualidad) which already carry the dynamic
-  // header. The reimpresion-specific header uses
-  // `payload.empresa.nombre` only as a fallback; for dynamic header
-  // parity, we extract `sucursal.encabezado` from the inner payload.
-  // The discriminated union narrows `payload.payload` to one of the
-  // three subtypes — all three carry `sucursal.encabezado` after F7.3.
-  //
-  // F8.3 (REQ-OPS-172) — the sello label upgrades to `'*** REIMPRESIÓN
-  // ***'` (with U+00D3 accent per `plan.md:2006` verbatim copy) and a
-  // subline `'--- COPIA AUTORIZADA ---'` is emitted between sello and
-  // motivo. The inner body is wrapped with `escBoldOn()`/`escBoldOff()`
-  // (0x1B 0x45 0x01 / 0x1B 0x45 0x00) so the entire reimpreso body is visually
-  // distinct from the original tiquete. The dispatch key remains
-  // `'reimpresion'` (REQ-OPS-175 drift anchor — NOT `'reimprimir'`).
-  const innerSucursalEncabezado = payload.payload.sucursal.encabezado;
-  const header: Buffer[] = [
-    escCenter(),
-    escBoldOn(),
-    utf8(`${innerSucursalEncabezado}\n`),               // DEC-SUC-28 dynamic
-    escBoldOff(),
-    utf8(`${payload.empresa.nombre}\n`),
-    utf8(`NIT ${payload.empresa.nit}\n`),
-    utf8(`${payload.empresa.direccion}\n`),
-    utf8(`${payload.empresa.regimen}\n`),
-    utf8('\n'),
-    escText2x(),
-    utf8('*** REIMPRESIÓN ***\n'),                      // F8.3 — accent
-    escTextReset(),
-    utf8('\n'),
-    utf8('--- COPIA AUTORIZADA ---\n'),                 // F8.3 — subline
-    utf8(`Motivo: ${payload.motivo}\n`),
-    utf8(`Folio original: ${payload.folioOriginal}\n`),
-    utf8('\n'),
-  ];
-  let body: Buffer;
-  switch (payload.originalTipo) {
-    case 'entrada':
-      body = buildEntradaBody(payload.payload);
-      break;
-    case 'salida':
-      body = buildSalidaBody(payload.payload);
-      break;
-    case 'salida-mensualidad':
-      body = buildSalidaMensualidadBody(payload.payload);
-      break;
-  }
-  // F8.3 — bold marca wraps the inner body (REQ-OPS-172).
-  return concat([...header, escBoldOn(), body, escBoldOff()]);
-}
-
-function buildReciboPagoBody(payload: ReciboPagoPayload): Buffer {
-  const montos = lineasMontos(payload);
-  // F8.1 (HU-F8.1 — PagoModal) — Recibo de pago. Carries the SAME 19
-  // CU-15S conceptual fields PLUS two additions:
-  //   - `numero_recibo` — backend F1.10 assigns
-  //     `sucursal-YYYYMMDD-NNNNNN` (DEC-SUC-28).
-  //   - `medio_pago` — typed literal `efectivo` | `datafono`.
-  //
-  // Layout (mirrors `buildSalidaBody` field-by-field with two swaps):
-  //   - Sello slot shows `*** RECIBO DE PAGO ***` (NOT `*** SALIDA ***`).
-  //   - Header still uses `payload.sucursal.encabezado` (DEC-SUC-28).
-  //   - The `Medio de pago:` line uses the typed `payload.medio_pago`.
-  //
-  // DEC-SUC-27 verbatim: "CU-15S print fires AFTER pago, then recibo de
-  // pago." Caller order is `<SalidaPanel>::handleOpenPago` →
-  // `useRegistrarPago.trigger` → `bridge.imprimir('salida', ...)` →
-  // `bridge.imprimir('recibo_pago', ...)`. The recibo MUST never fire
-  // before the CU-15S tiquete.
-  const lines: Buffer[] = [
-    escCenter(),
-    escBoldOn(),
-    utf8(`${payload.sucursal.encabezado}\n`),                 // 1: Encabezado
-    escBoldOff(),
-    utf8(`${payload.empresa.nombre}\n`),                      // 2: Empresa
-    utf8(`${payload.empresa.direccion}\n`),                   // 3: Dirección
-    utf8(`NIT ${payload.empresa.nit}\n`),                     // 4: NIT
-    utf8(`${payload.empresa.regimen}\n`),                     // 5: Régimen
-    utf8(`Operario: ${payload.operario}\n`),                  // 6: Operario
-    utf8('\n'),
-    escText2x(),
-    utf8('*** RECIBO DE PAGO ***\n'),                         // 7: Sello (recibo)
-    escTextReset(),
-    utf8('\n'),
-    utf8(`Numero de recibo: ${payload.numero_recibo}\n`),     // F8.1 addition
-    utf8(`Folio: ${payload.folio}\n`),                        // 8: Folio
-    utf8(`Tarifa: ${formatCOP(payload.tarifaAplicada)}/hora\n`), // 9: Tarifa
-    utf8(`Fecha: ${formatFecha(payload.fechaEntrada)}\n`),    // 10: Fecha
-    utf8(`Hora entrada: ${formatHora(payload.fechaEntrada)}\n`), // 11: Hora entrada
-    utf8(`Hora salida: ${formatHora(payload.fechaSalida)}\n`),  // 12: Hora salida
-    utf8(`Tiempo: ${payload.tiempoTotal}\n`),                 // 13: Tiempo total
-    utf8('\n'),
-    utf8(`${montos.subtotal}\n`),                              // 14: Subtotal (base)
-    ...montos.impuestos.map((l) => utf8(`${l}\n`)),          // 15: Impuestos (nombre, %, base, valor)
-    escBoldOn(),
-    utf8(`${montos.total}\n`),                                // 16: TOTAL
-    escBoldOff(),
-    utf8(`Medio de pago: ${payload.medio_pago}\n`),           // 17: Medio (typed)
-    utf8(`Placa: ${payload.placa}\n`),                        // 18: Placa
-    utf8(`Horario: ${payload.horarioAtencion}\n`),            // 19a: Horario atención
-  ];
-  if (payload.polizaRC) {
-    lines.push(utf8(`Poliza RC: ${payload.polizaRC}\n`));     // 19b: Póliza RC
-  }
-  lines.push(utf8(`Resolucion FE: ${payload.resolucionFE}\n`));// 19c: Resolución FE
-  if (payload.observaciones) {
-    lines.push(utf8(`Observaciones: ${payload.observaciones}\n`)); // 19d: Observaciones
-  }
-  // F7.3 — DEC-SUC-26 QR + logo markers (mirror CU-15S precedent).
-  const logoText = payload.logoDataUrl === ''
-    ? LOGO_PLACEHOLDER_GLYPH
-    : 'OK';
-  lines.push(utf8(`;QR:${payload.qrDataUrl}\n`));
-  lines.push(utf8(`;LOGO:${logoText}\n`));
-  lines.push(utf8('\n'));
-  lines.push(utf8('Gracias por su pago.\n'));
-  return concat(lines);
-}
-
-function buildArqueoBody(payload: ArqueoPayload): Buffer {
-  // F10.1 (HU-F10.1 — Arqueo Parcial / REQ-OPS-155) — 12-conceptual-line
-  // body per spec scenario 2. Layout: 32 cols, left-aligned except for
-  // the header (centered) and the sello (text 2x height). Reuses
-  // `formatCOP` (DEC-SUC-07) and `formatFechaCorta` (es-CO short per
-  // F6.2). The `Justificacion:` line is emitted ONLY when
-  // `payload.justificacion.length > 0` — silent omission per spec
-  // scenario 3.
-  //
-  // Sign-prefix contract for `Diferencia` lines:
-  //   - diferencia > 0 → `+<formatCOP(|diferencia|)>`
-  //   - diferencia < 0 → `-<formatCOP(|diferencia|)>`
-  //   - diferencia === 0 → `<formatCOP(0)>` (no sign)
-  // NEVER `±` glyph (spec verbatim: "sign MUST be `+` for non-negative,
-  // `-` for negative — NEVER `±`").
-  const diferenciaEfectivoSign = payload.diferencia_efectivo < 0
-    ? `-${formatCOP(Math.abs(payload.diferencia_efectivo))}`
-    : `+${formatCOP(payload.diferencia_efectivo)}`;
-  // PT-6: datáfono block only for legacy payloads that still carry all four
-  // datáfono fields; the efectivo-only cuadre omits it entirely.
-  const datafono =
-    payload.valor_esperado_datafono !== undefined &&
-    payload.valor_reportado_datafono !== undefined &&
-    payload.diferencia_datafono !== undefined &&
-    payload.tolerancia_datafono !== undefined
-      ? {
-          esperado: payload.valor_esperado_datafono,
-          reportado: payload.valor_reportado_datafono,
-          diferencia: payload.diferencia_datafono,
-          tolerancia: payload.tolerancia_datafono,
-        }
-      : null;
-
-  const lines: Buffer[] = [
-    escCenter(),
-    escBoldOn(),
-    utf8(`ARQUEO PARCIAL — ${payload.sucursal.encabezado}\n`), // 1: Encabezado
-    escBoldOff(),
-    utf8('\n'),
-    escText2x(),
-    utf8('Sello: *** ARQUEO PARCIAL ***\n'), // 2: Sello (DEC-SUC-04)
-    escTextReset(),
-    utf8('\n'),
-    utf8(`Codigo: ${payload.auditoria_codigo}\n`), // 3: Codigo
-    utf8(`Fecha: ${formatFechaCorta(payload.fecha)}\n`), // 4: Fecha
-    utf8(`Sesion: ${payload.uuid_sesion_short}\n`), // 5: Sesion (last 8 chars)
-    utf8('\n'),
-    utf8(`Base: ${formatCOP(payload.base_efectivo_cop)}\n`), // 6: Base
-    utf8('\n'),
-    utf8(`Esperado efectivo: ${formatCOP(payload.valor_esperado_efectivo)}\n`), // 7
-    utf8(`Reportado efectivo: ${formatCOP(payload.valor_reportado_efectivo)}\n`), // 8
-    utf8(`Diferencia efectivo: ${diferenciaEfectivoSign}\n`), // 9 (signed)
-    utf8(`Tolerancia efectivo: ${formatCOP(payload.tolerancia_efectivo)}\n`), // 10
-  ];
-  if (datafono !== null) {
-    const diferenciaDatafonoSign = datafono.diferencia < 0
-      ? `-${formatCOP(Math.abs(datafono.diferencia))}`
-      : `+${formatCOP(datafono.diferencia)}`;
-    lines.push(
-      utf8('\n'),
-      utf8(`Esperado datafono: ${formatCOP(datafono.esperado)}\n`), // 11a
-      utf8(`Reportado datafono: ${formatCOP(datafono.reportado)}\n`), // 11b
-      utf8(`Diferencia datafono: ${diferenciaDatafonoSign}\n`), // 11c (signed)
-      utf8(`Tolerancia datafono: ${formatCOP(datafono.tolerancia)}\n`), // 11d
-    );
-  }
-  // 12: Justificacion — silent omission when empty (spec scenario 3).
-  if (payload.justificacion && payload.justificacion.length > 0) {
-    lines.push(utf8('\n'));
-    lines.push(utf8(`Justificacion: ${payload.justificacion}\n`));
-  }
-  return concat(lines);
-}
-
-// ──────────────────────────────────────────────────────────────────────────
-// Public per-tipo builders (exported for tests)
-// ──────────────────────────────────────────────────────────────────────────
-
-export function buildEntradaBuffer(payload: EntradaPayload): Buffer {
-  return concat([
-    escInit(),
-    buildEntradaBody(payload),
-    cutPartial(),
-    lf(),
-  ]);
-}
-
-export function buildSalidaBuffer(payload: SalidaPayload): Buffer {
-  return concat([
-    escInit(),
-    buildSalidaBody(payload),
-    cutPartial(),
-    lf(),
-  ]);
-}
-
-export function buildSalidaMensualidadBuffer(payload: SalidaMensualidadPayload): Buffer {
-  return concat([
-    escInit(),
-    buildSalidaMensualidadBody(payload),
-    cutPartial(),
-    lf(),
-  ]);
-}
-
-export function buildReimpresionBuffer(payload: ReimpresionPayload): Buffer {
-  return concat([
-    escInit(),
-    buildReimpresionBody(payload),
-    cutPartial(),
-    lf(),
-  ]);
-}
-
-export function buildReciboPagoBuffer(payload: ReciboPagoPayload): Buffer {
-  return concat([
-    escInit(),
-    buildReciboPagoBody(payload),
-    cutPartial(),
-    lf(),
-  ]);
-}
-
-export function buildArqueoBuffer(payload: ArqueoPayload): Buffer {
-  return concat([
-    escInit(),
-    buildArqueoBody(payload),
-    cutPartial(),
-    lf(),
-  ]);
-}
-
-// ──────────────────────────────────────────────────────────────────────────
-// Top-level dispatcher
+// Lines + ESC/POS per tipo
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
- * Validate `tipo` and `payload`, then dispatch to the matching
- * `build*Buffer()` function. Throws:
- *   - `EscposInvalidTipoError` if `tipo` is not in the 5-allowed union.
+ * Validate `tipo` + `payload` and return the channel-neutral lines of the
+ * ticket (shared by the ESC/POS and the HTML channel). Throws:
+ *   - `EscposInvalidTipoError` if `tipo` is not allowed.
  *   - `EscposPayloadMissingFieldError` if Zod parse fails.
- *
- * @param tipo One of `TiqueteTipo`.
- * @param payload Unknown — validated against the matching Zod schema.
- * @returns A `Buffer` containing the full ESC/POS byte stream.
  */
-export function build(tipo: TiqueteTipo, payload: unknown): Buffer {
+export function lineasDeTiquete(tipo: TiqueteTipo, payload: unknown): FacturaLinea[] {
   if (!isTiqueteTipo(tipo)) {
     throw new EscposInvalidTipoError(String(tipo));
   }
@@ -656,45 +129,72 @@ export function build(tipo: TiqueteTipo, payload: unknown): Buffer {
     throw new EscposPayloadMissingFieldError(issues);
   }
 
-  // Cast is safe: validatePayload returned null (no issues) AND the schema
-  // type matches the tipo. We re-narrow explicitly to keep `tsc --strict`
-  // happy without `any`.
+  // Casts are safe: validatePayload returned null (no issues) AND the schema
+  // matches the tipo; re-parsing keeps `tsc --strict` happy without `any`.
   switch (tipo) {
-    case 'entrada': {
-      const p = entradaPayloadSchema.parse(payload) as EntradaPayload;
-      return buildEntradaBuffer(p);
-    }
-    case 'salida': {
-      const p = salidaPayloadSchema.parse(payload) as SalidaPayload;
-      return buildSalidaBuffer(p);
-    }
-    case 'salida-mensualidad': {
-      const p = salidaMensualidadPayloadSchema.parse(payload) as SalidaMensualidadPayload;
-      return buildSalidaMensualidadBuffer(p);
-    }
-    case 'reimpresion': {
-      const p = reimpresionPayloadSchema.parse(payload) as ReimpresionPayload;
-      return buildReimpresionBuffer(p);
-    }
-    case 'recibo_pago': {
-      const p = reciboPagoPayloadSchema.parse(payload) as ReciboPagoPayload;
-      return buildReciboPagoBuffer(p);
-    }
-    case 'arqueo': {
-      const p = arqueoPayloadSchema.parse(payload) as ArqueoPayload;
-      return buildArqueoBuffer(p);
-    }
-    default: {
-      // Exhaustiveness — should be unreachable because isTiqueteTipo
-      // narrows above. Defensive throw to satisfy `noImplicitReturns`.
+    case 'entrada':
+      return construirEntrada(entradaPayloadSchema.parse(payload) as EntradaPayload);
+    case 'salida':
+      return construirSalida(salidaPayloadSchema.parse(payload) as SalidaPayload);
+    case 'salida-mensualidad':
+      return construirSalidaMensualidad(
+        salidaMensualidadPayloadSchema.parse(payload) as SalidaMensualidadPayload,
+      );
+    case 'reimpresion':
+      return construirReimpresion(reimpresionPayloadSchema.parse(payload) as ReimpresionPayload);
+    case 'recibo_pago':
+      return construirRecibo(reciboPagoPayloadSchema.parse(payload) as ReciboPagoPayload);
+    case 'arqueo':
+      return construirArqueoParcial(arqueoPayloadSchema.parse(payload) as ArqueoPayload);
+    default:
+      // Exhaustiveness — unreachable because isTiqueteTipo narrows above.
       throw new EscposInvalidTipoError(String(tipo));
-    }
   }
 }
 
 /**
- * Narrow a runtime string to the 5-allowed union. Returns true if the
- * input is one of `'entrada' | 'salida' | 'salida-mensualidad' | 'reimpresion' | 'recibo_pago'`.
+ * Validate and render the full ESC/POS byte stream of a ticket on 80 mm paper.
+ * `marca` = raster logo from `marcaParaBridge()`; without it the brand prints
+ * as text. Throws like `lineasDeTiquete`.
+ */
+export function build(tipo: TiqueteTipo, payload: unknown, marca: MarcaRaster | null = null): Buffer {
+  return lineasAEscpos(lineasDeTiquete(tipo, payload), marca);
+}
+
+// Typed per-tipo renderers (exported for tests and callers that already hold a typed payload).
+
+export function buildEntradaBuffer(payload: EntradaPayload, marca: MarcaRaster | null = null): Buffer {
+  return lineasAEscpos(construirEntrada(payload), marca);
+}
+
+export function buildSalidaBuffer(payload: SalidaPayload, marca: MarcaRaster | null = null): Buffer {
+  return lineasAEscpos(construirSalida(payload), marca);
+}
+
+export function buildSalidaMensualidadBuffer(
+  payload: SalidaMensualidadPayload,
+  marca: MarcaRaster | null = null,
+): Buffer {
+  return lineasAEscpos(construirSalidaMensualidad(payload), marca);
+}
+
+export function buildReimpresionBuffer(
+  payload: ReimpresionPayload,
+  marca: MarcaRaster | null = null,
+): Buffer {
+  return lineasAEscpos(construirReimpresion(payload), marca);
+}
+
+export function buildReciboPagoBuffer(payload: ReciboPagoPayload, marca: MarcaRaster | null = null): Buffer {
+  return lineasAEscpos(construirRecibo(payload), marca);
+}
+
+export function buildArqueoBuffer(payload: ArqueoPayload, marca: MarcaRaster | null = null): Buffer {
+  return lineasAEscpos(construirArqueoParcial(payload), marca);
+}
+
+/**
+ * Narrow a runtime string to a `TiqueteTipo`.
  */
 export function isTiqueteTipo(value: unknown): value is TiqueteTipo {
   return (

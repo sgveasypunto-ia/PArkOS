@@ -1,8 +1,9 @@
 /**
  * Unit tests for F7.3 — Tiquete de salida CU-15S byte-level fixtures.
  *
- * Covers the 19 conceptual fields per `plan.md:1789-1807` + the 2
- * DEC-SUC-26 additions (QR + logo) — see REQ-OPS-158.
+ * Covers the 19 conceptual fields per `plan.md:1789-1807` — see REQ-OPS-158.
+ * The ticket is the common 80 mm format (48 columns, easypunto logos, NO QR):
+ * the former QR + logo markers were removed on purpose.
  *
  * The 19-key byte-presence table mirrors the spec field list:
  *   1. Encabezado       (payload.sucursal.encabezado — DEC-SUC-28 dynamic)
@@ -11,10 +12,10 @@
  *   4. NIT              (payload.empresa.nit)
  *   5. Régimen          (payload.empresa.regimen)
  *   6. Operario         (payload.operario)
- *   7. Sello            (literal "*** SALIDA ***" wrapped by escText2x/escTextReset)
+ *   7. Sello            (literal "*** SALIDA ***", bold and centred)
  *   7b. Tipo de operación (literal "Tipo: ROTACIÓN", bold — pedido del operador)
  *   8. Folio            (payload.folio)
- *   9. Tarifa aplicada  (formatCOP(payload.tarifaAplicada) + "/hora")
+ *   9. Tarifa aplicada  (copPlano(payload.tarifaAplicada) + "/hora")
  *  10. Fecha            (date-only, dd/MM/yyyy)
  *  11. Hora entrada     (HH:mm)
  *  12. Hora salida      (HH:mm)
@@ -33,11 +34,11 @@ import { describe, it, expect } from 'vitest';
 
 import { build } from '../escposBuilder';
 import {
-  formatCOP,
   formatFecha,
   formatHora,
   type SalidaPayload,
 } from '../escposTemplates';
+import { copPlano } from './copPlano';
 import { validSalidaPayload } from './escposBuilder.test';
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -57,7 +58,7 @@ function makeSalidaPayload(overrides?: Partial<SalidaPayload>): SalidaPayload {
 // ──────────────────────────────────────────────────────────────────────────
 
 describe('buildSalidaBuffer — CU-15S 19-field byte presence (HU-F7.3 / REQ-OPS-158)', () => {
-  it('T1 — emits all 19 CU-15S conceptual fields + QR + logo markers', () => {
+  it('T1 — emits all 19 CU-15S conceptual fields', () => {
     const payload = makeSalidaPayload();
     const buf = build('salida', payload);
 
@@ -82,7 +83,7 @@ describe('buildSalidaBuffer — CU-15S 19-field byte presence (HU-F7.3 / REQ-OPS
     // 9. Tarifa aplicada
     expect(
       buf.indexOf(
-        Buffer.from(`Tarifa: ${formatCOP(payload.tarifaAplicada)}/hora`),
+        Buffer.from(`Tarifa: ${copPlano(payload.tarifaAplicada)}/hora`),
       ),
     ).toBeGreaterThanOrEqual(0);
     // 10. Fecha (date-only)
@@ -109,15 +110,15 @@ describe('buildSalidaBuffer — CU-15S 19-field byte presence (HU-F7.3 / REQ-OPS
     ).toBeGreaterThanOrEqual(0);
     // 14. Subtotal
     expect(
-      buf.indexOf(Buffer.from(`Subtotal: ${formatCOP(payload.subtotal)}`)),
+      buf.indexOf(Buffer.from(`Subtotal: ${copPlano(payload.subtotal)}`)),
     ).toBeGreaterThanOrEqual(0);
     // 15. IVA
     expect(
-      buf.indexOf(Buffer.from(`IVA: ${formatCOP(payload.iva)}`)),
+      buf.indexOf(Buffer.from(`IVA: ${copPlano(payload.iva)}`)),
     ).toBeGreaterThanOrEqual(0);
     // 16. TOTAL
     expect(
-      buf.indexOf(Buffer.from(`TOTAL: ${formatCOP(payload.total)}`)),
+      buf.indexOf(Buffer.from(`TOTAL: ${copPlano(payload.total)}`)),
     ).toBeGreaterThanOrEqual(0);
     // 17. Medio de pago
     expect(
@@ -137,9 +138,9 @@ describe('buildSalidaBuffer — CU-15S 19-field byte presence (HU-F7.3 / REQ-OPS
     expect(
       buf.indexOf(Buffer.from(`Resolucion FE: ${payload.resolucionFE}`)),
     ).toBeGreaterThanOrEqual(0);
-    // DEC-SUC-26 — QR + logo markers
-    expect(buf.indexOf(Buffer.from(';QR:'))).toBeGreaterThanOrEqual(0);
-    expect(buf.indexOf(Buffer.from(';LOGO:'))).toBeGreaterThanOrEqual(0);
+    // 80 mm: no QR / logo markers (intentional change)
+    expect(buf.indexOf(Buffer.from(';QR:'))).toBe(-1);
+    expect(buf.indexOf(Buffer.from(';LOGO:'))).toBe(-1);
   });
 
   it('T1.optional — emits "Observaciones:" when payload has observaciones', () => {
@@ -185,61 +186,24 @@ describe('buildSalidaBuffer — DEC-SUC-28 dynamic header', () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// T3 — QR marker (DEC-SUC-26)
+// T3 — 80 mm format: brand logos, no QR
 // ──────────────────────────────────────────────────────────────────────────
 
-describe('buildSalidaBuffer — DEC-SUC-26 QR marker', () => {
-  it('T3 — buffer contains ";QR:" text marker + the qrDataUrl payload verbatim', () => {
-    const payload = makeSalidaPayload();
-    const buf = build('salida', payload);
-    expect(buf.indexOf(Buffer.from(';QR:'))).toBeGreaterThanOrEqual(0);
-    expect(buf.indexOf(Buffer.from(payload.qrDataUrl))).toBeGreaterThanOrEqual(0);
-    expect(
-      buf.indexOf(Buffer.from(`;QR:${payload.qrDataUrl}`)),
-    ).toBeGreaterThanOrEqual(0);
-  });
-});
-
-// ──────────────────────────────────────────────────────────────────────────
-// T4 — Logo marker (DEC-SUC-26)
-// ──────────────────────────────────────────────────────────────────────────
-
-describe('buildSalidaBuffer — DEC-SUC-26 logo marker', () => {
-  it('T4 — buffer contains ";LOGO:" text marker + cached logo ("OK" sentinel)', () => {
-    const payload = makeSalidaPayload();
-    const buf = build('salida', payload);
-    expect(buf.indexOf(Buffer.from(';LOGO:'))).toBeGreaterThanOrEqual(0);
-    // validSalidaPayload() has logoDataUrl='data:image/png;base64,BBB' (non-empty)
-    // → builder emits "OK" sentinel (text marker — actual rasterization is
-    // the caller's responsibility per F5.2 R4 purity).
-    expect(buf.indexOf(Buffer.from(';LOGO:OK'))).toBeGreaterThanOrEqual(0);
+describe('buildSalidaBuffer — 80 mm format', () => {
+  it('T3 — no QR marker nor QR command; the easypunto brand opens and closes the ticket', () => {
+    const buf = build('salida', makeSalidaPayload());
+    expect(buf.indexOf(Buffer.from(';QR:'))).toBe(-1);
+    expect(buf.indexOf(Buffer.from([0x1d, 0x28, 0x6b]))).toBe(-1);
+    expect(buf.toString('utf8').match(/easypunto/g)).toHaveLength(2);
   });
 
-  it('T4.fallback — buffer contains placeholder glyph ▢ when logoDataUrl is empty', () => {
-    const payload = makeSalidaPayload({ logoDataUrl: '' });
-    const buf = build('salida', payload);
-    // ▢ placeholder glyph (DEC-SUC-08 documented "logo missing" sentinel)
-    expect(buf.indexOf(Buffer.from('\u25A2'))).toBeGreaterThanOrEqual(0);
-    expect(buf.indexOf(Buffer.from(';LOGO:\u25A2'))).toBeGreaterThanOrEqual(0);
-  });
-});
-
-// ──────────────────────────────────────────────────────────────────────────
-// Sello wrap — F7.3 locks the escText2x/escTextReset invariant
-// ──────────────────────────────────────────────────────────────────────────
-
-describe('buildSalidaBuffer — sello wrap (DEC-SUC-04 + DEC-SUC-27)', () => {
-  it('emits "*** SALIDA ***" preceded by 0x1B 0x21 0x30 and followed by 0x1B 0x21 0x00', () => {
-    const payload = makeSalidaPayload();
-    const buf = build('salida', payload);
-    const text2xIdx = buf.indexOf(Buffer.from([0x1b, 0x21, 0x30]));
+  it('sello "*** SALIDA ***" is bold (ESC E 1 ... ESC E 0), never 2x text (ESC ! n)', () => {
+    const buf = build('salida', makeSalidaPayload());
+    const boldOn = buf.lastIndexOf(Buffer.from([0x1b, 0x45, 0x01]), buf.indexOf(Buffer.from('*** SALIDA ***')));
     const selloIdx = buf.indexOf(Buffer.from('*** SALIDA ***'));
-    const textResetIdx = buf.indexOf(
-      Buffer.from([0x1b, 0x21, 0x00]),
-      text2xIdx + 3, // search starts AFTER the 0x1B 0x21 0x30 opcode
-    );
-    expect(text2xIdx).toBeGreaterThanOrEqual(0);
-    expect(selloIdx).toBeGreaterThan(text2xIdx);
-    expect(textResetIdx).toBeGreaterThan(selloIdx);
+    expect(boldOn).toBeGreaterThanOrEqual(0);
+    expect(selloIdx).toBeGreaterThan(boldOn);
+    expect(buf.indexOf(Buffer.from([0x1b, 0x45, 0x00]), selloIdx)).toBeGreaterThan(selloIdx);
+    expect(buf.indexOf(Buffer.from([0x1b, 0x21]))).toBe(-1);
   });
 });

@@ -1,13 +1,12 @@
 /**
  * Unit tests for F6.2 — `renderEntradaTiqueteHtml()` and `print('entrada', ...)`.
  *
- * Covers:
- *   - HTML 17-field layout — `<h1>`, `<p>`, `<img>` tags for QR + logo.
- *   - Verbatim `@page { size: 80mm auto; margin: 2mm }` CSS rule (DEC-SUC-08).
+ * Covers (80 mm format, intentional change: the HTML is the one of the common
+ * ticket base — fixed-width rows, easypunto logos, NO QR image):
+ *   - 15-field layout as rows of text.
+ *   - `@page { size: 80mm auto; margin: 0 }` (no browser margin on the 72 mm column).
  *   - `window.print()` exactly once (F5.2 contract preserved).
- *   - Tipo de operación — always-on `<strong>Tipo: ROTACIÓN</strong>` /
- *     `<strong>Tipo: MENSUALIDAD</strong>` under sello (pedido del operador).
- *   - Logo placeholder — `▢` glyph when `logoDataUrl === ''`.
+ *   - Tipo de operación — always-on `Tipo: ROTACIÓN` / `Tipo: MENSUALIDAD` (bold).
  */
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 
@@ -32,7 +31,7 @@ function makeIngreso(overrides?: { uuid_subscripcion_cliente?: string | null }) 
   };
 }
 
-function buildPayloadFromFactory(opts?: { esMensualidad?: boolean; emptyLogo?: boolean }) {
+function buildPayloadFromFactory(opts?: { esMensualidad?: boolean }) {
   return buildEntradaPayload({
     ingreso: makeIngreso({
       uuid_subscripcion_cliente: opts?.esMensualidad ? 'sub-uuid-123' : null,
@@ -47,104 +46,85 @@ function buildPayloadFromFactory(opts?: { esMensualidad?: boolean; emptyLogo?: b
     operario: 'op-001',
     tipoVehiculo: 'auto' as const,
     tarifa: { valor_hora_cents: 5000 },
-    documentos: opts?.emptyLogo
-      ? []
-      : [
-          { tipo: 'logo' as const, documento_b64: 'data:image/png;base64,FAKE_LOGO' },
-          { tipo: 'certificado' as const, documento_b64: 'POL-12345' },
-        ],
+    documentos: [{ tipo: 'certificado' as const, documento_b64: 'POL-12345' }],
     fechaHora: '2026-09-16T08:30:00Z',
   });
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// renderEntradaTiqueteHtml — 17-field HTML layout
+// renderEntradaTiqueteHtml — 15-field HTML layout (rows of the 80 mm base)
 // ──────────────────────────────────────────────────────────────────────────
 
-describe('renderEntradaTiqueteHtml — 17-field HTML layout', () => {
-  it('renders the ENCABEZADO as <h1>{payload.sucursal.encabezado}</h1> (DEC-SUC-28 dynamic)', () => {
+/** Visible text lines of the ticket HTML (one per row, `<style>` excluded). */
+function lineasDe(html: string): string[] {
+  const root = document.createElement('div');
+  root.innerHTML = html;
+  root.querySelectorAll('style').forEach((n) => n.remove());
+  return Array.from(root.querySelectorAll('p, div.fila'))
+    .map((n) => (n.textContent ?? '').replace(/[\u00a0\u202f]/g, ' ').trim())
+    .filter((t) => t !== '');
+}
+
+describe('renderEntradaTiqueteHtml — 15-field HTML layout', () => {
+  it('renders the ENCABEZADO (dynamic sucursal header, DEC-SUC-28), bold and centred', () => {
     const html = renderEntradaTiqueteHtml(validEntradaPayload());
-    // F7.3 (DEC-SUC-28) — dynamic branch header replaces the F5.2
-    // "PARKINGOS" constant. Drift guard: PARKINGOS MUST NOT appear.
-    expect(html).toContain('<h1>Sucursal Centro</h1>');
-    expect(html).not.toContain('<h1>PARKINGOS</h1>');
+    expect(lineasDe(html)).toContain('Sucursal Centro');
+    expect(html).toMatch(/text-align:center;font-weight:bold;[^"]*">Sucursal Centro<\/p>/);
+    expect(html).not.toContain('PARKINGOS');
   });
 
-  it('renders empresa.nombre, direccion, nit, regimen as <p> tags', () => {
+  it('renders empresa.nombre, direccion, nit and regimen', () => {
+    const lineas = lineasDe(renderEntradaTiqueteHtml(validEntradaPayload()));
+    expect(lineas).toContain('Parkos Demo S.A.S.');
+    expect(lineas).toContain('Calle 1 #2-3, Bogota');
+    expect(lineas).toContain('NIT 900123456-7');
+    expect(lineas).toContain('Responsable de IVA');
+  });
+
+  it('renders operario and the sello', () => {
+    const lineas = lineasDe(renderEntradaTiqueteHtml(validEntradaPayload()));
+    expect(lineas).toContain('Operario: op-001');
+    expect(lineas).toContain('*** TIQUETE DE ENTRADA ***');
+  });
+
+  it('renders folio, placa, tarifa and horario', () => {
+    const lineas = lineasDe(renderEntradaTiqueteHtml(validEntradaPayload()));
+    expect(lineas).toContain('Folio: 00000000-0000-4000-8000-000000000001');
+    expect(lineas).toContain('Placa: ABC123');
+    expect(lineas).toContain('Tarifa: $ 5.000/hora');
+    expect(lineas).toContain('Horario: 24 horas');
+  });
+
+  it('splits fechaEntrada into Fecha (date) and Hora (time)', () => {
+    const lineas = lineasDe(renderEntradaTiqueteHtml(validEntradaPayload()));
+    expect(lineas).toContain('Fecha: 16/09/2026');
+    expect(lineas.some((l) => /^Hora: \d{2}:\d{2}$/.test(l))).toBe(true);
+  });
+
+  it('renders polizaRC and observaciones when present', () => {
+    const lineas = lineasDe(renderEntradaTiqueteHtml(validEntradaPayload()));
+    expect(lineas).toContain('Poliza RC: POL-12345');
+    expect(lineas).toContain('Observaciones: Sin novedad');
+  });
+
+  it('has NO QR image: the only images are the two easypunto logos (header and footer)', () => {
     const html = renderEntradaTiqueteHtml(validEntradaPayload());
-    expect(html).toContain('<p>Parkos Demo S.A.S.</p>');
-    expect(html).toContain('<p>Calle 1 #2-3, Bogota</p>');
-    expect(html).toContain('<p>NIT 900123456-7</p>');
-    expect(html).toContain('<p>Responsable de IVA</p>');
+    const sinLogo = html.replace(/src="data:image[^"]*"/g, 'src=""');
+    expect(sinLogo).not.toMatch(/qr/i);
+    expect(html.match(/<img\b[^>]*>/gi)).toHaveLength(2);
+    for (const img of html.match(/<img\b[^>]*>/gi) ?? []) expect(img).toContain('alt="easypunto"');
   });
 
-  it('renders operario as <p>Operario: ...</p>', () => {
-    const html = renderEntradaTiqueteHtml(validEntradaPayload());
-    expect(html).toContain('<p>Operario: op-001</p>');
+  it('renders the Tipo line MENSUALIDAD (bold) when esMensualidad=true', () => {
+    const html = renderEntradaTiqueteHtml(buildPayloadFromFactory({ esMensualidad: true }));
+    expect(lineasDe(html)).toContain('Tipo: MENSUALIDAD');
+    expect(html).toMatch(/font-weight:bold;[^"]*">Tipo: MENSUALIDAD<\/p>/);
   });
 
-  it('renders sello <h2>*** TIQUETE DE ENTRADA ***</h2>', () => {
-    const html = renderEntradaTiqueteHtml(validEntradaPayload());
-    expect(html).toContain('<h2>*** TIQUETE DE ENTRADA ***</h2>');
-  });
-
-  it('renders folio, placa, tarifa, horario as <p> tags', () => {
-    const html = renderEntradaTiqueteHtml(validEntradaPayload());
-    expect(html).toContain('<p>Folio: 00000000-0000-4000-8000-000000000001</p>');
-    expect(html).toContain('<p>Placa: ABC123</p>');
-    // formatCOP produces non-breaking space (U+00A0) between "$" and
-    // the amount; assert via regex to avoid literal-char fragility.
-    expect(html).toMatch(/<p>Tarifa: \$[\s\u00A0]+5\.000\/hora<\/p>/);
-    expect(html).toContain('<p>Horario: 24 horas</p>');
-  });
-
-  it('splits fechaEntrada into Fecha (date) and Hora (time) <p> tags', () => {
-    const html = renderEntradaTiqueteHtml(validEntradaPayload());
-    expect(html).toContain('<p>Fecha: 16/09/2026</p>');
-    // Hora is timezone-dependent — assert via regex (HH:mm pattern).
-    expect(html).toMatch(/<p>Hora: \d{2}:\d{2}<\/p>/);
-  });
-
-  it('renders polizaRC as <p>Poliza RC: ...</p> when present', () => {
-    const html = renderEntradaTiqueteHtml(validEntradaPayload());
-    expect(html).toContain('<p>Poliza RC: POL-12345</p>');
-  });
-
-  it('renders observaciones as <p>Observaciones: ...</p> when present', () => {
-    const html = renderEntradaTiqueteHtml(validEntradaPayload());
-    expect(html).toContain('<p>Observaciones: Sin novedad</p>');
-  });
-
-  it('renders QR as inline <img src="{qrDataUrl}" alt="QR ingreso" />', () => {
-    const html = renderEntradaTiqueteHtml(validEntradaPayload());
-    expect(html).toContain('<img src="data:image/png;base64,AAA" alt="QR ingreso" />');
-  });
-
-  it('renders logo as inline <img src="{logoDataUrl}" alt="Logo" /> when present', () => {
-    const html = renderEntradaTiqueteHtml(validEntradaPayload());
-    expect(html).toContain('<img src="data:image/png;base64,BBB" alt="Logo" />');
-  });
-
-  it('renders Tipo tag <strong>Tipo: MENSUALIDAD</strong> when esMensualidad=true', () => {
-    const payload = buildPayloadFromFactory({ esMensualidad: true });
-    const html = renderEntradaTiqueteHtml(payload);
-    expect(html).toContain('<strong>Tipo: MENSUALIDAD</strong>');
-  });
-
-  it('renders Tipo tag <strong>Tipo: ROTACIÓN</strong> when esMensualidad=false (pedido del operador — siempre explícito)', () => {
-    const payload = buildPayloadFromFactory({ esMensualidad: false });
-    const html = renderEntradaTiqueteHtml(payload);
-    expect(html).toContain('<strong>Tipo: ROTACIÓN</strong>');
+  it('renders the Tipo line ROTACIÓN when esMensualidad=false (pedido del operador — siempre explícito)', () => {
+    const html = renderEntradaTiqueteHtml(buildPayloadFromFactory({ esMensualidad: false }));
+    expect(lineasDe(html)).toContain('Tipo: ROTACIÓN');
     expect(html).not.toContain('MENSUALIDAD');
-  });
-
-  it('renders logo placeholder glyph ▢ when logoDataUrl is empty (cold cache)', () => {
-    const payload = buildPayloadFromFactory({ emptyLogo: true });
-    expect(payload.logoDataUrl).toBe('');
-    const html = renderEntradaTiqueteHtml(payload);
-    expect(html).toContain('\u25A2');
-    // No <img> with empty src
-    expect(html).not.toContain('<img src=""');
   });
 });
 
@@ -182,7 +162,8 @@ describe('print("entrada", payload) — F6.2 wiring', () => {
       | undefined;
     expect(injectedNode).toBeDefined();
     expect(injectedNode?.textContent).toBe(PAGE_RULE);
-    expect(PAGE_RULE).toBe('@page { size: 80mm auto; margin: 2mm }');
+    // Intentional change (80 mm): margin 0, the 72 mm column is centred by the ticket CSS.
+    expect(PAGE_RULE).toBe('@page { size: 80mm auto; margin: 0 }');
   });
 
   it('calls window.print() exactly once', () => {
@@ -195,10 +176,11 @@ describe('print("entrada", payload) — F6.2 wiring', () => {
     expect(document.getElementById('parkos-escpos-fallback-style')).toBeNull();
   });
 
-  it('renders the Tipo tag in the fallback HTML when esMensualidad=true', () => {
+  it('renders the Tipo line in the fallback HTML when esMensualidad=true', () => {
     const payload = buildPayloadFromFactory({ esMensualidad: true });
     print('entrada', payload);
     const container = document.getElementById('parkos-escpos-fallback-container');
-    expect(container?.innerHTML).toContain('<strong>Tipo: MENSUALIDAD</strong>');
+    expect(container?.innerHTML).toContain('Tipo: MENSUALIDAD');
+    expect(container?.querySelector('[data-testid="tiquete-entrada-print"]')).not.toBeNull();
   });
 });

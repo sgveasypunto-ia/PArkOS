@@ -74,8 +74,8 @@ export default defineConfig({
           branches: 90,
         },
         // HU-F7.3 (REQ-OPS-158..160) — pure renderer-side ESC/POS byte
-        // composition. Tightened to 19-CU-15S + 15-CU-15SM fields +
-        // dynamic header + QR + logo markers (DEC-SUC-26..28). Per the
+        // composition. Since the 80 mm unification it validates the payload
+        // and renders the lines of `tiqueteLineas.ts` (dynamic header, no QR). Per the
         // preflight budget review: ≥85/85/80 (lower than the >90% strict
         // mode because the builder has 4 typed bodies — some EOpcode
         // branches are defensive by design).
