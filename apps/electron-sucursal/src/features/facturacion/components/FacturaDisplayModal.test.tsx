@@ -110,10 +110,9 @@ describe('<FacturaDisplayModal /> — HU-F8.4', () => {
       render(<FacturaDisplayModal factura={conEmpresa('Verif Empresa Ronda Tres SAS')} onClose={vi.fn()} />);
       const vehiculo = screen.getByTestId('factura-display-vehiculo');
       const empresa = screen.getByTestId('factura-display-empresa');
-      // Mismo ajuste a 32 columnas que la impresión: continuación con sangría de 2.
+      // Mismo ancho que la impresión (80 mm = 48 columnas): 36 caracteres caben en una línea.
       expect(screen.getAllByTestId('factura-display-empresa-linea').map((l) => l.textContent)).toEqual([
-        'Empresa: Verif Empresa Ronda',
-        '  Tres SAS',
+        'Empresa: Verif Empresa Ronda Tres SAS',
       ]);
       const hijos = Array.from(vehiculo.children);
       const iPlaca = hijos.findIndex((h) => h.textContent === 'BUG023');
@@ -148,7 +147,7 @@ describe('<FacturaDisplayModal /> — HU-F8.4', () => {
       render(<FacturaDisplayModal factura={conEmpresa(largo)} onClose={vi.fn()} />);
       const lineas = screen.getAllByTestId('factura-display-empresa-linea').map((l) => l.textContent ?? '');
       expect(lineas.length).toBeGreaterThan(1);
-      for (const l of lineas) expect(l.length).toBeLessThanOrEqual(32);
+      for (const l of lineas) expect(l.length).toBeLessThanOrEqual(48);
       expect(lineas[0].startsWith('Empresa: ')).toBe(true);
       expect(lineas.slice(1).every((l) => l.startsWith('  '))).toBe(true);
       expect(lineas.join('').replace(/\s+/g, '')).toBe('Empresa:' + largo.replace(/\s+/g, ''));

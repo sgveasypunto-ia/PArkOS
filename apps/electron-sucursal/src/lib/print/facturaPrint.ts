@@ -24,7 +24,16 @@
  */
 import type { BridgeSurface } from '../../../electron/bridge';
 import type { FacturaRead } from '../../features/facturacion/api/facturaApi';
-import { cutPartial, escBoldOff, escBoldOn, escCenter, escInit, escLeft, lf } from './escposBuilder';
+import { cutPartial, escCenter, escInit, escLeft, lf } from './escposBuilder';
+import {
+  TICKET_ANCHO_IMPRIMIBLE_MM,
+  TICKET_COLUMNAS,
+  ajustarTexto,
+  escAreaImprimible,
+  escNegrita,
+  filaTicket,
+  separadorTicket,
+} from './ticketBase';
 import { formatCOPDecimal, formatFechaCorta } from './escposTemplates';
 import { ejecutarImpresion } from './avisoImpresion';
 import { printHtml } from './fallbackBrowser';
@@ -37,8 +46,8 @@ import {
   semanticaLineas,
 } from './facturaTextos';
 
-/** Printable columns (58mm paper, Font A). 80mm paper simply leaves margin. */
-export const FACTURA_COLUMNAS = 32;
+/** Printable columns of the invoice: 80 mm paper, Font A (see `ticketBase.ts`). */
+export const FACTURA_COLUMNAS = TICKET_COLUMNAS;
 
 export type FacturaLinea =
   | { tipo: 'texto'; texto: string; centro?: boolean; negrita?: boolean }
@@ -251,49 +260,58 @@ export function construirFactura(f: FacturaRead): FacturaLinea[] {
   return out;
 }
 
+/** One physical printed line (already wrapped to the ticket width). */
+export interface LineaFisica {
+  texto: string;
+  centro: boolean;
+  negrita: boolean;
+}
+
 /**
- * Two-column row. A label that does not fit next to the amount goes on its own
- * line(s) and the amount is right-aligned below: never truncate a concept.
+ * Expand the channel-neutral lines into physical lines of at most `cols`
+ * columns (word wrap, two-column rows, separators). Shared by the plain-text
+ * dump and the ESC/POS renderer so both print exactly the same thing.
  */
-function ajustar(izq: string, der: string, cols: number, sangria: boolean): string {
-  const prefijo = sangria ? "  " : "";
-  const maxIzq = cols - prefijo.length - der.length - 1;
-  if (izq.length <= maxIzq) {
-    return `${prefijo}${izq}${" ".repeat(cols - prefijo.length - izq.length - der.length)}${der}`;
+export function expandirLineas(lineas: FacturaLinea[], cols: number = FACTURA_COLUMNAS): LineaFisica[] {
+  const out: LineaFisica[] = [];
+  for (const l of lineas) {
+    if (l.tipo === 'sep') {
+      out.push({ texto: separadorTicket(cols), centro: false, negrita: false });
+    } else if (l.tipo === 'fila') {
+      for (const t of filaTicket(l.izq, l.der, cols, l.sangria === true)) {
+        out.push({ texto: t, centro: false, negrita: l.negrita === true });
+      }
+    } else {
+      for (const t of ajustarTexto(l.texto, cols)) {
+        out.push({ texto: t, centro: l.centro === true, negrita: l.negrita === true });
+      }
+    }
   }
-  return `${prefijo}${izq}
-${" ".repeat(Math.max(0, cols - der.length))}${der}`;
+  return out;
 }
 
 /** Plain-text rendering of the document (what the thermal printer receives). */
 export function facturaATexto(lineas: FacturaLinea[], cols: number = FACTURA_COLUMNAS): string {
-  return lineas
-    .map((l) => {
-      if (l.tipo === 'sep') return '-'.repeat(cols);
-      if (l.tipo === 'fila') return ajustar(l.izq, l.der, cols, l.sangria === true);
-      return l.texto;
-    })
+  return expandirLineas(lineas, cols)
+    .map((l) => l.texto)
     .join('\n');
 }
 
-/** ESC/POS bytes for a channel-neutral list of lines (same framing as the other tiquetes). */
+/**
+ * ESC/POS bytes for a channel-neutral list of lines on 80 mm paper.
+ * Commands: ESC @ (init), GS L 0 0 (left margin 0), GS W 0x40 0x02 (printable
+ * width 576 dots), ESC M 0 (Font A, 48 columns), ESC a 1 / ESC a 0 (centre),
+ * ESC E n (bold), GS V 0 (partial cut).
+ */
 export function lineasAEscpos(lineas: FacturaLinea[]): Buffer {
   const u = (t: string): Buffer => Buffer.from(t, 'utf8');
-  const parts: Buffer[] = [escInit()];
-  for (const l of lineas) {
-    const texto =
-      l.tipo === 'sep'
-        ? '-'.repeat(FACTURA_COLUMNAS)
-        : l.tipo === 'fila'
-          ? ajustar(l.izq, l.der, FACTURA_COLUMNAS, l.sangria === true)
-          : l.texto;
-    const centro = l.tipo === 'texto' && l.centro === true;
-    const negrita = l.tipo !== 'sep' && l.negrita === true;
-    if (centro) parts.push(escCenter());
-    if (negrita) parts.push(escBoldOn());
-    parts.push(u(`${texto}\n`));
-    if (negrita) parts.push(escBoldOff());
-    if (centro) parts.push(escLeft());
+  const parts: Buffer[] = [escInit(), escAreaImprimible()];
+  for (const l of expandirLineas(lineas)) {
+    if (l.centro) parts.push(escCenter());
+    if (l.negrita) parts.push(escNegrita(true));
+    parts.push(u(`${l.texto}\n`));
+    if (l.negrita) parts.push(escNegrita(false));
+    if (l.centro) parts.push(escLeft());
   }
   parts.push(u('\n'), cutPartial(), lf());
   return Buffer.concat(parts);
@@ -313,20 +331,32 @@ function esc(text: string): string {
     .replace(/'/g, '&#39;');
 }
 
+/**
+ * Fixed-width ticket CSS: 72 mm of content on an 80 mm roll, monospace sized so
+ * that 48 columns fill the width (Courier advance = 0.6 em → 1.5 mm per column
+ * = 2.5 mm font). No height, no viewport units: the length is free and the
+ * width never depends on the window.
+ */
+const ESTILO_TICKET =
+  `font-family:'Courier New',Courier,monospace;font-size:2.5mm;line-height:1.25;width:${TICKET_ANCHO_IMPRIMIBLE_MM}mm;margin:0 auto;box-sizing:border-box;color:#000;background:#fff`;
+
 /** HTML rendering (browser mode) of a list of lines, semantic rows. */
 export function lineasAHtml(lineas: FacturaLinea[], testid: string): string {
   const body = lineas
     .map((l) => {
-      if (l.tipo === 'sep') return '<hr />';
+      if (l.tipo === 'sep') return '<hr style="border:0;border-top:1px dashed #000;margin:1mm 0" />';
       if (l.tipo === 'fila') {
-        const style = `display:flex;justify-content:space-between;gap:8px${l.sangria ? ';padding-left:12px' : ''}${l.negrita ? ';font-weight:bold' : ''}`;
-        return `<div class="fila" style="${style}"><span>${esc(l.izq)}</span> <span>${esc(l.der)}</span></div>`;
+        const style = `display:flex;justify-content:space-between;gap:2mm${l.sangria ? ';padding-left:3mm' : ''}${l.negrita ? ';font-weight:bold' : ''}`;
+        return `<div class="fila" style="${style}"><span style="overflow-wrap:anywhere">${esc(l.izq)}</span> <span style="white-space:nowrap">${esc(l.der)}</span></div>`;
       }
-      const style = `${l.centro ? 'text-align:center;' : ''}${l.negrita ? 'font-weight:bold;' : ''}margin:0;word-break:break-all`;
+      const style = `${l.centro ? 'text-align:center;' : ''}${l.negrita ? 'font-weight:bold;' : ''}margin:0;overflow-wrap:anywhere`;
       return `<p style="${style}">${esc(l.texto)}</p>`;
     })
     .join('\n');
-  return `<div data-testid="${testid}" style="font-family:monospace;font-size:12px">\n${body}\n</div>`;
+  return `<style>@page { size: 80mm auto; margin: 0 }</style>
+<div data-testid="${testid}" style="${ESTILO_TICKET}">
+${body}
+</div>`;
 }
 
 /** HTML rendering (browser mode), semantic rows with the same lines. */
