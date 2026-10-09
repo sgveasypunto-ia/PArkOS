@@ -445,6 +445,10 @@ class VentaSuscripcionCreate(_Base):
     placas: Annotated[list[PlacaVehiculo], Field(min_length=1, max_length=2)]
     uuid_tipo_subscripcion: uuid_lib.UUID
     fecha_inicio_cobertura: date
+    # Optional: the operator may SHORTEN the coverage end (never extend it
+    # past the plan's computed end; the backend validates -> 422
+    # ``fecha_fin_fuera_de_rango``). Omitted -> plan-computed end.
+    fecha_fin_cobertura: date | None = None
     cobrar_ahora: bool = False
     # FE is ALWAYS emitted now. This flag only chooses the invoice
     # recipient: true -> the subscriber's own data; false/omitted -> the

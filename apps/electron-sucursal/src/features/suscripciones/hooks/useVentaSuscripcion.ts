@@ -45,6 +45,7 @@ export {
   VentaSuscripcionPlacaRepetidaError,
   VentaSuscripcionTipoIncompatibleError,
   VentaSuscripcionCantidadMaximaError,
+  VentaSuscripcionFechaFinError,
   VentaSuscripcionValidationError,
 } from './ventaSuscripcionErrors';
 
@@ -58,6 +59,7 @@ import {
   VentaSuscripcionPlacaRepetidaError,
   VentaSuscripcionTipoIncompatibleError,
   VentaSuscripcionCantidadMaximaError,
+  VentaSuscripcionFechaFinError,
   VentaSuscripcionValidationError,
   extraerMensajeDetail422,
 } from './ventaSuscripcionErrors';
@@ -92,6 +94,8 @@ interface BackendErrorBody {
   placa?: string;
   tipos_encontrados?: string[];
   cantidad_maxima_vehiculos?: number;
+  message?: string;
+  fecha_fin_maxima?: string;
 }
 
 /**
@@ -156,6 +160,12 @@ async function mutateFn(
         }
         if (code === 'placa_duplicada_en_venta') {
           throw new VentaSuscripcionPlacaRepetidaError(parsed?.placa ?? '');
+        }
+        if (code === 'fecha_fin_fuera_de_rango') {
+          throw new VentaSuscripcionFechaFinError(
+            typeof parsed?.message === 'string' ? parsed.message : '',
+            typeof parsed?.fecha_fin_maxima === 'string' ? parsed.fecha_fin_maxima : '',
+          );
         }
         if (code === 'tipo_vehiculo_incompatible') {
           throw new VentaSuscripcionTipoIncompatibleError(

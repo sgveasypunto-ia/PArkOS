@@ -275,7 +275,7 @@ async def venta_suscripcion(
     # is `fecha_inicio_cobertura + duracion_dias`, not the calendar month.
     try:
         monto_a_cobrar = repo_venta.calcular_monto_suscripcion(plan=plan)
-        fecha_vencimiento = repo_venta.calcular_fecha_vencimiento(
+        fecha_fin_plan = repo_venta.calcular_fecha_vencimiento(
             plan=plan,
             fecha_inicio_cobertura=payload.fecha_inicio_cobertura,
         )
@@ -283,6 +283,32 @@ async def venta_suscripcion(
         raise HTTPException(
             status_code=422,
             detail={"error": "plan_duracion_dias_invalido"},
+            headers=no_store,
+        ) from exc
+
+    # The operator may only SHORTEN the coverage end (never extend past
+    # what the plan covers). Optional; absent -> plan-computed end.
+    try:
+        fecha_vencimiento = repo_venta.resolver_fecha_fin_cobertura(
+            fecha_inicio_cobertura=payload.fecha_inicio_cobertura,
+            fecha_fin_plan=fecha_fin_plan,
+            fecha_fin_solicitada=payload.fecha_fin_cobertura,
+        )
+    except repo_venta.FechaFinFueraDeRangoError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "fecha_fin_fuera_de_rango",
+                "message": (
+                    "La fecha de fin debe estar entre el "
+                    f"{exc.fecha_inicio_cobertura.strftime('%d/%m/%Y')} y el "
+                    f"{exc.fecha_fin_maxima.strftime('%d/%m/%Y')}: solo se puede "
+                    "acortar la vigencia, no extenderla."
+                ),
+                "fecha_inicio_cobertura": exc.fecha_inicio_cobertura.isoformat(),
+                "fecha_fin_maxima": exc.fecha_fin_maxima.isoformat(),
+                "fecha_fin_solicitada": exc.fecha_fin_solicitada.isoformat(),
+            },
             headers=no_store,
         ) from exc
 
@@ -302,6 +328,18 @@ async def venta_suscripcion(
         uuid_subscripcion_cliente=subscripcion.uuid,
         uuid_vehiculos=[v.uuid for v in vehiculos],
     )
+    if fecha_vencimiento != fecha_fin_plan:
+        # Audit: the operator shortened the end vs the plan-computed one.
+        # Appends to the log_transaccional hash chain (no [A] mutation).
+        await repo_venta.registrar_ajuste_fin_vigencia(
+            session,
+            actor_uuid=ctx.actor_uuid,
+            uuid_sucursal=ctx.sucursal_uuid,
+            uuid_subscripcion=subscripcion.uuid,
+            fecha_inicio_cobertura=payload.fecha_inicio_cobertura,
+            fecha_fin_plan=fecha_fin_plan,
+            fecha_fin_efectiva=fecha_vencimiento,
+        )
 
     # --- Step 8a: Optional V8 cobro sub-chain (F1.9 helpers reused). ----
     # V8 wires 4 sub-chain tables (facturas + factura_detalle +

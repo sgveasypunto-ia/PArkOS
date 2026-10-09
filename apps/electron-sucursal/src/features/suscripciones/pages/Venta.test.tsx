@@ -848,3 +848,125 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     });
   });
 });
+
+describe('<Venta /> paso 6 — fecha de fin editable (solo acortar)', () => {
+  // 2026-09-30 (Bogota) + plan de 30 dias => fin del plan 2026-10-29.
+  const INICIO = '2026-09-30';
+  const MAX = '2026-10-29';
+
+  async function hastaPagoConFecha(): Promise<void> {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-01T01:00:00Z'));
+    renderVenta();
+    await hastaPago();
+  }
+  const finInput = (): HTMLInputElement =>
+    screen.getByTestId('venta-vigencia-fin-input') as HTMLInputElement;
+  const payload = (): Record<string, unknown> =>
+    mockTrigger.mock.calls[0]?.[0] as Record<string, unknown>;
+
+  it('el input de fin limita min/max al rango [inicio, fin del plan]', async () => {
+    try {
+      await hastaPagoConFecha();
+      expect(finInput().type).toBe('date');
+      expect(finInput().min).toBe(INICIO);
+      expect(finInput().max).toBe(MAX);
+      expect(finInput().value).toBe(MAX);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('acortar la fecha actualiza el resumen, se envia en el payload y no cambia el total', async () => {
+    try {
+      await hastaPagoConFecha();
+      await change('venta-vigencia-fin-input', '2026-10-15');
+      expect(screen.getByTestId('venta-vigencia-fin').textContent).toBe('15/10/2026');
+      expect(screen.getByTestId('pago-total').textContent).toBe('30000');
+      await click('pago-confirmar-stub');
+      expect(mockTrigger).toHaveBeenCalledTimes(1);
+      expect(payload().fecha_fin_cobertura).toBe('2026-10-15');
+      expect(payload().fecha_inicio_cobertura).toBe(INICIO);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('sin tocar la fecha el payload NO lleva fecha_fin_cobertura (compatibilidad)', async () => {
+    try {
+      await hastaPagoConFecha();
+      await click('pago-confirmar-stub');
+      expect('fecha_fin_cobertura' in payload()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('dejar la fecha igual al fin del plan tampoco la envia', async () => {
+    try {
+      await hastaPagoConFecha();
+      await change('venta-vigencia-fin-input', '2026-10-15');
+      await change('venta-vigencia-fin-input', MAX);
+      await click('pago-confirmar-stub');
+      expect('fecha_fin_cobertura' in payload()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['2026-10-30', 'despues_maximo'],
+    ['2026-09-29', 'antes_inicio'],
+    ['', 'vacia'],
+  ])('fecha %s fuera de rango: mensaje accesible, foco y NO se cobra', async (valor, codigo) => {
+    try {
+      await hastaPagoConFecha();
+      await change('venta-vigencia-fin-input', valor);
+      const err = screen.getByTestId('venta-vigencia-fin-error');
+      expect(err.textContent).toMatch(new RegExp(codigo));
+      expect(finInput().getAttribute('aria-invalid')).toBe('true');
+      expect(finInput().getAttribute('aria-describedby')).toContain(err.id);
+      await click('pago-confirmar-stub');
+      expect(mockTrigger).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(finInput());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('422 fecha_fin_fuera_de_rango del servidor: se queda en el paso 6, muestra el mensaje y enfoca el campo', async () => {
+    const mod = await import('../hooks/useVentaSuscripcion');
+    mockTrigger.mockRejectedValueOnce(
+      new mod.VentaSuscripcionFechaFinError('Solo se puede acortar la vigencia', '2026-10-29'),
+    );
+    try {
+      await hastaPagoConFecha();
+      await change('venta-vigencia-fin-input', '2026-10-15');
+      await click('pago-confirmar-stub');
+      expect(screen.getByTestId('venta-paso-6')).toBeDefined();
+      expect(screen.getByTestId('venta-vigencia-fin-error').textContent).toBe(
+        'Solo se puede acortar la vigencia',
+      );
+      expect(finInput().getAttribute('aria-invalid')).toBe('true');
+      expect(document.activeElement).toBe(finInput());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('volver y cambiar de plan descarta la fecha editada', async () => {
+    try {
+      await hastaPagoConFecha();
+      await change('venta-vigencia-fin-input', '2026-10-15');
+      await click('venta-volver');
+      await click('venta-volver');
+      await click('venta-volver');
+      await paso3(PLAN_ANY);
+      await paso4();
+      await paso5();
+      expect(finInput().value).toBe(MAX);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

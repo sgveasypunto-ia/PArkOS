@@ -49,6 +49,7 @@ import { act, renderHook } from '@testing-library/react';
 import {
   useVentaSuscripcion,
   VentaSuscripcionDuplicatePlateError,
+  VentaSuscripcionFechaFinError,
   VentaSuscripcionTipoIncompatibleError,
   VentaSuscripcionValidationError,
 } from './useVentaSuscripcion';
@@ -296,5 +297,71 @@ describe('useVentaSuscripcion — REQ-OPS-177 + REQ-OPS-179', () => {
       );
       expect((sinPlaca as VentaSuscripcionTipoIncompatibleError).placa).toBe('');
     });
+  });
+});
+
+describe('useVentaSuscripcion — fecha_fin_cobertura (solo acortar)', () => {
+  const conFin = { ...inputBase, fecha_fin_cobertura: '2026-10-05' };
+
+  it('envia fecha_fin_cobertura en el cuerpo del POST', async () => {
+    mockFetch.mockResolvedValueOnce(happyResponse);
+    const { result } = renderHook(() => useVentaSuscripcion());
+    await act(async () => {
+      await result.current.trigger(conFin);
+    });
+    const init = mockFetch.mock.calls[0]?.[1] as { body: string };
+    expect(JSON.parse(init.body).fecha_fin_cobertura).toBe('2026-10-05');
+  });
+
+  it('422 fecha_fin_fuera_de_rango -> VentaSuscripcionFechaFinError con mensaje y maximo', async () => {
+    const { ParkosHttpError } = await import('@parkos/ui-kit/fetch');
+    mockFetch.mockRejectedValueOnce(
+      new ParkosHttpError(
+        422,
+        JSON.stringify({
+          detail: {
+            error: 'fecha_fin_fuera_de_rango',
+            message: 'Solo se puede acortar la vigencia',
+            fecha_fin_maxima: '2026-10-19',
+          },
+        }),
+        '/api/v1/clientes/venta-suscripcion',
+      ),
+    );
+    const { result } = renderHook(() => useVentaSuscripcion());
+    let caught: unknown;
+    await act(async () => {
+      try {
+        await result.current.trigger(conFin);
+      } catch (e) {
+        caught = e;
+      }
+    });
+    expect(caught).toBeInstanceOf(VentaSuscripcionFechaFinError);
+    expect((caught as VentaSuscripcionFechaFinError).mensaje).toBe(
+      'Solo se puede acortar la vigencia',
+    );
+    expect((caught as VentaSuscripcionFechaFinError).fechaFinMaxima).toBe('2026-10-19');
+  });
+
+  it('reintento con el mismo cuerpo en vuelo comparte Idempotency-Key; otro fin usa otra', async () => {
+    const { withActionIdempotencyKey } = await import('../../operacion/lib/idempotency');
+    const keys: string[] = [];
+    const run = (body: unknown): Promise<void> =>
+      withActionIdempotencyKey(
+        { method: 'POST', path: '/api/v1/clientes/venta-suscripcion', body },
+        async (key) => {
+          keys.push(key);
+          await new Promise((r) => setTimeout(r, 5));
+        },
+      );
+    await Promise.all([
+      run(conFin),
+      run({ ...conFin }),
+      run({ ...inputBase, fecha_fin_cobertura: '2026-10-06' }),
+    ]);
+    expect(keys).toHaveLength(3);
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[2]).not.toBe(keys[0]);
   });
 });
