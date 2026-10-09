@@ -187,3 +187,25 @@ describe('TiqueteModal', () => {
     ).toBeGreaterThan(0);
   });
 });
+
+describe('TiqueteModal — logo en la vista previa (igual que el impreso)', () => {
+  it('muestra el logo easypunto arriba y abajo dentro del papel de la vista previa', () => {
+    render(
+      <TiqueteModal
+        open
+        uuid_ingreso="11111111-1111-1111-1111-111111111111"
+        tipo_entrada="ROTACION"
+        imprimir={async () => ({ ok: true })}
+        onSiguiente={vi.fn()}
+      />,
+    );
+    const papel = screen.getByTestId('tiquete-preview');
+    const cab = papel.querySelector('[data-testid="marca-ticket-encabezado"]');
+    const pie = papel.querySelector('[data-testid="marca-ticket-pie"]');
+    expect(cab?.getAttribute('src')).toMatch(/^data:image\/svg\+xml/);
+    expect(cab?.getAttribute('alt')).toBe('easypunto');
+    expect(pie?.getAttribute('src')).toMatch(/^data:image\/svg\+xml/);
+    expect(papel.firstElementChild?.contains(cab as Node)).toBe(true);
+    expect(papel.lastElementChild?.contains(pie as Node)).toBe(true);
+  });
+});

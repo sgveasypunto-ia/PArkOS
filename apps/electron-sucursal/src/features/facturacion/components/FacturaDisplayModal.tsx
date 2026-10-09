@@ -34,6 +34,7 @@
  */
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
+import { MarcaTicketPantalla } from '../../../components/MarcaTicketPantalla';
 import {
   Dialog,
   DialogContent,
@@ -167,6 +168,7 @@ export function FacturaDisplayModal({
               aria-label={t('facturacion:display.titulo', { defaultValue: 'Factura emitida' })}
               className="mx-auto w-full max-w-sm rounded border border-dashed border-muted-foreground/40 bg-white p-3 font-mono text-xs leading-relaxed text-neutral-900 shadow-inner"
             >
+              <MarcaTicketPantalla posicion="encabezado" />
               <div className="mb-1 text-center font-bold uppercase tracking-wide">
                 {t('facturacion:display.titulo', { defaultValue: 'Factura emitida' })}
               </div>
@@ -322,6 +324,7 @@ export function FacturaDisplayModal({
                   )}
                 </div>
               )}
+              <MarcaTicketPantalla posicion="pie" />
             </div>
 
             {feWarning && (
