@@ -393,20 +393,27 @@ async def venta_suscripcion(
         # (the claim is absent when the turno is opened after login).
         # None only when there is no open turno (column is nullable).
         assert ctx.sucursal_uuid is not None  # operador- issuer always carries one
-        await repo_factura.crear_factura_pago(
+        sesion_pago = await resolver_sesion_de_pago(
             session,
-            uuid_factura=uuid_factura,
+            actor_uuid=ctx.actor_uuid,
             uuid_sucursal=ctx.sucursal_uuid,
-            medio_pago=payload.medio_pago,
-            valor=total_con_iva,
-            referencia=payload.referencia,
-            uuid_sesion=await resolver_sesion_de_pago(
-                session,
-                actor_uuid=ctx.actor_uuid,
-                uuid_sucursal=ctx.sucursal_uuid,
-                uuid_sesion_explicita=ctx.uuid_sesion,
-            ),
+            uuid_sesion_explicita=ctx.uuid_sesion,
         )
+        try:
+            await repo_factura.crear_factura_pago(
+                session,
+                uuid_factura=uuid_factura,
+                uuid_sucursal=ctx.sucursal_uuid,
+                medio_pago=payload.medio_pago,
+                valor=total_con_iva,
+                referencia=payload.referencia,
+                uuid_sesion=sesion_pago,
+            )
+        except repo_factura.VoucherDatafonoDuplicadoError as exc:
+            # Voucher already used today in this branch: nothing of the sale
+            # (subscripción + factura) may persist.
+            await session.rollback()
+            raise _helpers.voucher_duplicado_http(exc) from exc
 
     # --- Step 10: KD-VENTA-01 SINGLE COMMIT (subscripción + cobro only). ---
     # KD-VENTA-03b: FE emission (Step 9b below) intentionally happens

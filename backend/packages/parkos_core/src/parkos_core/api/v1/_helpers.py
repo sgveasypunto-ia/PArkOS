@@ -12,7 +12,9 @@ mutation -- so it can be unit-tested without a session.
 """
 from __future__ import annotations
 
-from fastapi import Response
+from fastapi import HTTPException, Response
+
+from ...repo.factura import VoucherDatafonoDuplicadoError
 
 
 def no_store_headers() -> dict[str, str]:
@@ -31,4 +33,20 @@ def apply_no_store_header(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store"
 
 
-__all__ = ["apply_no_store_header", "no_store_headers"]
+def voucher_duplicado_http(exc: VoucherDatafonoDuplicadoError) -> HTTPException:
+    """422 ``voucher_datafono_duplicado`` shared by every payment handler."""
+    return HTTPException(
+        status_code=422,
+        detail={
+            "error": "voucher_datafono_duplicado",
+            "message": (
+                f"El voucher {exc.referencia} ya fue registrado hoy en esta sucursal. "
+                "Verifique el número de voucher del datáfono."
+            ),
+            "referencia": exc.referencia,
+        },
+        headers=no_store_headers(),
+    )
+
+
+__all__ = ["apply_no_store_header", "no_store_headers", "voucher_duplicado_http"]

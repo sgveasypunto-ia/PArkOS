@@ -88,7 +88,7 @@ from ...schemas.facturacion import (
 from ..deps import requires_issuer
 from ..router_factory import make_router
 from ._factura_display import build_display_factura
-from ._helpers import apply_no_store_header, no_store_headers
+from ._helpers import apply_no_store_header, no_store_headers, voucher_duplicado_http
 
 router = APIRouter(prefix="/facturacion", tags=["facturacion"])
 
@@ -466,6 +466,8 @@ async def create_factura(
                 uuid_sesion_explicita=payload.uuid_sesion or ctx.uuid_sesion,
             ),
         )
+    except repo_factura.VoucherDatafonoDuplicadoError as exc:
+        raise voucher_duplicado_http(exc) from exc
     except repo_factura.PagoDuplicadoError as exc:
         # Defense in depth (QA backlog cleanup, 2026-10-02): same unmanaged
         # 500 class as ``create_factura_pago`` below. Unreachable in the
@@ -595,6 +597,8 @@ async def create_factura_pago(
                 uuid_sesion_explicita=payload.uuid_sesion or ctx.uuid_sesion,
             ),
         )
+    except repo_factura.VoucherDatafonoDuplicadoError as exc:
+        raise voucher_duplicado_http(exc) from exc
     except repo_factura.PagoDuplicadoError as exc:
         # This handler's own ``responses`` doc already advertised 409
         # ``pago_duplicado`` (BEFORE INSERT trigger
@@ -879,6 +883,8 @@ async def create_factura_servicio(
                 uuid_sesion_explicita=payload.uuid_sesion or ctx.uuid_sesion,
             ),
         )
+    except repo_factura.VoucherDatafonoDuplicadoError as exc:
+        raise voucher_duplicado_http(exc) from exc
     except repo_factura.PagoDuplicadoError as exc:
         # Same unmanaged-500 class fixed on create_factura/
         # create_factura_pago above (QA backlog cleanup, 2026-10-02).
