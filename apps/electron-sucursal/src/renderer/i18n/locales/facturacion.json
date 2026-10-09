@@ -104,7 +104,9 @@
     },
     "success": {
       "titulo": "Reimpresión registrada",
-      "costo": "Costo cobrado"
+      "costo": "Costo cobrado",
+      "vista_previa": "Vista previa del tiquete reimpreso",
+      "imprimir_de_nuevo": "Imprimir de nuevo"
     },
     "nuevo": "Reimprimir otro",
     "anular": {

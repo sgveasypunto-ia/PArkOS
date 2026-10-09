@@ -34,7 +34,7 @@
  *       español, no el texto crudo del error HTTP (H10).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, act, within } from '@testing-library/react';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -696,5 +696,119 @@ describe('<ReimprimirTiquete /> — HU-F8.3 búsqueda placa/cupo + cobro real + 
 
     expect(screen.getByTestId('reimprimir-ingreso-encontrado')).toBeInTheDocument();
     expect(screen.queryByTestId('reimprimir-candidatos')).not.toBeInTheDocument();
+  });
+});
+
+describe('<ReimprimirTiquete /> — vista previa en pantalla del tiquete reimpreso', () => {
+  const RESULTADO_SIN_COSTO = {
+    uuid: UUID_REIMPRESION,
+    workflow_estado: 'autorizada' as const,
+    uuid_reimpresion_padre: null,
+    uuid_ingreso: UUID_INGRESO,
+    uuid_factura: null,
+    costo_aplicado: 0,
+    motivo: MOTIVO_VALIDO,
+    created_at: '2026-09-19T11:00:00Z',
+  };
+
+  async function registrarSinCosto(): Promise<void> {
+    mockUseReimprimir.mockReturnValue(buildReimprimirHook({ triggerResult: RESULTADO_SIN_COSTO }));
+    mockUseAnularReimpresion.mockReturnValue(buildAnularHook());
+    mockUseRegistrarPagoServicio.mockReturnValue(buildRegistrarPagoServicioHook());
+    mockUseCostoServicioVigente.mockReturnValue({ costo: 0, isLoading: false, error: undefined });
+    mockResolverIngresoReimpresion.mockResolvedValue({ kind: 'found', ingreso: INGRESO_CON_PLACA });
+    renderAt();
+    await llegarAlPago();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('reimprimir-sin-costo-confirmar'));
+    });
+  }
+
+  it('V1: tras registrar aparece la vista previa con el logo arriba y abajo y la leyenda, el motivo y el cuerpo del tiquete', async () => {
+    await registrarSinCosto();
+
+    const vista = await screen.findByTestId('reimprimir-vista-previa');
+    expect(within(vista).getByTestId('marca-ticket-encabezado')).toBeInTheDocument();
+    expect(within(vista).getByTestId('marca-ticket-pie')).toBeInTheDocument();
+    // The logo bookends the ticket: first and last child of the paper.
+    expect(vista.firstElementChild).toContainElement(within(vista).getByTestId('marca-ticket-encabezado'));
+    expect(vista.lastElementChild).toContainElement(within(vista).getByTestId('marca-ticket-pie'));
+
+    // One logical row per element: join with a space so a wrapped motivo reads as the printed one.
+    const texto = within(vista)
+      .getAllByTestId('linea-ticket')
+      .map((p) => p.textContent ?? '')
+      .join(' ');
+    expect(texto).toContain('*** REIMPRESIÓN ***');
+    expect(texto).toContain('Reimpresión No. 000000AA');
+    expect(texto).toContain('--- COPIA AUTORIZADA ---');
+    expect(texto).toContain(`Motivo: ${MOTIVO_VALIDO}`);
+    expect(texto).toContain('Folio original:');
+    expect(texto).toContain(UUID_INGRESO);
+    expect(texto).toContain('Empresa Real SAS');
+    expect(texto).toContain('Operario: Operador QA E2E');
+    expect(texto).toContain('*** TIQUETE DE ENTRADA ***');
+    expect(texto).toContain('Placa: ABC123');
+    expect(texto).toContain('Conserve este tiquete para la salida.');
+  });
+
+  it('V2: la vista muestra exactamente las lineas que imprime el tiquete (misma fuente)', async () => {
+    await registrarSinCosto();
+
+    const vista = await screen.findByTestId('reimprimir-vista-previa');
+    const impreso = Buffer.from((imprimirMock.mock.calls[0]?.[0] as { buffer: string }).buffer, 'base64')
+      .toString('utf8')
+      .replace(/ /g, ' ');
+    for (const p of within(vista).getAllByTestId('linea-ticket')) {
+      expect(impreso).toContain((p.textContent ?? '').trim());
+    }
+  });
+
+  it('V3: registrar la reimpresion imprime UNA sola vez; "Imprimir de nuevo" imprime otra, por la misma ruta', async () => {
+    await registrarSinCosto();
+    await screen.findByTestId('reimprimir-vista-previa');
+    expect(imprimirMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('reimprimir-imprimir-de-nuevo'));
+    });
+    expect(imprimirMock).toHaveBeenCalledTimes(2);
+    const [a, b] = imprimirMock.mock.calls.map((c) => (c[0] as { buffer: string }).buffer);
+    expect(b).toBe(a);
+  });
+
+  it('V4: si "Imprimir de nuevo" falla, avisa "No se pudo imprimir el tiquete reimpreso" y la vista sigue', async () => {
+    useAvisosImpresion.setState({ avisos: [] });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await registrarSinCosto();
+    await screen.findByTestId('reimprimir-vista-previa');
+    imprimirMock.mockRejectedValueOnce(new Error('printer_offline'));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('reimprimir-imprimir-de-nuevo'));
+    });
+    expect(useAvisosImpresion.getState().avisos[0]?.mensaje).toMatch(
+      /^No se pudo imprimir el tiquete reimpreso/,
+    );
+    expect(screen.getByTestId('reimprimir-vista-previa')).toBeInTheDocument();
+  });
+
+  it('V5: con cobro (T6) la vista tambien aparece y "Reimprimir otro" la limpia', async () => {
+    mockUseReimprimir.mockReturnValue(buildReimprimirHook());
+    mockUseAnularReimpresion.mockReturnValue(buildAnularHook());
+    mockUseRegistrarPagoServicio.mockReturnValue(buildRegistrarPagoServicioHook());
+    mockResolverIngresoReimpresion.mockResolvedValue({ kind: 'found', ingreso: INGRESO_CON_PLACA });
+    renderAt();
+    await llegarAlPago();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+    expect(await screen.findByTestId('reimprimir-vista-previa')).toBeInTheDocument();
+    // Reimpresion + factura = 2 prints, never duplicated.
+    expect(imprimirMock).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('reimprimir-nuevo'));
+    });
+    expect(screen.queryByTestId('reimprimir-vista-previa')).not.toBeInTheDocument();
   });
 });
