@@ -39,6 +39,12 @@ export const tipoSubscripcionesConfig: CatalogConfig = {
     {
       name: 'tipo_cliente_permitido',
       label: 'Tipo de cliente permitido',
+      type: 'select',
+      optionsResource: 'tipo-persona',
+      optionsLabelKey: 'tipo',
+      optionsValueKey: 'tipo',
+      emptyOptionLabel: 'Cualquiera',
+      hint: 'Filtrá los planes por tipo de persona. Dejalo en "Cualquiera" para no restringir.',
     },
     {
       name: 'uuid_tipo_vehiculo',

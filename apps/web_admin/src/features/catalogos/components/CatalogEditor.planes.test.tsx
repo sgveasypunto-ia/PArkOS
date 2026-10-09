@@ -18,6 +18,8 @@ const PLAN_ANY = '11111111-1111-4111-8111-111111111111';
 const PLAN_MOTO = '22222222-2222-4222-8222-222222222222';
 const PLAN_VIEJO = '88888888-8888-4888-8888-888888888888';
 const TIPO_VIEJO = '99999999-9999-4999-8999-999999999999';
+const PERSONA_NATURAL = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const PERSONA_JURIDICA = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 const row = (over: Record<string, unknown>) => ({
   vigente_desde: '2026-01-01T00:00:00',
@@ -49,6 +51,12 @@ vi.mock('../api/catalogApi', async () => {
             vigente_hasta: '2026-02-01T00:00:00',
             estado: 'inactivo',
           }),
+        ];
+      }
+      if (resource === 'tipo-persona') {
+        return [
+          row({ uuid: PERSONA_NATURAL, tipo: 'Natural' }),
+          row({ uuid: PERSONA_JURIDICA, tipo: 'Juridica' }),
         ];
       }
       return [
@@ -147,7 +155,7 @@ describe('Planes: tipo de vehículo', () => {
 
     await waitFor(() => expect(mockUpdate).toHaveBeenCalledTimes(1));
     expect(mockUpdate.mock.calls[0]?.[2]).toMatchObject({ uuid_tipo_vehiculo: TIPO_VIEJO });
-    expect(screen.queryByTestId('catalog-submit-error-tipo-subscripciones')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('nueva-version-submit-error')).not.toBeInTheDocument();
   });
 
   it('refuses to put a typed plan back to "Cualquiera" and says why (generic update ignores null)', async () => {
@@ -159,8 +167,32 @@ describe('Planes: tipo de vehículo', () => {
     await user.selectOptions(select, '');
     await user.click(screen.getByTestId('submit-nueva-version'));
 
-    const msg = await screen.findByTestId('catalog-submit-error-tipo-subscripciones');
+    const msg = await screen.findByTestId('nueva-version-submit-error');
     expect(msg).toHaveTextContent(/no puede volver a "Cualquiera"/);
     expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it('tipo_cliente_permitido is a select populated by tipos-persona and saves the `tipo` string (not the uuid)', async () => {
+    const user = userEvent.setup();
+    render(<CatalogEditor config={tipoSubscripcionesConfig} />, { wrapper });
+    await user.click(await screen.findByTestId('catalog-new-tipo-subscripciones'));
+
+    const select = (await screen.findByTestId(
+      'field-tipo_cliente_permitido',
+    )) as HTMLSelectElement;
+    await waitFor(() => expect(select.options.length).toBe(3)); // Cualquiera + Natural + Juridica
+    expect(select.options[0]?.textContent).toBe('Cualquiera');
+    expect(select.options[1]?.value).toBe('Natural');
+    expect(select.options[2]?.value).toBe('Juridica');
+
+    await user.type(screen.getByTestId('field-tipo'), 'Plan premium');
+    await user.selectOptions(select, 'Juridica');
+    await user.click(screen.getByTestId('submit-nueva-version'));
+
+    await waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(1));
+    expect(mockCreate.mock.calls[0]?.[1]).toMatchObject({
+      tipo: 'Plan premium',
+      tipo_cliente_permitido: 'Juridica',
+    });
   });
 });
