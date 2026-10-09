@@ -39,6 +39,7 @@ import { validarNitModulo11 } from '../../../lib/validation/nit';
 import { validarIdentificacion, type TipoIdentificador } from '../../../lib/validation/identificacion';
 import { mensajeIdentificacion } from '../../../lib/validation/mensajesIdentificacion';
 import { formatCOP } from '../../../features/caja/lib/format';
+import { leerVoucherDuplicado } from '../lib/voucherDuplicado';
 
 /**
  * Placeholder de ejemplo por tipo de documento — puramente cosmético.
@@ -438,6 +439,17 @@ export function PagoModal({
       await onSubmit(values);
     } catch (err) {
       console.error('[PagoModal] submit failed:', err);
+      // Caja bug 3: voucher de datáfono ya usado -> error de CAMPO (aria-invalid
+      // + aria-describedby via FormControl) con foco, no el error genérico.
+      const voucherDuplicado = leerVoucherDuplicado(err);
+      if (voucherDuplicado) {
+        form.setError(
+          'voucher',
+          { type: 'server', message: voucherDuplicado.message },
+          { shouldFocus: true },
+        );
+        return;
+      }
       form.setError('root.server', {
         type: 'server',
         message: t('facturacion:pago.error_registro', {
