@@ -17,19 +17,25 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 import { descargarResumenCierrePdf } from '../../../lib/print/resumenCierrePdf';
+import { useImprimirCierre } from '../hooks/useImprimirCierre';
 import { buildResumenCierreSections, type ResumenCierreInput } from '../lib/resumenCierre';
 
 export interface ResumenCierreTurnoProps extends ResumenCierreInput {
   onFinalizar: () => void;
+  /** True while the summary data is still loading: the ticket cannot be printed yet. */
+  cargando?: boolean;
 }
 
 export function ResumenCierreTurno({
   onFinalizar,
+  cargando = false,
   ...input
 }: ResumenCierreTurnoProps): JSX.Element {
   const { t } = useTranslation(['caja', 'common']);
   const [pdfError, setPdfError] = useState(false);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+  const [isPrinting, setIsPrinting] = useState(false);
+  const imprimir = useImprimirCierre();
 
   const sections = useMemo(
     () => buildResumenCierreSections(input, t),
@@ -61,6 +67,27 @@ export function ResumenCierreTurno({
       setPdfError(true);
     } finally {
       setIsGeneratingPdf(false);
+    }
+  };
+
+  // The ticket needs the operator's count (the figure confirmed on screen); without it there is nothing to print.
+  const puedeImprimir = !cargando && input.arqueo.valor_efectivo_reportado !== undefined;
+
+  // Same single print route as the invoice and the automatic slip: failures leave the visible notice with retry.
+  const onImprimir = async (): Promise<void> => {
+    setIsPrinting(true);
+    try {
+      await imprimir.resumenTurno({
+        sesion: input.sesion,
+        arqueo: input.arqueo,
+        secciones: sections,
+        nota: t('caja:cerrarTurno.resumenCierre.notaElectronicos', {
+          defaultValue:
+            'Los pagos electrónicos se muestran solo como información: no cuentan como base ni para el cuadre de efectivo.',
+        }),
+      });
+    } finally {
+      setIsPrinting(false);
     }
   };
 
@@ -128,6 +155,16 @@ export function ResumenCierreTurno({
           data-testid="resumen-cierre-descargar-pdf"
         >
           {t('caja:cerrarTurno.resumenCierre.descargarPdf', { defaultValue: 'Descargar PDF' })}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => void onImprimir()}
+          disabled={!puedeImprimir || isPrinting}
+          aria-busy={isPrinting}
+          data-testid="resumen-cierre-imprimir-ticket"
+        >
+          {t('caja:cerrarTurno.resumenCierre.imprimirTicket', { defaultValue: 'Imprimir ticket' })}
         </Button>
         <Button
           type="button"

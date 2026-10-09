@@ -59,6 +59,7 @@
       "titulo": "Turno cerrado",
       "descripcion": "Este resumen es de solo lectura y no se guarda en la aplicación. Descárgalo si lo necesitas antes de salir.",
       "descargarPdf": "Descargar PDF",
+      "imprimirTicket": "Imprimir ticket",
       "finalizar": "Finalizar y salir",
       "pdfTitulo": "Resumen de cierre de turno",
       "pdfPie": "Documento informativo generado al cierre del turno. Los pagos electrónicos no hacen parte del cuadre de efectivo.",
