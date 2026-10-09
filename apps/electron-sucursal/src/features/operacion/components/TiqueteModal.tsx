@@ -89,6 +89,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
+import { MarcaTicketPantalla } from '../../../components/MarcaTicketPantalla';
 import { formatFechaHoraCorta } from '../../caja/lib/format';
 import {
   Dialog,
@@ -303,6 +304,7 @@ export function TiqueteModal({
           })}
           className="mx-auto w-full max-w-sm rounded border border-dashed border-muted-foreground/40 bg-white p-3 font-mono text-xs leading-relaxed text-neutral-900 shadow-inner"
         >
+          <MarcaTicketPantalla posicion="encabezado" />
           <div className="mb-2 text-center font-bold uppercase tracking-wide">
             {t('tiquete_entrada_preview_header', {
               defaultValue: 'Tiquete de entrada',
@@ -424,6 +426,7 @@ export function TiqueteModal({
               })}
             </div>
           )}
+          <MarcaTicketPantalla posicion="pie" />
         </div>
 
         {/* FEATURE A: editable observaciones post-POST. RHF-free —

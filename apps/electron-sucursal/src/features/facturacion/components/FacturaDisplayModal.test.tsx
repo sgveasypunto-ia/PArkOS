@@ -510,3 +510,17 @@ describe('<FacturaDisplayModal /> — textos de la factura (FB3)', () => {
     expect(screen.getByTestId('factura-display-desc').textContent).toContain('16:07');
   });
 });
+
+describe('FacturaDisplayModal — logo en la vista previa (igual que el impreso)', () => {
+  it('muestra el logo easypunto arriba y abajo dentro del papel de la vista previa', () => {
+    render(<FacturaDisplayModal factura={BASE_FACTURA} onClose={vi.fn()} />);
+    const papel = screen.getByTestId('factura-display-preview');
+    const cab = papel.querySelector('[data-testid="marca-ticket-encabezado"]');
+    const pie = papel.querySelector('[data-testid="marca-ticket-pie"]');
+    expect(cab?.getAttribute('src')).toMatch(/^data:image\/svg\+xml/);
+    expect(cab?.getAttribute('alt')).toBe('easypunto');
+    expect(pie?.getAttribute('src')).toMatch(/^data:image\/svg\+xml/);
+    expect(papel.firstElementChild?.contains(cab as Node)).toBe(true);
+    expect(papel.lastElementChild?.contains(pie as Node)).toBe(true);
+  });
+});
