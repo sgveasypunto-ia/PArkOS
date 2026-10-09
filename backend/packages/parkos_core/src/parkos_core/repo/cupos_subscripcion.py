@@ -40,6 +40,7 @@ from ..models.V.vehiculos import Vehiculos
 from ..runtime.tiempo import hoy_bogota
 from . import alerta as repo_alerta
 from . import hash_chain, versioned
+from .busqueda import coincide_ci
 
 __all__ = [
     "SubscripcionActivaRow",
@@ -199,7 +200,7 @@ async def buscar_subscripcion_activa_por_identificacion(
             TipoSubscripciones.uuid == SubscripcionesCliente.uuid_tipo_subscripcion,
         )
         .where(
-            Clientes.numero_identificacion == numero_identificacion,
+            coincide_ci(Clientes.numero_identificacion, numero_identificacion),
             Clientes.vigente_hasta.is_(None),
             SubscripcionesCliente.vigente_hasta.is_(None),
             SubscripcionesCliente.estado == "activo",
