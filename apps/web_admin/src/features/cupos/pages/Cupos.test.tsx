@@ -20,7 +20,26 @@ vi.mock('../api/cuposApi', () => ({
   getCupo: vi.fn(),
   createCupo: vi.fn(),
   updateCupo: vi.fn(),
-  CantidadOverlapError: class CantidadOverlapError extends Error {},
+  // Mirror the real CantidadOverlapError shape so the page's
+  // `mapError` branch (and its boundary-equality detection) can
+  // read conflictingUuid / conflictingVigenteHasta off the
+  // instance, exactly like the live module would.
+  CantidadOverlapError: class CantidadOverlapError extends Error {
+    conflictingUuid: string;
+    conflictingVigenteDesde: string | null;
+    conflictingVigenteHasta: string | null;
+    constructor(body: {
+      conflicting_uuid: string;
+      conflicting_vigente_desde: string | null;
+      conflicting_vigente_hasta: string | null;
+    }) {
+      super('overlap');
+      this.name = 'CantidadOverlapError';
+      this.conflictingUuid = body.conflicting_uuid;
+      this.conflictingVigenteDesde = body.conflicting_vigente_desde;
+      this.conflictingVigenteHasta = body.conflicting_vigente_hasta;
+    }
+  },
   CantidadBajoIngresosError: class CantidadBajoIngresosError extends Error {},
   CantidadSucursalInmutableError: class CantidadSucursalInmutableError extends Error {},
 }));
@@ -114,13 +133,14 @@ vi.mock('@parkos/ui-kit/hooks', () => ({
   }),
 }));
 
-import { listCupos, createCupo } from '../api/cuposApi';
+import { listCupos, createCupo, updateCupo } from '../api/cuposApi';
 import { listSucursales } from '@/features/sucursales/api/sucursalesApi';
 import { useAuthStore } from '@parkos/ui-kit/store';
 import Cupos from './Cupos';
 
 const mockedListCupos = listCupos as ReturnType<typeof vi.fn>;
 const mockedCreateCupo = createCupo as ReturnType<typeof vi.fn>;
+const mockedUpdateCupo = updateCupo as ReturnType<typeof vi.fn>;
 const mockedListSucursales = listSucursales as ReturnType<typeof vi.fn>;
 
 function wrapper({ children }: { children: ReactNode }): JSX.Element {
@@ -527,6 +547,72 @@ describe('Cupos page', () => {
       '00000000-0000-0000-0000-000000000003', // bicicleta
     );
     expect(submitted.cantidad).toBe(10);
+    __mockTipos = SAMPLE_TIPOS.slice(0, 2);
+  });
+
+  it('CP15: re-editing the same cupo with the boundary-equality 409 shows the specific message (not the generic "elegí otro instante")', async () => {
+    // End-to-end: the operator re-edits a cupo with the SAME
+    // vigente_desde the row already has, the backend returns
+    // 409 cantidad_overlap with conflictingUuid == the row's
+    // own uuid and conflictingVigenteHasta: null (boundary
+    // equality, see empresa.py:1143 `<=`). The page's mapError
+    // MUST detect the (editingUuid === conflictingUuid,
+    // conflictingVigenteHasta === null) signal and render the
+    // specific boundary-equality message — not the generic
+    // fallback.
+    __mockTipos = SAMPLE_TIPOS;
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    const editingUuid = '1a231f57-cb96-4284-b4b0-f3e7c594f631';
+    const editingRow = {
+      ...SAMPLE_CUPO,
+      uuid: editingUuid,
+      uuid_sucursal: SUCURSAL_1,
+      uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000003', // bicicleta
+      cantidad: 5,
+      vigente_desde: '2026-10-09T22:35:00',
+    };
+    mockedListCupos.mockResolvedValue([editingRow]);
+    // Surface the same 409 the operator reported in the live bug
+    // report (cuposApi: 409 {error: cantidad_overlap,
+    // conflicting_uuid, conflicting_vigente_desde, conflicting_vigente_hasta:null}).
+    const overlapBody = {
+      detail: {
+        error: 'cantidad_overlap',
+        conflicting_uuid: editingUuid,
+        conflicting_vigente_desde: '2026-10-09T22:35:00',
+        conflicting_vigente_hasta: null,
+      },
+    };
+    const { CantidadOverlapError: COE } = await import('../api/cuposApi');
+    mockedUpdateCupo.mockRejectedValue(
+      new COE({
+        conflicting_uuid: overlapBody.detail.conflicting_uuid,
+        conflicting_vigente_desde: overlapBody.detail.conflicting_vigente_desde,
+        conflicting_vigente_hasta: overlapBody.detail.conflicting_vigente_hasta,
+      }),
+    );
+    const user = userEvent.setup();
+    render(<Cupos />, { wrapper: fullWrapper });
+    await waitFor(() =>
+      expect(
+        screen.getByTestId(`cupo-row-${editingUuid}`),
+      ).toBeInTheDocument(),
+    );
+    await user.click(screen.getByTestId(`cupo-edit-${editingUuid}`));
+    await user.click(screen.getByTestId('cupo-submit'));
+    // The specific message MUST be rendered (not the generic
+    // "La nueva ventana se solapa...").
+    const specificMessage = await screen.findByText(
+      /Estás editando con una fecha anterior o igual a la versión activa/i,
+    );
+    expect(specificMessage).toBeInTheDocument();
+    // The generic fallback must NOT be present.
+    expect(
+      screen.queryByText(/La nueva ventana se solapa/i),
+    ).not.toBeInTheDocument();
+    // The original conflicting UUID is surfaced so the operator
+    // can correlate with the row in the table.
+    expect(specificMessage.textContent).toContain(editingUuid);
     __mockTipos = SAMPLE_TIPOS.slice(0, 2);
   });
 });
