@@ -1,8 +1,9 @@
 /**
  * `CrossBranchCharts.tsx` — the 3-chart block for the global HQ at
- * `/` (post-split): `ChartBar` (top-5 sucursales), `ChartPie` (estado
- * FE 24h), `HeatmapOcupacion` (24h x N sucursales). Driven entirely by
- * the cross-branch resumen payload.
+ * `/` (post-split). All 3 charts sit in a single row on desktop
+ * (`lg:grid-cols-3`) so the row stays under 250px tall and the page
+ * fits a 1080p viewport without scrolling. On mobile/tablet the
+ * charts stack vertically.
  *
  * Sister file: `BranchCharts.tsx` carries the branch-scoped chart
  * consumed by `/dashboard`. Each side `lazy()`-imports only its
@@ -27,20 +28,20 @@ export default function CrossBranchCharts({ resumen }: CrossBranchChartsProps): 
 
   return (
     <section
-      className="grid grid-cols-1 gap-6 lg:grid-cols-2"
+      className="grid grid-cols-1 gap-4 lg:grid-cols-3"
       aria-label="Gráficas del resumen ejecutivo multi-sucursal"
       data-testid="cross-branch-charts-section"
     >
-      <div className="rounded-lg border bg-card p-4">
+      <div className="rounded-lg border bg-card p-3">
         <ChartBar
           data={resumen?.top_sucursales ?? []}
           title="Top 5 sucursales por ingresos (30 días)"
         />
       </div>
-      <div className="rounded-lg border bg-card p-4">
+      <div className="rounded-lg border bg-card p-3">
         <ChartPie data={resumen?.estado_envio_fe_24h ?? []} title="Estado de envío FE (24h)" />
       </div>
-      <div className="rounded-lg border bg-card p-4 lg:col-span-2">
+      <div className="rounded-lg border bg-card p-3">
         <HeatmapOcupacion
           data={resumen?.ocupacion_horaria ?? []}
           sucursales={heatmapBranches}
