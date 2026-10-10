@@ -45,8 +45,29 @@ type ErrorState =
   | { kind: 'overlap' | 'inmutable' | 'bajo_ingresos' | 'network'; message: string }
   | null;
 
-function mapError(err: unknown): ErrorState {
+function mapError(err: unknown, editingUuid?: string | null): ErrorState {
   if (err instanceof CantidadOverlapError) {
+    // Boundary-equality detection: when the operator PUTs with a
+    // ``vigente_desde`` that is <= the active row's ``vigente_desde``
+    // (same instant or earlier), the backend reports the conflict
+    // against the row BEING edited (``conflictingUuid`` == the row
+    // the operator clicked "Editar" on) with ``vigente_hasta: null``
+    // (the conflicting row is the still-open current version, not a
+    // historical one). Surface a specific message so the operator
+    // knows they need a strictly forward ``vigente_desde`` instead
+    // of a generic "elegí otro instante" hint. See empresa.py:1143
+    // for the matching backend guard.
+    const isBoundaryEdit =
+      editingUuid !== null &&
+      editingUuid !== undefined &&
+      err.conflictingUuid === editingUuid &&
+      err.conflictingVigenteHasta === null;
+    if (isBoundaryEdit) {
+      return {
+        kind: 'overlap',
+        message: `Estás editando con una fecha anterior o igual a la versión activa (UUID ${err.conflictingUuid}). Elegí una fecha posterior a ${err.conflictingVigenteDesde ?? '?'} para abrir una nueva versión.`,
+      };
+    }
     return {
       kind: 'overlap',
       message: `La nueva ventana se solapa con el cupo ${err.conflictingUuid} (vigente desde ${err.conflictingVigenteDesde ?? '?'}). Elegí otro instante o actualizá el existente.`,
@@ -289,7 +310,7 @@ export default function Cupos(): JSX.Element {
       closeModal();
       await refresh();
     } catch (err) {
-      setErrorState(mapError(err));
+      setErrorState(mapError(err, editing?.uuid ?? null));
     } finally {
       setSubmitting(false);
     }

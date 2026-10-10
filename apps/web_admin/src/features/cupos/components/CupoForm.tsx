@@ -29,7 +29,7 @@
  * ``solicitado`` to make the rejection actionable. The form only
  * knows about the lower-level Zod validation.
  */
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useTranslation } from 'react-i18next';
@@ -101,6 +101,44 @@ export function CupoForm({
   const [nuevoTipo, setNuevoTipo] = useState('');
   const [nuevoTipoError, setNuevoTipoError] = useState<string | null>(null);
 
+  // CREATE: filter tipos already in use by an open cupo on this
+  // branch. CREATE no longer offers the "Cualquiera" cell
+  // (uuid_tipo_vehiculo = null) — every cupo must target a specific
+  // tipo from the catalog. The NULL sentinel still matters for the
+  // empty-state check below: if every one of the 5 tipos is taken AND
+  // the NULL cell is also taken, there is literally nothing to create.
+  // Memoized so the auto-select effect below can read a stable
+  // reference (otherwise the effect would re-run on every parent
+  // render and risk a loop).
+  const disponibles = useMemo(
+    () => tiposVehiculo.filter((tv) => !tiposEnUsoEnSucursal.has(tv.uuid)),
+    [tiposVehiculo, tiposEnUsoEnSucursal],
+  );
+  const cualquierTomada = tiposEnUsoEnSucursal.has(TIPO_NULL_SENTINEL);
+  const todoEnUso = cualquierTomada && disponibles.length === 0;
+
+  // Auto-select the first available tipo on CREATE when the form
+  // state still has no selection. The browser visually auto-picks
+  // the first <option> when ``field.value`` is nullish and no
+  // ``<option value="">`` exists, but RHF state stays null — the
+  // submitted payload would then carry ``uuid_tipo_vehiculo: null``
+  // and the cupo would persist as the "Cualquiera" cell instead of
+  // the tipo the operator thinks they picked. Re-stated: the visual
+  // selection in the <select> and the form state are decoupled when
+  // the value is null and there is no empty-string option, so we
+  // sync them here. EDIT is left alone: the field is locked to the
+  // existing row's tipo (see ``tipoFijo`` below).
+  useEffect(() => {
+    if (initialCupo !== null) return;
+    if (disponibles.length === 0) return;
+    const current = form.getValues('uuid_tipo_vehiculo');
+    if (current !== null && current !== undefined && current !== '') return;
+    form.setValue('uuid_tipo_vehiculo', disponibles[0].uuid, {
+      shouldDirty: false,
+      shouldTouch: false,
+    });
+  }, [initialCupo, disponibles, form]);
+
   async function handleCrearNuevoTipo(): Promise<void> {
     const trimmed = nuevoTipo.trim();
     if (trimmed.length === 0) {
@@ -166,20 +204,10 @@ export function CupoForm({
                 actual
               );
             })();
-            // CREATE: filter tipos already in use by an open cupo on this
-            // branch. CREATE no longer offers the "Cualquiera" cell
-            // (uuid_tipo_vehiculo = null) — every cupo must target a
-            // specific tipo from the catalog. The NULL sentinel still
-            // matters for the empty-state check below: if every one of
-            // the 5 tipos is taken AND the NULL cell is also taken,
-            // there is literally nothing to create.
-            const disponibles = tiposVehiculo.filter(
-              (tv) => !tiposEnUsoEnSucursal.has(tv.uuid),
-            );
-            const cualquierTomada = tiposEnUsoEnSucursal.has(
-              TIPO_NULL_SENTINEL,
-            );
-            const todoEnUso = cualquierTomada && disponibles.length === 0;
+            // CREATE: ``disponibles``, ``cualquierTomada`` and ``todoEnUso``
+            // are computed at the component scope (see the useMemo /
+            // useEffect above) so the auto-select effect can react to
+            // them without re-rendering through the render-prop.
             return (
             <FormItem>
               <FormLabel htmlFor="uuid_tipo_vehiculo">

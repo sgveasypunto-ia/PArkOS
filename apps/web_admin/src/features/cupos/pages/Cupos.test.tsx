@@ -470,4 +470,63 @@ describe('Cupos page', () => {
       screen.queryByText(/Vacío = ahora/i),
     ).not.toBeInTheDocument();
   });
+
+  it('CP14: CREATE auto-selects the first available tipo so the payload never carries uuid_tipo_vehiculo=null', async () => {
+    // Regression for the operator-reported bug: the browser visually
+    // shows the first <option> in the filtered select, but the RHF
+    // state stayed null and the submitted payload carried
+    // uuid_tipo_vehiculo=null, persisting the cupo as the
+    // "Cualquiera" cell instead of the tipo the operator picked. Two
+    // tipos already in use (carro, moto) so the first available is
+    // bicicleta — that's the uuid the payload must carry.
+    __mockTipos = SAMPLE_TIPOS;
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListCupos.mockResolvedValue([
+      {
+        ...SAMPLE_CUPO,
+        uuid_sucursal: SUCURSAL_1,
+        uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000001', // carro
+        cantidad: 50,
+      },
+      {
+        ...SAMPLE_CUPO,
+        uuid: 'cccccccc-1111-1111-1111-111111111111',
+        uuid_sucursal: SUCURSAL_1,
+        uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000002', // moto
+        cantidad: 30,
+      },
+    ]);
+    const createdRow = {
+      ...SAMPLE_CUPO,
+      uuid: 'dddddddd-1111-1111-1111-111111111111',
+      uuid_sucursal: SUCURSAL_1,
+      uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000003', // bicicleta
+      cantidad: 10,
+    };
+    mockedCreateCupo.mockResolvedValue(createdRow);
+    const user = userEvent.setup();
+    render(<Cupos />, { wrapper: fullWrapper });
+    await waitFor(() => screen.getByTestId('cupo-empty'));
+    await user.click(screen.getByTestId('cupo-new'));
+    // Do NOT touch the tipo select — the operator-reported bug was
+    // exactly that case: user sees "bicicleta" visually, leaves the
+    // select alone, and the form must not submit null.
+    const cantidad = screen.getByTestId('cupo-field-cantidad') as HTMLInputElement;
+    await user.clear(cantidad);
+    await user.type(cantidad, '10');
+    await user.click(screen.getByTestId('cupo-submit'));
+    await waitFor(() => {
+      expect(mockedCreateCupo).toHaveBeenCalledTimes(1);
+    });
+    const submitted = mockedCreateCupo.mock.calls[0]?.[0] as {
+      uuid_tipo_vehiculo: string | null;
+      cantidad: number;
+    };
+    expect(submitted.uuid_tipo_vehiculo).not.toBeNull();
+    expect(submitted.uuid_tipo_vehiculo).toBe(
+      '00000000-0000-0000-0000-000000000003', // bicicleta
+    );
+    expect(submitted.cantidad).toBe(10);
+    __mockTipos = SAMPLE_TIPOS.slice(0, 2);
+  });
 });
