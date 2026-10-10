@@ -32,6 +32,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.permissions import require_permission
@@ -1139,8 +1140,23 @@ async def update_cantidad_pr_c(
     # The chain's windows are monotonically increasing, so comparing
     # against ``current.vigente_desde`` is sufficient to block going back
     # into any prior (open or closed) window for this business key.
+    #
+    # Boundary equality (`<=` instead of `<`): the operator-reported
+    # back-to-back edit bug was a PUT whose ``vigente_desde`` exactly
+    # matched ``current.vigente_desde``. The pre-check used strict `<`
+    # so the request slipped through, ``assert_no_overlap`` also
+    # matches strictly (`vigente_desde < :nueva_desde`), and
+    # ``close_and_insert`` then ran: UPDATE kept the closed row's
+    # ``vigente_desde`` intact (only ``vigente_hasta`` and ``estado``
+    # change) while INSERTing the new row with the same
+    # ``vigente_desde`` — the UK01 ``(uuid_sucursal,
+    # uuid_tipo_vehiculo, vigente_desde)`` then fired as a 500
+    # IntegrityError. Catching it here with `<=` produces a clean
+    # 409 ``cantidad_overlap`` that the front-end can render with
+    # the boundary-equality-specific message in
+    # ``<Cupos />::mapError``.
     assert current.vigente_desde is not None  # current_version() guarantees an open row
-    if nueva_desde < current.vigente_desde:
+    if nueva_desde <= current.vigente_desde:
         raise HTTPException(
             status_code=409,
             detail={
@@ -1184,15 +1200,52 @@ async def update_cantidad_pr_c(
     # aware datetime onto a ``DateTime(timezone=False)`` column.
     if payload.vigente_desde is not None:
         payload_dict["vigente_desde"] = _to_naive_utc(payload.vigente_desde)
-    new_row = await close_and_insert(
-        session,
-        CantidadVehiculosSucursal,
-        current_uuid=uuid,
-        new_attrs=payload_dict,
-        actor_uuid=ctx.actor_uuid,
-        log_tx=True,
-    )
-    await session.commit()
+    # Capture for the IntegrityError→409 branch below: a rollback
+    # after the exception detaches the ORM instance and ``current``
+    # would raise ``DetachedInstanceError`` on attribute access.
+    current_vigente_desde_capture = current.vigente_desde
+    try:
+        new_row = await close_and_insert(
+            session,
+            CantidadVehiculosSucursal,
+            current_uuid=uuid,
+            new_attrs=payload_dict,
+            actor_uuid=ctx.actor_uuid,
+            log_tx=True,
+        )
+        await session.commit()
+    except IntegrityError as exc:
+        # Defense in depth on top of the ``<=`` pre-check at the top
+        # of this handler: any remaining UK01 race — concurrent
+        # PUTs landing back-to-back across two admin sessions, a
+        # ``job_sync_*`` replication racing a manual edit, a future
+        # payload field that slips past the pre-check, etc. — on
+        # ``cantidad_vehiculos_sucursal_uk01 (uuid_sucursal,
+        # uuid_tipo_vehiculo, vigente_desde)`` is surfaced as a 409
+        # ``cantidad_overlap`` with the SAME shape the pre-check
+        # emits. The front-end ``<Cupos />::mapError`` already
+        # renders this with the boundary-equality-specific message
+        # when ``conflictingUuid`` matches the row being edited, so
+        # the operator sees an actionable error instead of a 500
+        # ``IntegrityError`` leaking through. Anything else (FK,
+        # NOT NULL, CHECK, etc.) is a real bug and gets re-raised.
+        await session.rollback()
+        pgcode = getattr(getattr(exc, "orig", None), "sqlstate", None)
+        if pgcode == "23505":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "cantidad_overlap",
+                    "conflicting_uuid": str(uuid),
+                    "conflicting_vigente_desde": (
+                        current_vigente_desde_capture.isoformat()
+                        if current_vigente_desde_capture is not None
+                        else None
+                    ),
+                    "conflicting_vigente_hasta": None,
+                },
+            ) from exc
+        raise
     await session.refresh(new_row)
     return CantidadVehiculosSucursalRead.model_validate(new_row)
 

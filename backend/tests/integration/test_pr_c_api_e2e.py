@@ -1042,3 +1042,255 @@ async def test_c7_put_cantidad_vigente_desde_tz_aware_no_500(
     )
     assert put.status_code == 200, f"got {put.status_code}: {put.text}"
     assert put.json()["cantidad"] == 75
+
+
+# ---------------------------------------------------------------------------
+# C10 — PUT with ``vigente_desde`` EQUAL to the active row's
+# ``vigente_desde`` (boundary equality) returns 409, not 500.
+#
+# Operator-reported bug: back-to-back edit where the operator (or the
+# form's ``now+1min`` default coinciding with the prior version's
+# cierre boundary) resubmits with the SAME ``vigente_desde`` as the
+# current row. The pre-check used strict ``<`` and slipped through;
+# ``assert_no_overlap`` also uses strict ``<``; ``close_and_insert``
+# then ran UPDATE (which keeps the closed row's ``vigente_desde``
+# intact — only ``vigente_hasta`` and ``estado`` change) followed
+# by INSERT with the same ``vigente_desde`` — and the UK01
+# ``(uuid_sucursal, uuid_tipo_vehiculo, vigente_desde)`` fired as
+# a 500 IntegrityError. The pre-check is now ``<=`` so the request
+# is rejected as a clean 409 ``cantidad_overlap`` BEFORE any
+# ``close_and_insert`` call.
+# ---------------------------------------------------------------------------
+
+
+@_HTTP_PYTESTMARK
+async def test_c10_put_cantidad_misma_vigente_desde_devuelve_409(
+    pg_engine, alembic_upgrade, mint_admin_jwt, client, pg_dsn
+) -> None:
+    """PUT with the exact same ``vigente_desde`` as the active row
+    returns 409 ``cantidad_overlap`` (boundary equality), not 500."""
+    await _truncate_cantidad(pg_dsn)
+    branch_uuid = uuid_lib.uuid4()
+    actor_uuid = uuid_lib.uuid4()
+    await _seed_sucursal(pg_engine, branch_uuid)
+    await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_cupos")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
+    token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Sucursal-Context": str(branch_uuid),
+    }
+
+    # Seed the active row with an explicit ``vigente_desde`` so the
+    # back-to-back edit can target the exact same instant.
+    semilla = _now_naive() + timedelta(seconds=2)
+    seed = await client.post(
+        "/api/v1/empresa/cantidad-vehiculos-sucursal",
+        json=_cantidad_payload(
+            uuid_sucursal=branch_uuid,
+            cantidad=50,
+            vigente_desde=semilla,
+        ),
+        headers=headers,
+    )
+    assert seed.status_code == 201, seed.text
+    cupos_uuid = seed.json()["uuid"]
+
+    # PUT with the IDENTICAL ``vigente_desde`` the seed already has.
+    # Pre-check (``<=``) must catch it as a 409, not let it through
+    # to ``close_and_insert`` where it would 500 on UK01.
+    payload = _cantidad_payload(
+        uuid_sucursal=branch_uuid,
+        cantidad=75,
+        vigente_desde=semilla,
+    )
+    put = await client.put(
+        f"/api/v1/empresa/cantidad-vehiculos-sucursal/{cupos_uuid}",
+        json=payload,
+        headers=headers,
+    )
+    assert put.status_code == 409, f"got {put.status_code}: {put.text}"
+    detail = put.json()["detail"]
+    assert detail["error"] == "cantidad_overlap"
+    # The pre-check reports the active row being edited
+    # (``conflicting_uuid`` == the row's own uuid) with
+    # ``conflicting_vigente_hasta: null`` (the conflicting row is
+    # the still-open current version, not a historical one). This
+    # is exactly the signal the front-end ``<Cupos />::mapError``
+    # uses to render the boundary-equality-specific message.
+    assert detail["conflicting_uuid"] == cupos_uuid
+    assert detail["conflicting_vigente_hasta"] is None
+    assert detail["conflicting_vigente_desde"] == semilla.isoformat()
+
+
+# ---------------------------------------------------------------------------
+# C11 — PUT with ``vigente_desde`` strictly BEFORE the active row's
+# ``vigente_desde`` (regression — the change from ``<`` to ``<=`` in
+# the pre-check keeps the original "going back in time" rejection
+# working; this test pins the original semantics under the new op).
+# ---------------------------------------------------------------------------
+
+
+@_HTTP_PYTESTMARK
+async def test_c11_put_cantidad_vigente_desde_anterior_devuelve_409(
+    pg_engine, alembic_upgrade, mint_admin_jwt, client, pg_dsn
+) -> None:
+    """A PUT whose ``vigente_desde`` is strictly before the active
+    row's ``vigente_desde`` is still rejected with 409
+    ``cantidad_overlap`` — the ``<=`` change is a strict superset
+    of the old ``<`` behavior."""
+    await _truncate_cantidad(pg_dsn)
+    branch_uuid = uuid_lib.uuid4()
+    actor_uuid = uuid_lib.uuid4()
+    await _seed_sucursal(pg_engine, branch_uuid)
+    await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_cupos")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
+    token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Sucursal-Context": str(branch_uuid),
+    }
+
+    semilla = _now_naive() + timedelta(seconds=2)
+    seed = await client.post(
+        "/api/v1/empresa/cantidad-vehiculos-sucursal",
+        json=_cantidad_payload(
+            uuid_sucursal=branch_uuid,
+            cantidad=50,
+            vigente_desde=semilla,
+        ),
+        headers=headers,
+    )
+    assert seed.status_code == 201, seed.text
+    cupos_uuid = seed.json()["uuid"]
+
+    anterior = semilla - timedelta(seconds=1)
+    put = await client.put(
+        f"/api/v1/empresa/cantidad-vehiculos-sucursal/{cupos_uuid}",
+        json=_cantidad_payload(
+            uuid_sucursal=branch_uuid,
+            cantidad=75,
+            vigente_desde=anterior,
+        ),
+        headers=headers,
+    )
+    assert put.status_code == 409, f"got {put.status_code}: {put.text}"
+    detail = put.json()["detail"]
+    assert detail["error"] == "cantidad_overlap"
+    assert detail["conflicting_uuid"] == cupos_uuid
+    assert detail["conflicting_vigente_hasta"] is None
+
+
+# ---------------------------------------------------------------------------
+# C12 — UK01 race on ``cantidad_vehiculos_sucursal_uk01`` is surfaced
+# as 409 ``cantidad_overlap``, not a 500 ``IntegrityError`` leak.
+#
+# The pre-check (``<=``) covers the normal back-to-back edit path. This
+# test pins the defense-in-depth ``try/except IntegrityError`` in the
+# PUT handler for a scenario the pre-check cannot reach: another open
+# row with the SAME ``vigente_desde`` already exists for the cell, but
+# with a different uuid (e.g. concurrent PUT from another admin
+# session, or a ``job_sync_*`` replication racing a manual edit).
+#
+# We simulate that race by SQL-injecting the second open row directly
+# into the table — the only way to bypass both the pre-check
+# (different uuid) and ``assert_no_overlap`` (its
+# ``vigente_desde < :nueva_desde`` predicate excludes the existing
+# open row whose ``vigente_desde`` equals ``nueva_desde``) so the
+# handler reaches ``close_and_insert``, which then collides with the
+# UK01.
+# ---------------------------------------------------------------------------
+
+
+@_HTTP_PYTESTMARK
+async def test_c12_put_cantidad_uk01_simulado_devuelve_409_no_500(
+    pg_engine, alembic_upgrade, mint_admin_jwt, client, pg_dsn
+) -> None:
+    """Force a UK01 collision that the pre-check cannot catch
+    (another open row with the same ``vigente_desde`` as the new
+    one) and verify the ``try/except IntegrityError`` returns 409
+    ``cantidad_overlap`` instead of leaking a 500."""
+    await _truncate_cantidad(pg_dsn)
+    branch_uuid = uuid_lib.uuid4()
+    actor_uuid = uuid_lib.uuid4()
+    await _seed_sucursal(pg_engine, branch_uuid)
+    await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_cupos")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
+    token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Sucursal-Context": str(branch_uuid),
+    }
+
+    # Seed the row we will edit later.
+    semilla = _now_naive() + timedelta(seconds=2)
+    seed = await client.post(
+        "/api/v1/empresa/cantidad-vehiculos-sucursal",
+        json=_cantidad_payload(
+            uuid_sucursal=branch_uuid,
+            cantidad=50,
+            vigente_desde=semilla,
+        ),
+        headers=headers,
+    )
+    assert seed.status_code == 201, seed.text
+    cupos_uuid = seed.json()["uuid"]
+
+    # Simulate the race: a SECOND open row for the same cell whose
+    # ``vigente_desde`` is 1 second AHEAD of the seed. This row is
+    # invisible to the pre-check (different uuid) and to
+    # ``assert_no_overlap`` (its ``vigente_desde < :nueva_desde``
+    # predicate is strict, so the new request's
+    # ``vigente_desde == race_vd`` does NOT match ``< race_vd``).
+    # When we then PUT the seed with ``vigente_desde == race_vd``,
+    # ``close_and_insert`` will INSERT a new row that collides on
+    # UK01 with the simulated row — exactly the race-condition
+    # surface the ``try/except IntegrityError`` is meant to translate
+    # into a clean 409.
+    race_vd = semilla + timedelta(seconds=1)
+    race_uuid = uuid_lib.uuid4()
+    from sqlalchemy import text as _text
+
+    async with pg_engine.begin() as conn:
+        await conn.execute(
+            _text(
+                "INSERT INTO prod.cantidad_vehiculos_sucursal "
+                "(uuid, uuid_sucursal, uuid_tipo_vehiculo, cantidad, "
+                "vigente_desde, vigente_hasta, estado, created_at, "
+                "created_by, sync_status, sync_timestamp, sync_attempts) "
+                "VALUES (:uuid, :sucursal, NULL, 99, :vd, NULL, 'activo', "
+                ":ca, NULL, 'sincronizado', NULL, 0)"
+            ),
+            {
+                "uuid": str(race_uuid),
+                "sucursal": str(branch_uuid),
+                "vd": race_vd,
+                "ca": _now_naive(),
+            },
+        )
+
+    # PUT the seed with ``vigente_desde == race_vd``. Pre-check
+    # ``race_vd <= semilla`` is FALSE; ``assert_no_overlap`` exclude
+    # ``cupos_uuid`` does not match the simulated row (its
+    # ``vigente_desde < race_vd`` is FALSE); ``close_and_insert``
+    # runs and trips the UK01.
+    put = await client.put(
+        f"/api/v1/empresa/cantidad-vehiculos-sucursal/{cupos_uuid}",
+        json=_cantidad_payload(
+            uuid_sucursal=branch_uuid,
+            cantidad=75,
+            vigente_desde=race_vd,
+        ),
+        headers=headers,
+    )
+    assert put.status_code == 409, (
+        f"UK01 collision must surface as 409, not {put.status_code}: {put.text}"
+    )
+    detail = put.json()["detail"]
+    assert detail["error"] == "cantidad_overlap"
+    # The ``try/except IntegrityError`` reports the row being
+    # edited (the handler still has it in scope via the captured
+    # ``current_vigente_desde_capture``), not the racing row.
+    assert detail["conflicting_uuid"] == cupos_uuid
+    assert detail["conflicting_vigente_hasta"] is None
+    assert detail["conflicting_vigente_desde"] == semilla.isoformat()
