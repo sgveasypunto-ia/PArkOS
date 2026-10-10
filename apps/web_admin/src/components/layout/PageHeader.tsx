@@ -27,7 +27,11 @@ import { cn } from '@/lib/utils';
 
 export interface PageHeaderProps {
   title: string;
-  subtitle?: string;
+  /** Subtítulo o bloque descriptivo secundario (opcional).
+   *  Default: string. Acepta ReactNode para vistas que necesitan un
+   *  caption/link/aviso dentro del bloque izquierdo del header
+   *  (ej. Pairing, donde el browser-scope-caption vive acá). */
+  subtitle?: string | ReactNode;
   /** Cluster derecho de botones / acciones (opcional). */
   actions?: ReactNode;
   /** Hook para extender el wrapper — usar con moderación. */
@@ -56,12 +60,12 @@ export function PageHeader({
           {title}
         </h1>
         {subtitle !== undefined && subtitle !== '' && (
-          <p
-            className="text-sm text-muted-foreground"
+          <div
+            className="text-sm text-muted-foreground space-y-1.5"
             data-testid="page-header-subtitle"
           >
             {subtitle}
-          </p>
+          </div>
         )}
       </div>
       {actions !== undefined && (

@@ -45,7 +45,10 @@ describe('PageHeader', () => {
     );
 
     const subtitle = screen.getByTestId('page-header-subtitle');
-    expect(subtitle.tagName).toBe('P');
+    // Subtitle is a <div> (not a <p>) so it can host ReactNode
+    // fragments when a page needs more than a plain string (e.g.
+    // Pairing's browser-scope caption lives under subtitle).
+    expect(subtitle.tagName).toBe('DIV');
     expect(subtitle).toHaveTextContent(
       'Bandeja cross-branch de alertas con severidad y estado.',
     );
