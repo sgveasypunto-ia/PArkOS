@@ -16,6 +16,7 @@ import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { useGoBack } from '@/lib/useGoBack';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -57,7 +58,13 @@ export default function AnulacionDetalle(): JSX.Element {
 
   if (uuid === undefined) {
     return (
-      <main className="p-4 md:p-6" data-testid="anulacion-detalle-page">
+      <main
+        className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+        data-testid="anulacion-detalle-page"
+      >
+        <PageHeader
+          title={t('anulaciones.detalle.title', 'Detalle de la anulación')}
+        />
         <p role="alert">{t('anulaciones.detalle.missingUuid', 'Falta el identificador de la anulación.')}</p>
       </main>
     );
@@ -69,23 +76,24 @@ export default function AnulacionDetalle(): JSX.Element {
       : [];
 
   return (
-    <main className="space-y-4 p-4 md:p-6" data-testid="anulacion-detalle-page">
-      <header className="flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">
-            {t('anulaciones.detalle.title', 'Detalle de la anulación')}
-          </h1>
-          <p className="text-muted-foreground font-mono text-xs">{uuid}</p>
-        </div>
-        <Button
-          type="button"
-          variant="outline"
-          onClick={() => goBack()}
-          data-testid="anulacion-detalle-back"
-        >
-          {t('anulaciones.detalle.back', 'Volver a la bandeja')}
-        </Button>
-      </header>
+    <main
+      className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+      data-testid="anulacion-detalle-page"
+    >
+      <PageHeader
+        title={t('anulaciones.detalle.title', 'Detalle de la anulación')}
+        subtitle={<span className="font-mono text-xs">{uuid}</span>}
+        actions={
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => goBack()}
+            data-testid="anulacion-detalle-back"
+          >
+            {t('anulaciones.detalle.back', 'Volver a la bandeja')}
+          </Button>
+        }
+      />
 
       {isLoading && anulacion === undefined && (
         <p role="status" aria-live="polite" className="text-sm text-muted-foreground">

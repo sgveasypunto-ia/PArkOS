@@ -17,6 +17,7 @@
 import { useTranslation } from 'react-i18next';
 import { useLocation, useParams } from 'react-router-dom';
 
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { useGoBack } from '@/lib/useGoBack';
 import { HashChainStatus } from '@/components/HashChainStatus';
@@ -56,21 +57,30 @@ export default function LogDetalle(): JSX.Element {
   const diffRows = diffAuditFields(item.datos_anteriores, item.datos_nuevos);
 
   return (
-    <main className="space-y-4 p-4 md:p-6" data-testid={`log-detalle-${item.uuid}`}>
-      <header className="flex items-center justify-between gap-3 rounded-md border bg-card px-4 py-3">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight">
-            {t('auditoria.detail.title', 'Detalle de evento')}
-          </h1>
-          <p data-testid="log-detalle-meta" className="font-mono text-xs text-muted-foreground">
+    <main
+      className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+      data-testid={`log-detalle-${item.uuid}`}
+    >
+      <PageHeader
+        title={t('auditoria.detail.title', 'Detalle de evento')}
+        subtitle={
+          <p data-testid="log-detalle-meta" className="font-mono text-xs">
             {formatBackendTimestampLocal(item.timestamp_evento)} · {item.tabla_afectada ?? '—'} ·{' '}
             {item.accion ?? '—'}
           </p>
-        </div>
-        <Button type="button" variant="outline" size="sm" onClick={goBack} data-testid="log-detalle-back">
-          {t('auditoria.detail.backToList', 'Volver al listado')}
-        </Button>
-      </header>
+        }
+        actions={
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={goBack}
+            data-testid="log-detalle-back"
+          >
+            {t('auditoria.detail.backToList', 'Volver al listado')}
+          </Button>
+        }
+      />
 
       <dl className="grid grid-cols-1 gap-3 rounded-md border bg-card p-4 text-sm sm:grid-cols-2 md:grid-cols-3">
         <div>

@@ -9,6 +9,7 @@
 import { useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 import { useCliente } from '../hooks/useCliente';
@@ -41,43 +42,71 @@ export default function ClienteDetalle(): JSX.Element {
 
   if (isLoading) {
     return (
-      <div className="p-6" data-testid="cliente-detalle-loading">
-        {t('common.loading', 'Cargando…')}
-      </div>
+      <main
+        className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+        data-testid="cliente-detalle-page"
+      >
+        <PageHeader title={t('clienteDetalle.title', 'Cliente')} />
+        <p className="text-sm text-muted-foreground" data-testid="cliente-detalle-loading">
+          {t('common.loading', 'Cargando…')}
+        </p>
+      </main>
     );
   }
 
   if (error) {
     return (
-      <div className="p-6 text-destructive" data-testid="cliente-detalle-error">
-        {t('clienteDetalle.loadError', 'Error al cargar el cliente: {{message}}', {
-          message: error.message,
-        })}
-      </div>
+      <main
+        className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+        data-testid="cliente-detalle-page"
+      >
+        <PageHeader title={t('clienteDetalle.title', 'Cliente')} />
+        <p
+          role="alert"
+          className="text-sm text-destructive"
+          data-testid="cliente-detalle-error"
+        >
+          {t('clienteDetalle.loadError', 'Error al cargar el cliente: {{message}}', {
+            message: error.message,
+          })}
+        </p>
+      </main>
     );
   }
 
   if (!cliente || !uuid) {
     return (
-      <div className="p-6" data-testid="cliente-detalle-not-found">
-        {t('clienteDetalle.notFound', 'Cliente no encontrado')}
-      </div>
+      <main
+        className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+        data-testid="cliente-detalle-page"
+      >
+        <PageHeader title={t('clienteDetalle.title', 'Cliente')} />
+        <p
+          className="text-sm text-muted-foreground"
+          data-testid="cliente-detalle-not-found"
+        >
+          {t('clienteDetalle.notFound', 'Cliente no encontrado')}
+        </p>
+      </main>
     );
   }
 
   return (
-    <div className="container mx-auto p-6" data-testid="cliente-detalle-page">
-      <header className="mb-6">
-        <h1 className="text-2xl font-bold" data-testid="cliente-detalle-nombre">
-          {`${cliente.nombre ?? ''} ${cliente.apellido ?? ''}`.trim() || cliente.uuid}
-        </h1>
-        <p className="text-muted-foreground mt-1 text-sm" data-testid="cliente-detalle-identificacion">
-          {t('clienteDetalle.identificacion', '{{tipo}} {{numero}}', {
-            tipo: cliente.tipo_identificador ?? '—',
-            numero: cliente.numero_identificacion ?? '—',
-          })}
-        </p>
-      </header>
+    <main
+      className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+      data-testid="cliente-detalle-page"
+    >
+      <PageHeader
+        title={`${cliente.nombre ?? ''} ${cliente.apellido ?? ''}`.trim() || cliente.uuid}
+        subtitle={
+          <span data-testid="cliente-detalle-identificacion">
+            {t('clienteDetalle.identificacion', '{{tipo}} {{numero}}', {
+              tipo: cliente.tipo_identificador ?? '—',
+              numero: cliente.numero_identificacion ?? '—',
+            })}
+          </span>
+        }
+      />
 
       <Tabs defaultValue="datos">
         <TabsList
@@ -111,6 +140,6 @@ export default function ClienteDetalle(): JSX.Element {
           <ClienteBitacoraTab uuidCliente={uuid} />
         </TabsContent>
       </Tabs>
-    </div>
+    </main>
   );
 }

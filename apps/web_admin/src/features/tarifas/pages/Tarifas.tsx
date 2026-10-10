@@ -24,6 +24,7 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
@@ -491,26 +492,26 @@ export default function Tarifas(): JSX.Element {
     sucursales?.find((s) => s.uuid === selectedSucursal)?.nombre ?? selectedSucursal ?? '';
 
   return (
-    <main
-      className="flex min-h-screen flex-col gap-4 bg-background p-4"
+    <div
+      className="flex flex-1 flex-col gap-6 bg-background p-4 md:p-6 lg:p-8"
       data-testid="page-tarifas"
     >
-      <header className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">
-          {t('tarifas.title', 'Tarifas')}
-        </h1>
-        <Button
-          type="button"
-          onClick={() => {
-            setCreating(true);
-            setEditingGrupo(null);
-            setErrorState(null);
-          }}
-          data-testid="tarifa-new"
-        >
-          {t('tarifas.new', 'Nueva tarifa')}
-        </Button>
-      </header>
+      <PageHeader
+        title={t('tarifas.title', 'Tarifas')}
+        actions={
+          <Button
+            type="button"
+            onClick={() => {
+              setCreating(true);
+              setEditingGrupo(null);
+              setErrorState(null);
+            }}
+            data-testid="tarifa-new"
+          >
+            {t('tarifas.new', 'Nueva tarifa')}
+          </Button>
+        }
+      />
 
       {(creating || editingGrupo !== null) && (
         <FormModal
@@ -602,6 +603,6 @@ export default function Tarifas(): JSX.Element {
           )}
         />
       )}
-    </main>
+    </div>
   );
 }

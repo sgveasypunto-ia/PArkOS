@@ -14,6 +14,7 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
@@ -325,24 +326,26 @@ export default function Cupos(): JSX.Element {
     sucursales?.find((s) => s.uuid === selectedSucursal)?.nombre ?? selectedSucursal ?? '';
 
   return (
-    <main
-      className="flex min-h-screen flex-col gap-4 bg-background p-4"
+    <div
+      className="flex flex-1 flex-col gap-6 bg-background p-4 md:p-6 lg:p-8"
       data-testid="page-cupos"
     >
-      <header className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">{t('cupos.title', 'Cupos')}</h1>
-        <Button
-          type="button"
-          onClick={() => {
-            setCreating(true);
-            setEditing(null);
-            setErrorState(null);
-          }}
-          data-testid="cupo-new"
-        >
-          {t('cupos.new', 'Nuevo cupo')}
-        </Button>
-      </header>
+      <PageHeader
+        title={t('cupos.title', 'Cupos')}
+        actions={
+          <Button
+            type="button"
+            onClick={() => {
+              setCreating(true);
+              setEditing(null);
+              setErrorState(null);
+            }}
+            data-testid="cupo-new"
+          >
+            {t('cupos.new', 'Nuevo cupo')}
+          </Button>
+        }
+      />
 
       {(creating || editing !== null) && (
         <FormModal
@@ -435,6 +438,6 @@ export default function Cupos(): JSX.Element {
           )}
         />
       )}
-    </main>
+    </div>
   );
 }

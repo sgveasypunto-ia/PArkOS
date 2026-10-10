@@ -52,6 +52,7 @@
 import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import Tarifas from '@/features/tarifas/pages/Tarifas';
 import Cupos from '@/features/cupos/pages/Cupos';
@@ -104,67 +105,94 @@ export default function SucursalDetalle(): JSX.Element {
 
   if (isLoading) {
     return (
-      <div className="p-6" data-testid="sucursal-detalle-loading">
-        {t('common.loading', 'Cargando…')}
-      </div>
+      <main
+        className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+        data-testid="sucursal-detalle-page"
+      >
+        <PageHeader title={t('sucursalDetalle.title', 'Sucursal')} />
+        <p className="text-sm text-muted-foreground" data-testid="sucursal-detalle-loading">
+          {t('common.loading', 'Cargando…')}
+        </p>
+      </main>
     );
   }
 
   if (error) {
     return (
-      <div className="p-6 text-destructive" data-testid="sucursal-detalle-error">
-        {t('sucursalDetalle.loadError', 'Error al cargar la sucursal: {{message}}', {
-          message: error.message,
-        })}
-      </div>
+      <main
+        className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+        data-testid="sucursal-detalle-page"
+      >
+        <PageHeader title={t('sucursalDetalle.title', 'Sucursal')} />
+        <p
+          role="alert"
+          className="text-sm text-destructive"
+          data-testid="sucursal-detalle-error"
+        >
+          {t('sucursalDetalle.loadError', 'Error al cargar la sucursal: {{message}}', {
+            message: error.message,
+          })}
+        </p>
+      </main>
     );
   }
 
   if (!sucursal || !uuid) {
     return (
-      <div className="p-6" data-testid="sucursal-detalle-not-found">
-        {t('sucursalDetalle.notFound', 'Sucursal no encontrada')}
-      </div>
+      <main
+        className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+        data-testid="sucursal-detalle-page"
+      >
+        <PageHeader title={t('sucursalDetalle.title', 'Sucursal')} />
+        <p
+          className="text-sm text-muted-foreground"
+          data-testid="sucursal-detalle-not-found"
+        >
+          {t('sucursalDetalle.notFound', 'Sucursal no encontrada')}
+        </p>
+      </main>
     );
   }
 
   return (
-    <div className="container mx-auto p-6" data-testid="sucursal-detalle-page">
-      <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold" data-testid="sucursal-detalle-nombre">
-            {sucursal.nombre ?? sucursal.prefijo_nombre ?? sucursal.uuid}
-          </h1>
-          <p className="text-muted-foreground mt-1 text-sm" data-testid="sucursal-detalle-estado">
+    <main
+      className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+      data-testid="sucursal-detalle-page"
+    >
+      <PageHeader
+        title={sucursal.nombre ?? sucursal.prefijo_nombre ?? sucursal.uuid}
+        subtitle={
+          <span data-testid="sucursal-detalle-estado">
             {t('sucursalDetalle.estado', 'Estado: {{estado}}', { estado: sucursal.estado })}
-          </p>
-        </div>
-
-        <div className="flex flex-col items-end gap-1">
-          <ParametrizacionEfectivaSelector
-            value={fecha}
-            onChange={setFecha}
-            onResetHoy={resetAHoy}
-          />
-          {!isLoadingEfectiva && counts && (
-            <p
-              className="text-xs text-muted-foreground"
-              data-testid="sucursal-parametrizacion-efectiva-resumen"
-            >
-              {t(
-                'sucursalDetalle.parametrizacionResumen',
-                '{{tarifas}} tarifa(s) · {{capacidad}} capacidad(es) · {{resoluciones}} resolución(es) vigente(s) el {{fecha}}',
-                {
-                  tarifas: counts.tarifasVigentes,
-                  capacidad: counts.capacidadVigente,
-                  resoluciones: counts.resolucionesVigentes,
-                  fecha,
-                },
-              )}
-            </p>
-          )}
-        </div>
-      </header>
+          </span>
+        }
+        actions={
+          <div className="flex flex-col items-end gap-1">
+            <ParametrizacionEfectivaSelector
+              value={fecha}
+              onChange={setFecha}
+              onResetHoy={resetAHoy}
+            />
+            {!isLoadingEfectiva && counts && (
+              <p
+                className="text-xs text-muted-foreground"
+                data-testid="sucursal-parametrizacion-efectiva-resumen"
+              >
+                {t(
+                  'sucursalDetalle.parametrizacionResumen',
+                  '{{tarifas}} tarifa(s) · {{capacidad}} capacidad(es) · {{resoluciones}} resolución(es) vigente(s) el {{fecha}}',
+                  {
+                    tarifas: counts.tarifasVigentes,
+                    capacidad: counts.capacidadVigente,
+                    resoluciones: counts.resolucionesVigentes,
+                    fecha,
+                  },
+                )}
+              </p>
+            )}
+          </div>
+        }
+      />
 
       <Tabs defaultValue="general">
         <TabsList
@@ -221,6 +249,6 @@ export default function SucursalDetalle(): JSX.Element {
           <SucursalBitacoraTab uuidSucursal={uuid} />
         </TabsContent>
       </Tabs>
-    </div>
+    </main>
   );
 }

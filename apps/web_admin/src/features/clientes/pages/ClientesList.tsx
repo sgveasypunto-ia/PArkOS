@@ -22,6 +22,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -75,15 +76,13 @@ export default function ClientesList(): JSX.Element {
 
   return (
     <main
-      className="flex min-h-screen flex-col gap-4 bg-background p-4"
+      className="flex flex-1 flex-col gap-6 bg-background p-4 md:p-6 lg:p-8"
       data-testid="page-clientes"
     >
-      <header>
-        <h1 className="text-2xl font-semibold">{t('clientes.title', 'Clientes')}</h1>
-        <p className="text-muted-foreground text-sm">
-          {t('clientes.subtitle', 'Directorio de clientes de todas las sucursales.')}
-        </p>
-      </header>
+      <PageHeader
+        title={t('clientes.title', 'Clientes')}
+        subtitle={t('clientes.subtitle', 'Directorio de clientes de todas las sucursales.')}
+      />
 
       <Input
         type="search"

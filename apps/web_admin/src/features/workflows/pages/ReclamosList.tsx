@@ -5,6 +5,7 @@
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
@@ -27,16 +28,17 @@ export default function ReclamosList({ swrSalt }: ReclamosListPageProps): JSX.El
   }
 
   return (
-    <main className="space-y-4 p-4 md:p-6" data-testid="reclamos-page">
-      <header>
-        <h1 className="text-2xl font-bold tracking-tight">{t('reclamos.title', 'Reclamos')}</h1>
-        <p className="text-muted-foreground text-sm">
-          {t(
-            'reclamos.subtitle',
-            'Bandeja cross-branch de reclamos sobre ingresos, salidas y facturas, con su estado actual.',
-          )}
-        </p>
-      </header>
+    <main
+      className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+      data-testid="reclamos-page"
+    >
+      <PageHeader
+        title={t('reclamos.title', 'Reclamos')}
+        subtitle={t(
+          'reclamos.subtitle',
+          'Bandeja cross-branch de reclamos sobre ingresos, salidas y facturas, con su estado actual.',
+        )}
+      />
 
       {error !== undefined && (
         <div

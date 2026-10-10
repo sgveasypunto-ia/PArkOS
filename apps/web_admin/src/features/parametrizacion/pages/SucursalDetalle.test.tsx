@@ -124,7 +124,9 @@ describe('SucursalDetalle', () => {
   it('T1: monta el contenedor de la página con el nombre de la sucursal', async () => {
     renderPage();
     expect(await screen.findByTestId('sucursal-detalle-page')).toBeInTheDocument();
-    expect(screen.getByTestId('sucursal-detalle-nombre')).toHaveTextContent('Sucursal Centro');
+    // H1 lives inside the canonical <PageHeader /> (HU-homologar-page-header),
+    // which sets `data-testid="page-header-title"` on the title element.
+    expect(screen.getByTestId('page-header-title')).toHaveTextContent('Sucursal Centro');
   });
 
   it('T2: el tab por defecto es General y muestra SucursalGeneralForm', async () => {

@@ -26,6 +26,7 @@ import { useState } from 'react';
 import { useLocation, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { useGoBack } from '@/lib/useGoBack';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -72,13 +73,24 @@ export default function DianDetalle(): JSX.Element {
 
   if (envio === undefined) {
     return (
-      <main className="space-y-4 p-4 md:p-6" data-testid="dian-detalle-page">
-        <header className="flex items-center justify-between gap-3">
-          <h1 className="text-2xl font-bold tracking-tight">{t('dian.detalle.title', 'Detalle del envío DIAN')}</h1>
-          <Button type="button" variant="outline" onClick={() => goBack()} data-testid="dian-detalle-back">
-            {t('dian.detalle.back', 'Volver a la cola')}
-          </Button>
-        </header>
+      <main
+        className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+        data-testid="dian-detalle-page"
+      >
+        <PageHeader
+          title={t('dian.detalle.title', 'Detalle del envío DIAN')}
+          subtitle={<span className="font-mono text-xs">{uuid}</span>}
+          actions={
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => goBack()}
+              data-testid="dian-detalle-back"
+            >
+              {t('dian.detalle.back', 'Volver a la cola')}
+            </Button>
+          }
+        />
         <div
           role="status"
           aria-live="polite"
@@ -90,7 +102,6 @@ export default function DianDetalle(): JSX.Element {
             'Este envío no está disponible por acceso directo o recarga -- volvé a la cola y abrilo desde ahí.',
           )}
         </div>
-        <p className="text-muted-foreground font-mono text-xs">{uuid}</p>
       </main>
     );
   }
@@ -99,16 +110,24 @@ export default function DianDetalle(): JSX.Element {
   const retryEnabled = canRetryEnvioDian(envio) && !retrying && !justRetried;
 
   return (
-    <main className="space-y-4 p-4 md:p-6" data-testid="dian-detalle-page">
-      <header className="flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">{t('dian.detalle.title', 'Detalle del envío DIAN')}</h1>
-          <p className="text-muted-foreground font-mono text-xs">{envio.uuid}</p>
-        </div>
-        <Button type="button" variant="outline" onClick={() => goBack()} data-testid="dian-detalle-back">
-          {t('dian.detalle.back', 'Volver a la cola')}
-        </Button>
-      </header>
+    <main
+      className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+      data-testid="dian-detalle-page"
+    >
+      <PageHeader
+        title={t('dian.detalle.title', 'Detalle del envío DIAN')}
+        subtitle={<span className="font-mono text-xs">{envio.uuid}</span>}
+        actions={
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => goBack()}
+            data-testid="dian-detalle-back"
+          >
+            {t('dian.detalle.back', 'Volver a la cola')}
+          </Button>
+        }
+      />
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-3">

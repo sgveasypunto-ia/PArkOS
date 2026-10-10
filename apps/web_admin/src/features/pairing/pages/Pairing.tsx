@@ -31,6 +31,7 @@ import { useSearchParams } from 'react-router-dom';
 import useSWR from 'swr';
 import { useTranslation } from 'react-i18next';
 
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Badge, type BadgeProps } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -208,24 +209,30 @@ export default function Pairing(): JSX.Element {
   }
 
   return (
-    <main className="space-y-4 p-4 md:p-6" data-testid="pairing-page">
-      <header>
-        <h1 className="text-2xl font-bold tracking-tight">
-          {t('pairing.title', 'Pairing de sucursales')}
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          {t(
-            'pairing.subtitle',
-            'Generá y revocá tokens de pairing para conectar el agente de sincronización de cada sucursal.',
-          )}
-        </p>
-        <p className="text-xs text-muted-foreground" data-testid="pairing-browser-scope-caption">
-          {t(
-            'pairing.browserScopeCaption',
-            'Esta vista solo refleja los tokens emitidos desde este navegador. Un token emitido desde otra sesión no aparece acá.',
-          )}
-        </p>
-      </header>
+    <main
+      className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+      data-testid="pairing-page"
+    >
+      <PageHeader
+        title={t('pairing.title', 'Pairing de sucursales')}
+        subtitle={
+          <>
+            {t(
+              'pairing.subtitle',
+              'Generá y revocá tokens de pairing para conectar el agente de sincronización de cada sucursal.',
+            )}
+            <span
+              className="mt-1 block text-xs"
+              data-testid="pairing-browser-scope-caption"
+            >
+              {t(
+                'pairing.browserScopeCaption',
+                'Esta vista solo refleja los tokens emitidos desde este navegador. Un token emitido desde otra sesión no aparece acá.',
+              )}
+            </span>
+          </>
+        }
+      />
 
       {error !== undefined && (
         <p

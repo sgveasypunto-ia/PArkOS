@@ -17,6 +17,7 @@ import { useState } from 'react';
 import { useLocation, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useSucursalesDirectorio } from '@/features/sucursales/hooks/useSucursalesDirectorio';
@@ -63,7 +64,13 @@ export default function AlertaDetalle(): JSX.Element {
 
   if (uuid === undefined) {
     return (
-      <main className="p-4 md:p-6" data-testid="alerta-detalle-page">
+      <main
+        className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+        data-testid="alerta-detalle-page"
+      >
+        <PageHeader
+          title={t('alertas.detalle.title', 'Detalle de la alerta')}
+        />
         <p role="alert">{t('alertas.detalle.missingUuid', 'Falta el identificador de la alerta.')}</p>
       </main>
     );
@@ -82,18 +89,24 @@ export default function AlertaDetalle(): JSX.Element {
   }
 
   return (
-    <main className="space-y-4 p-4 md:p-6" data-testid="alerta-detalle-page">
-      <header className="flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">
-            {t('alertas.detalle.title', 'Detalle de la alerta')}
-          </h1>
-          <p className="text-muted-foreground font-mono text-xs">{uuid}</p>
-        </div>
-        <Button type="button" variant="outline" onClick={goBack} data-testid="alerta-detalle-back">
-          {t('alertas.detalle.back', 'Volver a la bandeja')}
-        </Button>
-      </header>
+    <main
+      className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+      data-testid="alerta-detalle-page"
+    >
+      <PageHeader
+        title={t('alertas.detalle.title', 'Detalle de la alerta')}
+        subtitle={<span className="font-mono text-xs">{uuid}</span>}
+        actions={
+          <Button
+            type="button"
+            variant="outline"
+            onClick={goBack}
+            data-testid="alerta-detalle-back"
+          >
+            {t('alertas.detalle.back', 'Volver a la bandeja')}
+          </Button>
+        }
+      />
 
       {isLoading && alerta === undefined && (
         <p role="status" aria-live="polite" className="text-sm text-muted-foreground">

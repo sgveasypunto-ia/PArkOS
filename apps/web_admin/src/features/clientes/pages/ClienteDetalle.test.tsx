@@ -85,7 +85,9 @@ describe('ClienteDetalle', () => {
   it('monta el contenedor de la página con el nombre del cliente', async () => {
     renderPage();
     expect(await screen.findByTestId('cliente-detalle-page')).toBeInTheDocument();
-    expect(screen.getByTestId('cliente-detalle-nombre')).toHaveTextContent('Ada Lovelace');
+    // H1 lives inside the canonical <PageHeader /> (HU-homologar-page-header),
+    // which sets `data-testid="page-header-title"` on the title element.
+    expect(screen.getByTestId('page-header-title')).toHaveTextContent('Ada Lovelace');
   });
 
   it('el tab por defecto es Datos y muestra ClienteDatosTab', async () => {

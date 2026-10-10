@@ -14,6 +14,7 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -66,18 +67,17 @@ export default function HashChainVerify(): JSX.Element {
   }
 
   return (
-    <main className="space-y-4 p-4 md:p-6" data-testid="hash-chain-verify-page">
-      <header>
-        <h1 className="text-2xl font-bold tracking-tight">
-          {t('auditoria.verifyChain.title', 'Verificación de cadena')}
-        </h1>
-        <p className="text-muted-foreground text-sm">
-          {t(
-            'auditoria.verifyChain.subtitle',
-            'Barrido de integridad SHA-256 a demanda sobre una tabla particionada.',
-          )}
-        </p>
-      </header>
+    <main
+      className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+      data-testid="hash-chain-verify-page"
+    >
+      <PageHeader
+        title={t('auditoria.verifyChain.title', 'Verificación de cadena')}
+        subtitle={t(
+          'auditoria.verifyChain.subtitle',
+          'Barrido de integridad SHA-256 a demanda sobre una tabla particionada.',
+        )}
+      />
 
       <Card>
         <CardHeader>

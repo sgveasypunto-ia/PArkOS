@@ -10,6 +10,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import useSWR from 'swr';
 
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
@@ -103,41 +104,41 @@ export default function TiposVehiculo(): JSX.Element {
   }
 
   return (
-    <main
-      className="flex min-h-screen flex-col gap-4 bg-background p-4"
+    <div
+      className="flex flex-1 flex-col gap-6 bg-background p-4 md:p-6 lg:p-8"
       data-testid="page-tipos-vehiculo"
     >
-      <header className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">
-          {t('tiposVehiculo.title', 'Tipos de vehículo')}
-        </h1>
-        <div className="flex items-center gap-2">
-          {atCap && (
-            <span
-              className="text-xs text-muted-foreground"
-              data-testid="tipo-vehiculo-cap-notice"
-              title={t(
-                'tiposVehiculo.capReachedTitle',
-                'Máximo de 5 tipos activos alcanzado',
-              )}
+      <PageHeader
+        title={t('tiposVehiculo.title', 'Tipos de vehículo')}
+        actions={
+          <>
+            {atCap && (
+              <span
+                className="text-xs text-muted-foreground"
+                data-testid="tipo-vehiculo-cap-notice"
+                title={t(
+                  'tiposVehiculo.capReachedTitle',
+                  'Máximo de 5 tipos activos alcanzado',
+                )}
+              >
+                {t('tiposVehiculo.capReached', '5/5 tipos activos')}
+              </span>
+            )}
+            <Button
+              type="button"
+              onClick={() => {
+                setCreating(true);
+                setEditing(null);
+                setErrorState(null);
+              }}
+              disabled={atCap}
+              data-testid="tipo-vehiculo-new"
             >
-              {t('tiposVehiculo.capReached', '5/5 tipos activos')}
-            </span>
-          )}
-          <Button
-            type="button"
-            onClick={() => {
-              setCreating(true);
-              setEditing(null);
-              setErrorState(null);
-            }}
-            disabled={atCap}
-            data-testid="tipo-vehiculo-new"
-          >
-            {t('tiposVehiculo.new', 'Nuevo tipo de vehículo')}
-          </Button>
-        </div>
-      </header>
+              {t('tiposVehiculo.new', 'Nuevo tipo')}
+            </Button>
+          </>
+        }
+      />
 
       {(creating || editing !== null) && (
         <FormModal
@@ -255,6 +256,6 @@ export default function TiposVehiculo(): JSX.Element {
           </CardContent>
         </Card>
       </div>
-    </main>
+    </div>
   );
 }

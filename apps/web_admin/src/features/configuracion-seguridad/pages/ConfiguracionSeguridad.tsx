@@ -20,6 +20,7 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import useSWR from 'swr';
 
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogDescription, DialogTitle } from '@/components/ui/dialog';
@@ -196,26 +197,26 @@ export default function ConfiguracionSeguridad(): JSX.Element {
   }
 
   return (
-    <main
-      className="flex min-h-screen flex-col gap-4 bg-background p-4"
+    <div
+      className="flex flex-1 flex-col gap-6 bg-background p-4 md:p-6 lg:p-8"
       data-testid="page-configuracion-seguridad"
     >
-      <header className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">
-          {t('configuracionSeguridad.title', 'Configuración de seguridad')}
-        </h1>
-        <Button
-          type="button"
-          onClick={() => {
-            setCreating(true);
-            setEditing(null);
-            setErrorState(null);
-          }}
-          data-testid="seguridad-new"
-        >
-          {t('configuracionSeguridad.new', 'Nueva configuración')}
-        </Button>
-      </header>
+      <PageHeader
+        title={t('configuracionSeguridad.title', 'Configuración de seguridad')}
+        actions={
+          <Button
+            type="button"
+            onClick={() => {
+              setCreating(true);
+              setEditing(null);
+              setErrorState(null);
+            }}
+            data-testid="seguridad-new"
+          >
+            {t('configuracionSeguridad.new', 'Nueva configuración')}
+          </Button>
+        }
+      />
 
       {(creating || editing !== null) && (
         <FormModal
@@ -477,6 +478,6 @@ export default function ConfiguracionSeguridad(): JSX.Element {
           )}
         </TabsContent>
       </Tabs>
-    </main>
+    </div>
   );
 }

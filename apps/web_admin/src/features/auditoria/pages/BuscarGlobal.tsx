@@ -8,6 +8,7 @@
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 
@@ -25,18 +26,17 @@ export default function BuscarGlobal(): JSX.Element {
   }
 
   return (
-    <main className="space-y-4 p-4 md:p-6" data-testid="buscar-global-page">
-      <header>
-        <h1 className="text-2xl font-bold tracking-tight">
-          {t('auditoria.buscar.title', 'Búsqueda global')}
-        </h1>
-        <p className="text-muted-foreground text-sm">
-          {t(
-            'auditoria.buscar.subtitle',
-            'Typeahead acotado (máx. 10 resultados) sobre tabla y registro afectado.',
-          )}
-        </p>
-      </header>
+    <main
+      className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+      data-testid="buscar-global-page"
+    >
+      <PageHeader
+        title={t('auditoria.buscar.title', 'Búsqueda global')}
+        subtitle={t(
+          'auditoria.buscar.subtitle',
+          'Typeahead acotado (máx. 10 resultados) sobre tabla y registro afectado.',
+        )}
+      />
 
       <Card>
         <CardHeader>
