@@ -7,13 +7,15 @@
  *     simetría, el test falla.
  * H2: las cards de acceso rápido son las de `HUB_CARDS` (data-driven:
  *     agregar una card no requiere tocar este test, solo el array
- *     fuente).
+ *     fuente). Las 8 cards siguen existiendo como rail items.
  * H3: cada card es un `<a>` real con href y nombre accesible.
  * H4: el deep-link `?next=/ruta` sobrevive al login bounce
  *     cuando el guard nos manda a `/` (DEC-LOGIN-07 revisado).
  * H5: el panel ejecutivo se renderiza con las 6 cards cross-branch
- *     (Ocupación agregada, Suscripciones, Medios de pago, Top
- *     sucursal, Sync, Alertas) y los accesos rápidos debajo.
+ *     (KPI grid) y los accesos rápidos a la derecha.
+ * H6: los accesos rápidos viven en un `<aside aria-label="accesos
+ *     rápidos">` -- la separación rail/main es la forma en que la
+ *     página entra en 1 viewport de 1080p sin scroll.
  *
  * NOTA: la cobertura de `<TopNav />` montado en `/` vive en
  * `App.test.tsx` ("mounts TopNav but NOT AdminChrome on /"). Este test
@@ -40,18 +42,6 @@ vi.mock('@/features/dashboard/hooks/useResumenKpi', () => ({
     resumen: undefined,
     ocupacionHoraria: [],
   }),
-}));
-
-vi.mock('@/components/ui/card', () => ({
-  Card: ({ children, className }: { children: React.ReactNode; className?: string }) => (
-    <div data-testid="mock-card" className={className}>
-      {children}
-    </div>
-  ),
-}));
-
-vi.mock('@/components/AlertasBadge', () => ({
-  AlertasBadge: () => <div data-testid="alertas-badge-mock" />,
 }));
 
 vi.mock('@/features/dashboard/components/CrossBranchCharts', () => ({
@@ -87,12 +77,12 @@ describe('GlobalHQ', () => {
     expect(screen.queryByTestId('admin-chrome')).not.toBeInTheDocument();
   });
 
-  it('H2: cada card declarada en HUB_CARDS se renderiza (data-driven)', () => {
+  it('H2: cada card declarada en HUB_CARDS se renderiza (data-driven, ahora en el rail)', () => {
     renderGlobalHQ();
     for (const card of HUB_CARDS) {
       expect(
         screen.getByTestId(card.testId),
-        `card "${card.key}" debe estar renderizada`,
+        `card "${card.key}" debe estar renderizada en el rail`,
       ).toBeInTheDocument();
     }
   });
@@ -126,5 +116,12 @@ describe('GlobalHQ', () => {
     expect(screen.getByTestId('global-hq-header')).toBeInTheDocument();
     expect(screen.getByTestId('global-hq-kpi-grid')).toBeInTheDocument();
     expect(screen.getByTestId('global-hq-quick-links')).toBeInTheDocument();
+  });
+
+  it('H6: los accesos rápidos viven en un <aside> separado del main (layout 2 columnas)', () => {
+    renderGlobalHQ();
+    const rail = screen.getByTestId('global-hq-quick-links');
+    expect(rail.tagName, 'los accesos rápidos deben ser un <aside>').toBe('ASIDE');
+    expect(rail).toHaveAttribute('aria-label', 'accesos rápidos');
   });
 });
