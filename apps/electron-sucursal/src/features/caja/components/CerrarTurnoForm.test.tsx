@@ -119,6 +119,22 @@ describe('<CerrarTurnoForm /> — PT-4/PT-6: sin campos de justificación ni dat
     },
   );
 
+  it('muestra el producido a consignar (contado − base) mientras el operador cuenta', () => {
+    render(<Harness efectivoReportado={SESION.valor_inicial_efectivo + 100_000} />);
+
+    const producido = screen.getByTestId('cerrar-turno-producido').textContent ?? '';
+    expect(producido).toContain('Producido a consignar');
+    expect(producido).toContain('100.000');
+  });
+
+  it('no muestra un producido negativo mientras el operador no ha contado', () => {
+    render(<Harness efectivoReportado={0} />);
+
+    const producido = screen.getByTestId('cerrar-turno-producido').textContent ?? '';
+    expect(producido).toContain('—');
+    expect(producido).not.toContain('-$');
+  });
+
   it('el pre-flight se consulta solo con el efectivo (sin datáfono)', () => {
     render(<Harness efectivoReportado={500_000} />);
     expect(useRequiereJustificacionMock).toHaveBeenCalledWith(SESION.uuid, 500_000);
@@ -168,7 +184,14 @@ describe('<CerrarTurnoForm /> — motivo del descuadre en Observaciones (conteo 
 
     // Conteo ciego: el MONTO de la diferencia (167.000 / 167000) NUNCA
     // debe aparecer en el DOM, ni siquiera oculto.
-    const html = document.body.innerHTML;
+    //
+    // El "producido a consignar" (contado − base) sí se muestra: sale solo del
+    // conteo del operador y de la base visible, nunca del esperado del servidor.
+    // Con este fixture (sin ventas) coincide numéricamente con la diferencia,
+    // así que se excluye ese bloque del barrido.
+    const clone = document.body.cloneNode(true) as HTMLElement;
+    clone.querySelector('[data-testid="cerrar-turno-producido"]')?.remove();
+    const html = clone.innerHTML;
     expect(html).not.toContain('167000');
     expect(html).not.toContain('167.000');
   });

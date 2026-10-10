@@ -870,6 +870,12 @@ async def test_full_catalog_sync_46_entries_e2e(
             SYNC_CATALOG_BY_NAME["configuracion_tolerancias"],
             {"uuid_sucursal": None, "tolerancia_efectivo": 500, "tolerancia_datafono": 100},
         )
+        # The base de caja is authored in the cloud and must reach the branch.
+        C["configuracion_caja"] = await create_origin_row(
+            session,
+            SYNC_CATALOG_BY_NAME["configuracion_caja"],
+            {"uuid_sucursal": None, "base_inicial_sugerida": 123456},
+        )
         await session.commit()
 
         C["cantidad_vehiculos_sucursal"] = await create_origin_row(
@@ -951,7 +957,7 @@ async def test_full_catalog_sync_46_entries_e2e(
         await session.commit()
 
     V_NAMES = [e.name for e in SYNC_CATALOG if e.audit_class == "V"]
-    assert len(V_NAMES) == 26, f"expected 26 [V] entries, got {len(V_NAMES)}"
+    assert len(V_NAMES) == 27, f"expected 27 [V] entries, got {len(V_NAMES)}"
     V_CATALOG = tuple(SYNC_CATALOG_BY_NAME[name] for name in V_NAMES)
 
     async with BranchSession() as branch_session:
@@ -1456,10 +1462,10 @@ async def test_full_catalog_sync_46_entries_e2e(
     results["validacion_evento"] = "NEVER_PROPAGATED (confirmed correct)"
 
     # =====================================================================
-    # Final tally — all 46 entries accounted for.
+    # Final tally — all 47 entries accounted for.
     # =====================================================================
-    assert len(results) == 46, (
-        f"expected 46 SYNC_CATALOG entries accounted for, got {len(results)}: "
+    assert len(results) == 47, (
+        f"expected 47 SYNC_CATALOG entries accounted for, got {len(results)}: "
         f"missing={sorted(set(SYNC_CATALOG_BY_NAME) - set(results))}"
     )
     for entry in SYNC_CATALOG:

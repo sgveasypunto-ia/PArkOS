@@ -1,15 +1,17 @@
 /**
  * `<MiTurnoPanel />` — operator-facing per-turn widget (HU-F12.1).
  *
- * Directiva del operador (2026-09-22 — feedback de testing en kiosk):
- * la sección debe mostrar exclusivamente métricas operativas del turno
- * más cupos libres de la sucursal. NO incluye dinero (totalCobrado /
- * efectivo / datafono) — esos campos siguen llegando en el wire
- * `MiTurnoRead` por el contrato BE locked (DA-F12.1-1 GATING:
- * `backend/tests/unit/test_mi_turno_schema.py` y `apps/electron-
- * sucursal/src/lib/api/schemas/__tests__/mi-turno.test.ts` leen el
- * key-set del wire; tocar la Zod schema requiere tocar ambos). El
- * panel simplemente deja de renderizarlos.
+ * NO MONTADO: ningún archivo de producción lo importa (sólo tests). El
+ * "Mi turno" visible es el popover `TurnoActivoToggle` del encabezado,
+ * que reutiliza `<CobradoEnTurno />`. Se conserva sin borrar porque aún
+ * lo referencian tests y el e2e `mi-turno.spec.ts`.
+ *
+ * Además de las métricas operativas (ingresos, salidas, cupos libres),
+ * muestra el dinero cobrado en efectivo durante el turno
+ * (`total_cobrado_efectivo_cop`), de sólo lectura. El datáfono NO se
+ * muestra: el BE lo fija en 0 a propósito (F12.1.1 / REQ-OPS-197) y un
+ * cero ahí sería un dato falso. El valor sólo se pinta cuando el hook
+ * trae datos reales (`isLoaded`); si no, `—` (nunca un 0 inventado).
  *
  * Diseño tipo LISTA vertical (no KPI cards en grid) consistente con
  * `<OcupacionPanel />` que está justo debajo en el sidebar derecho.
@@ -44,6 +46,8 @@ import {
 import { useMiTurno } from '../hooks/useMiTurno';
 import { useOcupacion } from '../hooks/useOcupacion';
 
+import { CobradoEnTurno } from './CobradoEnTurno';
+
 export interface MiTurnoPanelProps {
   /**
    * Active operator turno UUID. `null` → zero-state (el hook retorna
@@ -63,7 +67,7 @@ export function MiTurnoPanel({
   uuid_sucursal,
 }: MiTurnoPanelProps): JSX.Element {
   const { t } = useTranslation('operacion');
-  const { data, isStale } = useMiTurno(uuid_sesion);
+  const { data, error, isStale, isLoaded } = useMiTurno(uuid_sesion);
   const { data: ocupacionData } = useOcupacion(uuid_sucursal);
 
   // Defensive `?? 0` keeps the type narrow in case the SWR shape drifts.
@@ -138,6 +142,12 @@ export function MiTurnoPanel({
             </span>
           </li>
         </ul>
+        <CobradoEnTurno
+          data={data}
+          error={error}
+          isLoaded={isLoaded}
+          className="mt-1 border-t border-border/40 px-0 pt-2.5"
+        />
       </CardContent>
     </Card>
   );

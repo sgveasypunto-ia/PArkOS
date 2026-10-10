@@ -14,9 +14,9 @@
  *      union that `escposBuilder.ts` uses to dispatch.
  *   4. Inline `formatCOP` helper (DEC-SUC-07 — `Intl.NumberFormat('es-CO',
  *      { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })`).
- *   5. F6.2 — declare the 17-key `TiqueteEntradaCampos` interface
+ *   5. F6.2 — declare the 15-key `TiqueteEntradaCampos` interface
  *      (Spanish ordinals, tsc-exhaustive) plus the
- *      `TiqueteEntradaPayload` mapped type used to enforce 17-key
+ *      `TiqueteEntradaPayload` mapped type used to enforce 15-key
  *      exhaustiveness at compile time. Ship `buildEntradaPayload()`
  *      factory that assembles an `EntradaPayload` from the 8 caller
  *      inputs and sets `esMensualidad` based on
@@ -235,56 +235,36 @@ export const TIQUETE_TIPOS: readonly TiqueteTipo[] = [
 ] as const;
 
 // ──────────────────────────────────────────────────────────────────────────
-// Entrada payload (CU-15E) — F6.2 tightens qr/logo to required
+// Entrada payload (CU-15E)
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
- * F6.2 (DEC-SUC-26) tightens `qrDataUrl` and `logoDataUrl` to REQUIRED
- * strings. F5.2 shipped them as `.optional()` — that allowed callers
- * to omit QR + logo entirely. F6.2 makes both keys mandatory because
- * the 17-field strict `TiqueteEntradaCampos` shape requires their
- * presence (empty string is the legitimate "logo missing" value —
- * the builder renders a placeholder glyph `▢` when `logoDataUrl === ''`
- * per `design.md` §"Decision: Render-time guard for missing
- * `documentos` row").
+ * F7.3 (DEC-SUC-28) `sucursal.encabezado` is REQUIRED across ALL THREE tiquete
+ * payloads (`entrada`, `salida`, `salida-mensualidad`): the dynamic branch
+ * header replaces the F5.2 "PARKINGOS" constant.
  *
- * F7.3 (DEC-SUC-28) tightens `sucursal.encabezado` to REQUIRED across
- * ALL THREE tiquete payloads (`entrada`, `salida`,
- * `salida-mensualidad`) — see the spec drift reconciliation table at
- * `openspec/changes/fase-7-3-tiquetes-salida/specs/operacion.md`. The
- * F5.2 "PARKINGOS" header constant is replaced by the dynamic branch
- * header.
+ * Every ticket is printed on the common 80 mm base (48 columns, easypunto logo
+ * on top and bottom): the payload therefore carries NO image fields (the former
+ * image data URL keys were removed: they were always empty in production and
+ * nothing consumed them).
  *
  * HU-INGRESO-SIN-PLACA (REQ-OPS-197) — discriminated union on
  * `variant: 'con-placa' | 'con-consecutivo'`. The no-placa variant
  * (`con-consecutivo`) requires `placa: null` and `consecutivo: string`
- * (format `<TIPO>-NNNNNN-<uuid8>`). The legacy `con-placa` variant
- * keeps the F6.2 strict 17-key shape. The discriminated union ensures
- * the printer pipeline NEVER receives a partial payload missing both
- * `placa` and `consecutivo`.
+ * (format `<TIPO>-NNNNNN-<uuid8>`). The discriminated union ensures the printer
+ * pipeline NEVER receives a partial payload missing both `placa` and
+ * `consecutivo`.
  *
- * The QR rasterizer is the caller's responsibility (F5.2 R4 purity).
- * The builder accepts the resulting `data:image/png;base64,...`
- * string verbatim. ABIERTO-01 default content:
- * `parkos://ingreso/<ingreso.uuid>?placa=<ingreso.placa>` (legacy) or
- * `parkos://ingreso/<ingreso.uuid>?consecutivo=<consecutivo>` (no-placa
- * — DEC-SUC-26 follow-up).
- *
- * `esMensualidad` is an OPTIONAL control flag surfaced by
- * `buildEntradaPayload()` when `ingreso.uuid_subscripcion_cliente
- * IS NOT NULL`. It is NOT one of the 17 conceptual fields; it is a
- * side-channel so the builder can emit an explicit `Tipo: ROTACIÓN` /
- * `Tipo: MENSUALIDAD` line under the sello (operator request: either
- * ticket alone must tell the operator whether that vehicle gets
- * charged) without exposing a third party column on the conceptual
- * 17-key shape (DEC-SUC-21 — `tipo_entrada` MUST NOT be persisted).
+ * `esMensualidad` is an OPTIONAL control flag surfaced by `buildEntradaPayload()`
+ * when `ingreso.uuid_subscripcion_cliente IS NOT NULL`. The ticket ALWAYS shows
+ * `Tipo: ROTACIÓN` / `Tipo: MENSUALIDAD` under the sello (operator request:
+ * either ticket alone must tell the operator whether that vehicle gets charged)
+ * without persisting `tipo_entrada` (DEC-SUC-21).
  */
 const entradaConPlacaSchema = z.object({
   variant: z.literal('con-placa'),
   placa: placaSchema,
   fechaEntrada: z.string().datetime({ offset: true }),
-  qrDataUrl: z.string(),
-  logoDataUrl: z.string(),
   empresa: empresaSchema,
   operario: z.string().min(1),
   tarifaAplicada: z.number().nonnegative().optional(),
@@ -307,8 +287,6 @@ const entradaConConsecutivoSchema = z.object({
   placa: z.null(),
   consecutivo: z.string().regex(/^[A-Z]{3,12}-[0-9]{6}-[0-9a-f]{8}$/),
   fechaEntrada: z.string().datetime({ offset: true }),
-  qrDataUrl: z.string(),
-  logoDataUrl: z.string(),
   empresa: empresaSchema,
   operario: z.string().min(1),
   tarifaAplicada: z.number().nonnegative().optional(),
@@ -332,11 +310,11 @@ export type EntradaPayload = z.infer<typeof entradaPayloadSchema>;
 export type EntradaVariant = 'con-placa' | 'con-consecutivo';
 
 // ──────────────────────────────────────────────────────────────────────────
-// F6.2 — TiqueteEntradaCampos (17-key exhaustive shape)
+// F6.2 — TiqueteEntradaCampos (15-key exhaustive shape)
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
- * `TiqueteEntradaCampos` — the 17 conceptual fields emitted on the
+ * `TiqueteEntradaCampos` — the 15 conceptual fields emitted on the
  * tiquete de entrada per `plan.md` lines 1606-1653 (HU-F6.2 contract).
  *
  * Spanish ordinal names (`primero`..`quinceavo`) keep tsc error messages
@@ -361,13 +339,11 @@ export type EntradaVariant = 'con-placa' | 'con-consecutivo';
  *   treceavo       → Horario atención         → payload.horarioAtencion
  *   catorceavo     → Póliza RC                → payload.polizaRC (optional)
  *   quinceavo      → Observaciones            → payload.observaciones (optional)
- *   qrDataUrl      → QR (DEC-SUC-26)          → payload.qrDataUrl
- *   logoDataUrl    → Logo (DEC-SUC-26)        → payload.logoDataUrl
  *
- * The mapped type `TiqueteEntradaPayload` derives the 17-key
+ * The mapped type `TiqueteEntradaPayload` derives the 15-key
  * exhaustiveness check at compile time so removing or renaming any
  * key fails `tsc --noEmit` (per spec scenario "Removing a key breaks
- * the build"). It is the source of truth for the 17-key COUNT — no
+ * the build"). It is the source of truth for the 15-key COUNT — no
  * other file in the codebase may declare a competing key set.
  */
 export interface TiqueteEntradaCampos {
@@ -386,19 +362,17 @@ export interface TiqueteEntradaCampos {
   readonly treceavo: string;
   readonly catorceavo: string;
   readonly quinceavo: string;
-  readonly qrDataUrl: string;
-  readonly logoDataUrl: string;
 }
 
 /**
- * `TiqueteEntradaPayload` — readonly mapped type over the 17-key
- * `TiqueteEntradaCampos`. The mapped type form makes the 17-key count
+ * `TiqueteEntradaPayload` — readonly mapped type over the 15-key
+ * `TiqueteEntradaCampos`. The mapped type form makes the 15-key count
  * the canonical source: if you remove a key from
  * `TiqueteEntradaCampos`, this type narrows automatically and any
  * function declaring it as a return type fails to compile.
  *
  * Distinct from the underlying data type `EntradaPayload` (F5.2)
- * which carries the 11+1 data fields. The 17-key shape is the
+ * which carries the 11+1 data fields. The 15-key shape is the
  * conceptual layout view; the data type is the storage view.
  */
 export type TiqueteEntradaPayload = {
@@ -471,21 +445,16 @@ export interface BuildEntradaPayloadInputs {
  * `buildEntradaPayload(inputs)` — assemble an `EntradaPayload` (F5.2
  * data type) from the 8 caller-supplied inputs. The factory:
  *
- *   1. Pulls the logo from `documentos` (tolerates absent — empty
- *      string is the documented `documentos` cold-cache sentinel;
- *      the builder renders `▢` when the value is empty per
- *      `design.md` §"Decision: Render-time guard for missing
- *      `documentos` row").
- *   2. Pulls the póliza RC from `documentos` (also tolerates absent —
+ *   1. Pulls the póliza RC from `documentos` (tolerates absent —
  *      `polizaRC` remains undefined).
- *   3. Sets `esMensualidad: true` when `ingreso.uuid_subscripcion_cliente
+ *   2. Sets `esMensualidad: true` when `ingreso.uuid_subscripcion_cliente
  *      IS NOT NULL` (DEC-SUC-21 — derived, NEVER persisted as a
  *      column on the `ingreso` row).
- *   4. Forwards `fechaHora` as `fechaEntrada` verbatim (ISO 8601 —
+ *   3. Forwards `fechaHora` as `fechaEntrada` verbatim (ISO 8601 —
  *      the builder formats it to es-CO short via
  *      `Intl.DateTimeFormat('es-CO', {dateStyle: 'short', timeStyle:
  *      'short'})` per F5.2 R4 — no implicit `new Date()`).
- *   5. HU-INGRESO-SIN-PLACA: dispatches to `con-placa` or
+ *   4. HU-INGRESO-SIN-PLACA: dispatches to `con-placa` or
  *      `con-consecutivo` variant based on `ingreso.placa`. If `placa`
  *      is null and `consecutivo` is set → no-placa variant.
  *
@@ -512,7 +481,6 @@ export function buildEntradaPayload(
     fechaHora,
   } = inputs;
 
-  const logoDoc = documentos.find((d) => d.tipo === 'logo');
   const certDoc = documentos.find((d) => d.tipo === 'certificado');
   const esMensualidad = ingreso.uuid_subscripcion_cliente !== null
     && ingreso.uuid_subscripcion_cliente !== undefined;
@@ -524,8 +492,6 @@ export function buildEntradaPayload(
       placa: null,
       consecutivo: ingreso.consecutivo,
       fechaEntrada: fechaHora,
-      qrDataUrl: `data:image/png;base64,${generateQrSentinel(ingreso)}`,
-      logoDataUrl: logoDoc?.documento_b64 ?? '',
       empresa,
       operario,
       tarifaAplicada: tarifa.valor_hora_cents,
@@ -545,8 +511,6 @@ export function buildEntradaPayload(
     variant: 'con-placa',
     placa: ingreso.placa ?? '',
     fechaEntrada: fechaHora,
-    qrDataUrl: `data:image/png;base64,${generateQrSentinel(ingreso)}`,
-    logoDataUrl: logoDoc?.documento_b64 ?? '',
     empresa,
     operario,
     tarifaAplicada: tarifa.valor_hora_cents,
@@ -560,36 +524,6 @@ export function buildEntradaPayload(
   };
 }
 
-/**
- * Generate the ABIERTO-01 default QR content sentinel
- * (`parkos://ingreso/<uuid>?placa=<placa>` for legacy, or
- * `parkos://ingreso/<uuid>?consecutivo=<consecutivo>` for no-placa).
- * The actual rasterization is the CALLER's responsibility (F5.2 R4
- * purity). This helper produces the deterministic string content the
- * rasterizer would encode; the builder embeds the data URL verbatim.
- *
- * The data URL prefix `data:image/png;base64,` is what callers
- * conventionally produce via `qrcode.toDataURL()`; the suffix after
- * the comma is the rasterized PNG base64. F6.2 ships a deterministic
- * sentinel so unit tests can assert byte presence; production callers
- * overwrite this with the real rasterizer output.
- */
-function generateQrSentinel(ingreso: IngresoForPayload): string {
-  // HU-INGRESO-SIN-PLACA — the QR sentinel switches to consecutivo
-  // for no-placa ingresos so the QR encodes the same identifier the
-  // tiquete prints.
-  const identifierParam =
-    ingreso.placa !== null
-      ? `placa=${ingreso.placa}`
-      : `consecutivo=${ingreso.consecutivo ?? ''}`;
-  const content = `parkos://ingreso/${ingreso.uuid}?${identifierParam}`;
-  // Lightweight deterministic stub so byte-level tests can locate
-  // the content via `Buffer.indexOf(content)` without importing a
-  // QR library. The actual rasterization is out of F6.2 scope
-  // (F5.2 R4 purity — caller responsibility).
-  return Buffer.from(content, 'utf8').toString('base64');
-}
-
 // ──────────────────────────────────────────────────────────────────────────
 // Salida payload (CU-15S)
 // ──────────────────────────────────────────────────────────────────────────
@@ -599,8 +533,7 @@ function generateQrSentinel(ingreso: IngresoForPayload): string {
  * `sucursal.encabezado` (dynamic branch header — replaces the
  * "PARKINGOS" constant). The other 19-field requirements mirror
  * `entradaPayloadSchema`'s `con-placa` variant (F6.2 — `tarifaAplicada`,
- * `horarioAtencion`, `observaciones`, `qrDataUrl`, `logoDataUrl`,
- * `polizaRC`). The salida payload always carries `placa` (the
+ * `horarioAtencion`, `observaciones`, `polizaRC`). The salida payload always carries `placa` (the
  * parent ingreso has a placa for salida flows — see design.md §17
  * Out of Scope, "Salida tiquete for bici/patineta — JOIN reads
  * consecutivo; UX update deferred to F13.x").
@@ -680,9 +613,6 @@ export type SalidaPayload = z.infer<typeof salidaPayloadSchema>;
  * `salidaMensualidadPayloadSchema`:
  *   - `sucursal.encabezado` is REQUIRED (DEC-SUC-28 — dynamic branch
  *     header replaces the F5.2 "PARKINGOS" constant).
- *   - `qrDataUrl` and `logoDataUrl` are REQUIRED (DEC-SUC-26 — same as
- *     F6.2 tightened CU-15E). Empty `logoDataUrl` is the legitimate
- *     "documentos cold-cache" sentinel (renders placeholder `▢`).
  *   - `tiempoTotal` is REQUIRED (was implicit in the F5.2 stub via
  *     combined `Entrada:` + `Salida:` lines; F7.3 splits into
  *     `Fecha:` / `Hora entrada:` / `Hora salida:` / `Tiempo:` per
@@ -696,8 +626,6 @@ export const salidaMensualidadPayloadSchema = z.object({
   placa: placaSchema,
   fechaEntrada: z.string().datetime({ offset: true }),
   fechaSalida: z.string().datetime({ offset: true }),
-  qrDataUrl: z.string(),
-  logoDataUrl: z.string(),
   empresa: empresaSchema,
   operario: z.string().min(1),
   horarioAtencion: z.string().min(1),
@@ -723,8 +651,11 @@ export type SalidaMensualidadPayload = z.infer<typeof salidaMensualidadPayloadSc
 
 const reimpresionBaseSchema = z.object({
   motivo: z.string().min(1),
-  qrDataUrl: z.string().optional(),
-  logoDataUrl: z.string().optional(),
+  /**
+   * Short identifier of the reimpresión (workflow row) printed next to the
+   * REIMPRESIÓN legend. Optional: without it the legend prints alone.
+   */
+  numeroReimpresion: z.string().min(1).optional(),
   empresa: empresaSchema,
   folioOriginal: z.string().uuid(),
 });
@@ -769,8 +700,6 @@ export type ReimpresionPayload = z.infer<typeof reimpresionPayloadSchema>;
  *         discriminator enforces the strict medio enum at the build
  *         boundary (a `transferencia` medio would be rejected).
  *   - `sucursal.encabezado` is REQUIRED (DEC-SUC-28 — same as CU-15S).
- *   - `qrDataUrl` and `logoDataUrl` are REQUIRED (DEC-SUC-26 — same
- *     as CU-15S tightened by F6.2).
  *
  * The schema extends `salidaPayloadSchema` so the 19-CU-15S field set
  * stays convergent across both builders; the two additions override

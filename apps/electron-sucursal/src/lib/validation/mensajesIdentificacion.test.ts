@@ -16,6 +16,7 @@ describe('mensajeIdentificacion', () => {
     'placa_formato_invalido',
     'placa_tipo_incompatible',
     'placas_cantidad_invalida',
+    'placa_duplicada_en_venta',
     'validation.cantidad.min_1',
     'validation.cantidad.max_excedida',
     'validation.number.required',

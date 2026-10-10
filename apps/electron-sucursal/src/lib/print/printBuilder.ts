@@ -14,7 +14,7 @@
  *   - `apps/electron-sucursal/src/lib/print/escposTemplates.ts`
  *     defines ``EntradaPayload`` (discriminated union
  *     ``con-placa`` | ``con-consecutivo`` per HU-INGRESO-SIN-PLACA,
- *     REQ-OPS-197) and the 17-key strict ``TiqueteEntradaCampos``
+ *     REQ-OPS-197) and the 15-key strict ``TiqueteEntradaCampos``
  *     shape.
  *   - ``escposBuilder.buildEntradaBuffer(payload)`` produces the
  *     printable bytes that ``bridge.imprimir`` consumes.
@@ -139,9 +139,6 @@ export function buildEntradaPayloadFromResponse(
   // Common inputs for the factory.
   const base = {
     fechaEntrada: fechaHora,
-    qrDataUrl: '', // caller rasterizes QR; the builder accepts empty string as
-    // the documented sentinel ("logo missing" per design.md §Decision)
-    logoDataUrl: '',
     empresa: context.empresa ?? DEFAULT_EMPRESA,
     operario: context.operario ?? 'Operador',
     ...tarifaDe(context),
@@ -181,6 +178,14 @@ export function buildEntradaPayloadFromResponse(
 }
 
 /**
+ * Short, printable number of a reimpresión: the last 8 hex digits of its
+ * workflow row uuid, upper-case (the backend has no sequential counter).
+ */
+export function numeroReimpresionCorto(uuidReimpresion: string): string {
+  return uuidReimpresion.replace(/-/g, '').slice(-8).toUpperCase();
+}
+
+/**
  * `buildReimpresionEntradaPayload(ingreso, motivo, context)` — HU-F8.3
  * (directiva del operador 2026-09-25): assemble a `ReimpresionPayload`
  * (`originalTipo: 'entrada'`) for a HISTORICAL `Ingreso` found via
@@ -198,6 +203,10 @@ export function buildEntradaPayloadFromResponse(
  *   - `esMensualidad` is derived from `uuid_subscripcion_cliente`
  *     directly (DEC-SUC-21) since a historical `Ingreso` row has no
  *     `tipo_entrada` discriminator.
+ *
+ * `numeroReimpresion` (optional) is the short identifier of the reimpresión
+ * (workflow row) printed next to the REIMPRESIÓN legend; see
+ * `numeroReimpresionCorto`.
  *
  * Only `originalTipo: 'entrada'` is supported today — reprinting a
  * salida ticket needs the ORIGINAL cobro breakdown (subtotal/iva/total)
@@ -220,6 +229,7 @@ export function buildReimpresionEntradaPayload(
   ingreso: Ingreso,
   motivo: string,
   context: PrintContext = {},
+  numeroReimpresion?: string,
 ): Extract<ReimpresionPayload, { originalTipo: 'entrada' }> {
   // The stored timestamp is naive UTC: read it as UTC, not as machine-local time.
   const fechaEntrada = new Date(
@@ -231,8 +241,6 @@ export function buildReimpresionEntradaPayload(
 
   const base = {
     fechaEntrada,
-    qrDataUrl: '',
-    logoDataUrl: '',
     empresa: context.empresa ?? DEFAULT_EMPRESA,
     operario: context.operario ?? 'Operador',
     ...tarifaDe(context),
@@ -262,6 +270,9 @@ export function buildReimpresionEntradaPayload(
     motivo,
     empresa: context.empresa ?? DEFAULT_EMPRESA,
     folioOriginal: ingreso.uuid,
+    ...(numeroReimpresion !== undefined && numeroReimpresion !== ''
+      ? { numeroReimpresion }
+      : {}),
     payload: entradaPayload,
   };
 }

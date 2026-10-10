@@ -5,7 +5,8 @@
  *   1. The returned `Buffer` starts with `0x1B 0x40` (init).
  *   2. The `Buffer` ends with `0x1D 0x56 0x00 0x0A` (cut + LF).
  *   3. The body contains expected field tokens (placa, money, sello).
- *   4. The sello bytes (`0x1B 0x21 0x30` text 2x) appear where applicable.
+ *   4. The sello is bold (`ESC E 1`); there is NO 2x text (`ESC ! n`): the 80 mm
+ *      ticket keeps its 48 columns (intentional change).
  *   5. Specific byte sequences are NOT present when forbidden (e.g.
  *      salida-mensualidad MUST NOT contain `Subtotal:`).
  *
@@ -58,11 +59,11 @@ describe('build("entrada", payload)', () => {
     const buf = build('entrada', validEntradaPayload());
     // 1. starts with init
     expect(startsWith(buf, [0x1b, 0x40])).toBe(true);
-    // 2. contains sello (text 2x) for "*** TIQUETE DE ENTRADA ***"
-    expect(contains(buf, Buffer.from([0x1b, 0x21, 0x30]))).toBe(true);
+    // 2. no 2x text: the sello is bold
+    expect(contains(buf, Buffer.from([0x1b, 0x21, 0x30]))).toBe(false);
     // 3. contains bold on/off
-    expect(contains(buf, Buffer.from([0x1b, 0x45]))).toBe(true);
-    expect(contains(buf, Buffer.from([0x1b, 0x46]))).toBe(true);
+    expect(contains(buf, Buffer.from([0x1b, 0x45, 0x01]))).toBe(true);
+    expect(contains(buf, Buffer.from([0x1b, 0x45, 0x00]))).toBe(true);
     // 4. body contains placa + folio
     expect(contains(buf, Buffer.from('ABC123'))).toBe(true);
     expect(contains(buf, Buffer.from('00000000-0000-4000-8000-000000000001'))).toBe(true);
@@ -81,8 +82,8 @@ describe('build("salida", payload)', () => {
   it('emits init + sello bytes + money fields + cut + LF', () => {
     const buf = build('salida', validSalidaPayload());
     expect(startsWith(buf, [0x1b, 0x40])).toBe(true);
-    expect(contains(buf, Buffer.from([0x1b, 0x21, 0x30]))).toBe(true);
-    expect(contains(buf, Buffer.from([0x1b, 0x45]))).toBe(true);
+    expect(contains(buf, Buffer.from([0x1b, 0x21, 0x30]))).toBe(false);
+    expect(contains(buf, Buffer.from([0x1b, 0x45, 0x01]))).toBe(true);
     // Money tokens (formatCOP "$ 10.000", "$ 1.900", "$ 11.900")
     expect(contains(buf, Buffer.from('$'))).toBe(true);
     // "Subtotal:" and "TOTAL:" must appear
@@ -103,13 +104,11 @@ describe('build("salida", payload)', () => {
 // ──────────────────────────────────────────────────────────────────────────
 
 describe('build("salida-mensualidad", payload)', () => {
-  it('emits 2x-height sello "*** PAGO CON MENSUALIDAD ***" and NO money fields', () => {
+  it('emits bold sello "*** PAGO CON MENSUALIDAD ***" and NO money fields', () => {
     const payload = {
       placa: 'ABC12D',
       fechaEntrada: '2026-09-01T00:00:00Z',
       fechaSalida: '2026-09-16T08:00:00Z',
-      qrDataUrl: 'data:image/png;base64,CCC',
-      logoDataUrl: 'data:image/png;base64,DDD',
       empresa: {
         nombre: 'Parkos Demo S.A.S.',
         nit: '900123456-7',
@@ -127,8 +126,9 @@ describe('build("salida-mensualidad", payload)', () => {
     };
     const buf = build('salida-mensualidad', payload);
     expect(startsWith(buf, [0x1b, 0x40])).toBe(true);
-    // sello text-2x present
-    expect(contains(buf, Buffer.from([0x1b, 0x21, 0x30]))).toBe(true);
+    // sello is bold, never text 2x
+    expect(contains(buf, Buffer.from([0x1b, 0x45, 0x01]))).toBe(true);
+    expect(contains(buf, Buffer.from([0x1b, 0x21, 0x30]))).toBe(false);
     // sello text
     expect(contains(buf, Buffer.from('PAGO CON MENSUALIDAD'))).toBe(true);
     // placa token
@@ -152,8 +152,6 @@ describe('build("reimpresion", payload)', () => {
   it('emits REIMPRESION header + motivo + delegates to entrada body', () => {
     const payload = {
       motivo: 'Tiquete extraviado por cliente',
-      qrDataUrl: 'data:image/png;base64,EEE',
-      logoDataUrl: 'data:image/png;base64,FFF',
       empresa: {
         nombre: 'Parkos Demo S.A.S.',
         nit: '900123456-7',

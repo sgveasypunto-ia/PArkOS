@@ -13,36 +13,38 @@ import { listAdminUsuarioSucursales } from '@/features/admin/api/adminUsuariosAp
 import { offsetISO, todayISO } from '@/features/reporteria/components/dateRange';
 import { useReporteriaOperacional } from '@/features/reporteria/hooks/useReporteria';
 
-import { useKpiData } from '../hooks/useKpiData';
+import { useSucursalKpi } from '../hooks/useSucursalKpi';
 
-// Dynamic import (T5): the 4-chart section and its SVG/table-toggle code
-// never ship in the initial bundle -- only when the dashboard actually
-// mounts, and only once.
-const ChartsSection = lazy(() => import('../components/ChartsSection'));
+// Dynamic import (T5): the branch-scoped chart and its SVG code never
+// ship in the initial bundle -- only when /dashboard actually mounts.
+// The cross-branch charts (`CrossBranchCharts.tsx`) live in a separate
+// `lazy()` boundary on `/` (the global HQ), so the dashboard bundle
+// stays free of `HeatmapOcupacion`, `ChartBar`, `ChartPie` and the
+// cross-branch resumen fetcher.
+const BranchCharts = lazy(() => import('../components/BranchCharts'));
 
 /**
- * Dashboard — multi-tenant admin executive landing page (HU-F17.1).
+ * Dashboard — branch-scoped executive landing page (HU-F17.1, post-split).
  *
- * Loads the permitted branches from `/api/v1/admin/me` on mount, renders
- * the `<BranchSelector>` so the operator can pick which branch they want
- * to inspect, then fetches that branch's aggregates from
- * `/api/v1/admin/sucursales/{uuid}/dashboard` for the 3 per-branch cards
- * (ingresos, facturas, monto total). `ingresos_monto_total` is the real
- * `facturas -> ingreso` chain sum (BR1, closed by a prior HU on this
- * same endpoint) -- NOT the historical `0.0` placeholder this file used
- * to warn about; that warning is now stale and removed.
+ * Lives inside `<RequireSucursal>`, so a `selected` UUID is guaranteed
+ * non-null by the time this component renders. The header is a real
+ * "you are looking at one branch" surface: a `<BranchSelector>` pinned
+ * to the top and a subtitle that names the branch scope explicitly.
  *
- * A second, cross-branch row sources 6 more KPI cards from the new
- * `/api/v1/admin/dashboard/resumen` endpoint (BR2), scoped to every
- * branch the actor is permitted on: ocupación agregada, suscripciones
- * activas, medios de pago del día, top sucursales, estado de sync, y
- * alertas por severidad. See `hooks/useKpiData.ts` for why 9 cards only
- * cost 2 real HTTP requests.
+ * Two things were REMOVED in the post-split refactor:
+ *   - The 6 cross-branch KPI cards (ocupación agregada, suscripciones,
+ *     medios de pago, top sucursales, sync agregado, alertas) moved
+ *     to the global HQ at `/` (`useResumenKpi`). They were misleading
+ *     on a "sucursal seleccionada" page: a Top Sucursal ranking that
+ *     ignores your selector is not a Top Sucursal, and a "Sync 0/19"
+ *     whose denominator is 19 branches does not reflect the branch
+ *     you picked.
+ *   - The cross-branch charts (top-5, FE 24h, occupancy heatmap) also
+ *     moved to `/`. The dashboard now keeps only the branch-scoped
+ *     ingresos 30-day line.
  *
- * Persistence: the selected UUID lives in `localStorage` under
- * `parkos.lastSelectedSucursal` (set by `SucursalProvider`); on reload,
- * `useSucursal()` rehydrates it and the dashboard skips the
- * `sucursales_permitidas` bootstrap step.
+ * What stays: the 3 per-branch cards (ingresos / facturas / monto
+ * total) and the 4 quick-link cards filtered by `selected`.
  */
 
 interface AdminMe {
@@ -90,7 +92,9 @@ export default function Dashboard(): JSX.Element {
 
   // Pick a default the first time we have the list — first permitted
   // branch, unless the user already selected one (persisted via
-  // SucursalContext).
+  // SucursalContext). The gate upstream (`RequireSucursal`) blocks
+  // this render until `selected` is in `sucursalUuids`, so by the
+  // time we mount the `selected ??` is just a defensive fallback.
   useEffect(() => {
     if (selected) return;
     const items = sucursales.data?.items ?? [];
@@ -110,8 +114,7 @@ export default function Dashboard(): JSX.Element {
       .map((i) => ({ uuid: i.uuid, nombre: i.nombre }));
   }, [sucursales.data, me.data]);
 
-  const permitidas = me.data?.sucursales_permitidas ?? [];
-  const kpi = useKpiData(selected, permitidas);
+  const kpi = useSucursalKpi(selected);
 
   const operacional = useReporteriaOperacional(
     selected
@@ -152,12 +155,6 @@ export default function Dashboard(): JSX.Element {
   );
   const usuariosCount = usuariosCountSWR.data ?? 0;
 
-  const topSucursal = kpi.topSucursales.value?.[0];
-  const mediosPagoTotal = (kpi.mediosPago.value ?? []).reduce(
-    (acc, m) => acc + m.monto_total,
-    0,
-  );
-
   return (
     <main
       className="min-h-screen bg-background p-6"
@@ -172,7 +169,7 @@ export default function Dashboard(): JSX.Element {
             <p className="text-sm text-muted-foreground">
               {t(
                 'dashboard.subtitle',
-                'Métricas de la sucursal seleccionada + resumen ejecutivo multi-sucursal.',
+                'Métricas operativas de la sucursal seleccionada.',
               )}
             </p>
           </div>
@@ -184,11 +181,12 @@ export default function Dashboard(): JSX.Element {
           </div>
         </header>
 
-        {/* Executive 3x3 grid (T4): row 1 is the selected branch's own
-            metrics; rows 2-3 are the cross-branch resumen (BR2). */}
+        {/* Row 1: 3 cards strictly scoped to the selected branch. The
+            cross-branch resumen no longer rides on this surface -- see
+            the global HQ at `/` (post-split refactor). */}
         <section
           className="grid grid-cols-1 gap-4 sm:grid-cols-3"
-          aria-label="métricas ejecutivas"
+          aria-label="métricas de la sucursal"
           data-testid="dashboard-kpi-grid"
         >
           <KpiCard
@@ -209,90 +207,9 @@ export default function Dashboard(): JSX.Element {
             loading={kpi.montoTotal.loading}
             error={kpi.montoTotal.error}
           />
-
-          <KpiCard
-            label={t('dashboard.ocupacionAgregada', 'Ocupación agregada')}
-            loading={kpi.ocupacion.loading}
-            error={kpi.ocupacion.error}
-            render={() => (
-              <p className="text-3xl font-semibold tabular-nums">
-                {kpi.ocupacion.value?.porcentaje === null ||
-                kpi.ocupacion.value?.porcentaje === undefined
-                  ? '—'
-                  : `${kpi.ocupacion.value.porcentaje.toFixed(0)}%`}
-                <span className="ml-2 text-sm font-normal text-muted-foreground">
-                  {kpi.ocupacion.value?.ocupados ?? 0}/{kpi.ocupacion.value?.capacidad ?? 0}
-                </span>
-              </p>
-            )}
-          />
-          <KpiCard
-            label={t('dashboard.suscripcionesActivas', 'Suscripciones activas')}
-            value={kpi.suscripciones.value}
-            loading={kpi.suscripciones.loading}
-            error={kpi.suscripciones.error}
-          />
-          <KpiCard
-            label={t('dashboard.mediosPagoDia', 'Medios de pago (hoy)')}
-            loading={kpi.mediosPago.loading}
-            error={kpi.mediosPago.error}
-            render={() => (
-              <p className="text-3xl font-semibold tabular-nums">
-                ${mediosPagoTotal.toLocaleString('es-CO')}
-                <span className="ml-2 text-sm font-normal text-muted-foreground">
-                  {(kpi.mediosPago.value ?? []).length} medios
-                </span>
-              </p>
-            )}
-          />
-
-          <KpiCard
-            label={t('dashboard.topSucursal', 'Top sucursal (30 días)')}
-            loading={kpi.topSucursales.loading}
-            error={kpi.topSucursales.error}
-            render={() => (
-              <p className="text-xl font-semibold">
-                {topSucursal
-                  ? `${topSucursal.nombre ?? topSucursal.uuid_sucursal.slice(0, 8)} — $${topSucursal.monto_total.toLocaleString('es-CO')}`
-                  : 'Sin datos'}
-              </p>
-            )}
-          />
-          <KpiCard
-            label={t('dashboard.syncAgregado', 'Estado de sincronización')}
-            loading={kpi.sync.loading}
-            error={kpi.sync.error}
-            render={() => (
-              <p className="text-3xl font-semibold tabular-nums">
-                {kpi.sync.value?.sucursales_ok ?? 0}
-                <span className="text-muted-foreground">/{permitidas.length}</span>
-                <span className="ml-2 text-sm font-normal text-muted-foreground">al día</span>
-              </p>
-            )}
-          />
-          <KpiCard
-            label={t('dashboard.alertasSeveridad', 'Alertas abiertas')}
-            loading={kpi.alertas.loading}
-            error={kpi.alertas.error}
-            render={() => {
-              const total = (kpi.alertas.value ?? []).reduce((acc, a) => acc + a.count, 0);
-              const criticas =
-                (kpi.alertas.value ?? []).find((a) => a.severity === 'critical')?.count ?? 0;
-              return (
-                <p className="text-3xl font-semibold tabular-nums">
-                  {total}
-                  {criticas > 0 && (
-                    <span className="ml-2 text-sm font-normal text-destructive">
-                      {criticas} críticas
-                    </span>
-                  )}
-                </p>
-              );
-            }}
-          />
         </section>
 
-        {/* Secondary row: per-branch shortcuts that lived in the original
+        {/* Row 2: per-branch shortcuts that lived in the original
             7-card grid, kept as quick links rather than dropped. */}
         <section
           className="grid grid-cols-2 gap-3 sm:grid-cols-4"
@@ -333,11 +250,6 @@ export default function Dashboard(): JSX.Element {
           />
         </section>
 
-        {!selected && (
-          <p className="text-sm text-muted-foreground" data-testid="dashboard-no-branch">
-            {t('dashboard.noBranch', 'Seleccioná una sucursal para ver el panel.')}
-          </p>
-        )}
         {(kpi.ingresos.error || kpi.facturas.error || kpi.montoTotal.error) && (
           <p className="text-sm text-destructive" data-testid="dashboard-error">
             {t('dashboard.loadError', 'No se pudo cargar el panel de la sucursal.')}
@@ -346,15 +258,12 @@ export default function Dashboard(): JSX.Element {
 
         <Suspense
           fallback={
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2" data-testid="dashboard-charts-loading">
-              <Skeleton className="h-48" />
-              <Skeleton className="h-48" />
-              <Skeleton className="h-48" />
+            <div className="grid grid-cols-1 gap-6" data-testid="dashboard-charts-loading">
               <Skeleton className="h-48" />
             </div>
           }
         >
-          <ChartsSection operacional={operacional.data} resumen={kpi.resumen} />
+          <BranchCharts operacional={operacional.data} />
         </Suspense>
       </div>
     </main>

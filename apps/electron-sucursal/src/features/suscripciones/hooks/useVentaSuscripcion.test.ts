@@ -49,7 +49,9 @@ import { act, renderHook } from '@testing-library/react';
 import {
   useVentaSuscripcion,
   VentaSuscripcionDuplicatePlateError,
+  VentaSuscripcionFechaFinError,
   VentaSuscripcionTipoIncompatibleError,
+  VentaSuscripcionValidationError,
 } from './useVentaSuscripcion';
 import { useAuthStore } from '@parkos/ui-kit/store';
 
@@ -210,5 +212,167 @@ describe('useVentaSuscripcion — REQ-OPS-177 + REQ-OPS-179', () => {
 
     expect(useAuthStore.getState().clear).toHaveBeenCalledTimes(1);
     expect(dispatched).toContain('parkos:auth:cleared');
+  });
+
+  describe('422 con cualquier forma de detail (defecto 5.13)', () => {
+    async function disparar422(body: string): Promise<unknown> {
+      const { ParkosHttpError } = await import('@parkos/ui-kit/fetch');
+      mockFetch.mockRejectedValueOnce(
+        new ParkosHttpError(422, body, '/api/v1/clientes/venta-suscripcion'),
+      );
+      const { result } = renderHook(() => useVentaSuscripcion());
+      let caught: unknown;
+      await act(async () => {
+        try {
+          await result.current.trigger(inputBase);
+        } catch (e) {
+          caught = e;
+        }
+      });
+      return caught;
+    }
+
+    it('voucher_datafono_duplicado (caja bug 3) -> se relanza el ParkosHttpError original para que el PagoModal lo pinte en el campo voucher', async () => {
+      const { ParkosHttpError } = await import('@parkos/ui-kit/fetch');
+      const caught = await disparar422(
+        JSON.stringify({
+          detail: { error: 'voucher_datafono_duplicado', message: 'El voucher X ya fue registrado hoy', referencia: 'X' },
+        }),
+      );
+      expect(caught).toBeInstanceOf(ParkosHttpError);
+      expect(caught).not.toBeInstanceOf(VentaSuscripcionValidationError);
+    });
+
+    it('detail string -> VentaSuscripcionValidationError con ese mensaje', async () => {
+      const caught = await disparar422(JSON.stringify({ detail: 'El vehículo ya existe' }));
+      expect(caught).toBeInstanceOf(VentaSuscripcionValidationError);
+      expect((caught as VentaSuscripcionValidationError).mensaje).toBe('El vehículo ya existe');
+    });
+
+    it('detail lista Pydantic -> une los msg con su campo', async () => {
+      const caught = await disparar422(
+        JSON.stringify({
+          detail: [
+            { loc: ['body', 'placas', 0], msg: 'placa inválida', type: 'value_error' },
+            { loc: ['body', 'cliente', 'nombre'], msg: 'campo requerido', type: 'missing' },
+          ],
+        }),
+      );
+      expect(caught).toBeInstanceOf(VentaSuscripcionValidationError);
+      const msg = (caught as VentaSuscripcionValidationError).mensaje;
+      expect(msg).toContain('placa inválida');
+      expect(msg).toContain('campo requerido');
+    });
+
+    it('detail objeto con código desconocido y message -> usa message', async () => {
+      const caught = await disparar422(
+        JSON.stringify({ detail: { error: 'vehiculo_existente', message: 'La placa ABC123 ya existe' } }),
+      );
+      expect(caught).toBeInstanceOf(VentaSuscripcionValidationError);
+      expect((caught as VentaSuscripcionValidationError).mensaje).toBe('La placa ABC123 ya existe');
+    });
+
+    it('detail objeto solo con código desconocido -> usa el código', async () => {
+      const caught = await disparar422(
+        JSON.stringify({ detail: { error: 'plan_duracion_dias_invalido' } }),
+      );
+      expect(caught).toBeInstanceOf(VentaSuscripcionValidationError);
+      expect((caught as VentaSuscripcionValidationError).mensaje).toBe('plan_duracion_dias_invalido');
+    });
+
+    it('cuerpo no JSON o vacío -> VentaSuscripcionValidationError con mensaje vacío', async () => {
+      const caught = await disparar422('<html>boom</html>');
+      expect(caught).toBeInstanceOf(VentaSuscripcionValidationError);
+      expect((caught as VentaSuscripcionValidationError).mensaje).toBe('');
+      expect((caught as VentaSuscripcionValidationError).placa).toBe('');
+    });
+
+    it('detail objeto con código desconocido y placa -> expone la placa', async () => {
+      const caught = await disparar422(
+        JSON.stringify({ detail: { error: 'vehiculo_existente', placa: 'QAH001', message: 'x' } }),
+      );
+      expect(caught).toBeInstanceOf(VentaSuscripcionValidationError);
+      expect((caught as VentaSuscripcionValidationError).placa).toBe('QAH001');
+    });
+
+    it('tipo_vehiculo_incompatible con placa -> expone la placa; sin placa queda vacía', async () => {
+      const conPlaca = await disparar422(
+        JSON.stringify({
+          detail: { error: 'tipo_vehiculo_incompatible', placa: 'ABC123', tipos_encontrados: ['a'] },
+        }),
+      );
+      expect(conPlaca).toBeInstanceOf(VentaSuscripcionTipoIncompatibleError);
+      expect((conPlaca as VentaSuscripcionTipoIncompatibleError).placa).toBe('ABC123');
+      const sinPlaca = await disparar422(
+        JSON.stringify({ detail: { error: 'tipo_vehiculo_incompatible', tipos_encontrados: ['a'] } }),
+      );
+      expect((sinPlaca as VentaSuscripcionTipoIncompatibleError).placa).toBe('');
+    });
+  });
+});
+
+describe('useVentaSuscripcion — fecha_fin_cobertura (solo acortar)', () => {
+  const conFin = { ...inputBase, fecha_fin_cobertura: '2026-10-05' };
+
+  it('envia fecha_fin_cobertura en el cuerpo del POST', async () => {
+    mockFetch.mockResolvedValueOnce(happyResponse);
+    const { result } = renderHook(() => useVentaSuscripcion());
+    await act(async () => {
+      await result.current.trigger(conFin);
+    });
+    const init = mockFetch.mock.calls[0]?.[1] as { body: string };
+    expect(JSON.parse(init.body).fecha_fin_cobertura).toBe('2026-10-05');
+  });
+
+  it('422 fecha_fin_fuera_de_rango -> VentaSuscripcionFechaFinError con mensaje y maximo', async () => {
+    const { ParkosHttpError } = await import('@parkos/ui-kit/fetch');
+    mockFetch.mockRejectedValueOnce(
+      new ParkosHttpError(
+        422,
+        JSON.stringify({
+          detail: {
+            error: 'fecha_fin_fuera_de_rango',
+            message: 'Solo se puede acortar la vigencia',
+            fecha_fin_maxima: '2026-10-19',
+          },
+        }),
+        '/api/v1/clientes/venta-suscripcion',
+      ),
+    );
+    const { result } = renderHook(() => useVentaSuscripcion());
+    let caught: unknown;
+    await act(async () => {
+      try {
+        await result.current.trigger(conFin);
+      } catch (e) {
+        caught = e;
+      }
+    });
+    expect(caught).toBeInstanceOf(VentaSuscripcionFechaFinError);
+    expect((caught as VentaSuscripcionFechaFinError).mensaje).toBe(
+      'Solo se puede acortar la vigencia',
+    );
+    expect((caught as VentaSuscripcionFechaFinError).fechaFinMaxima).toBe('2026-10-19');
+  });
+
+  it('reintento con el mismo cuerpo en vuelo comparte Idempotency-Key; otro fin usa otra', async () => {
+    const { withActionIdempotencyKey } = await import('../../operacion/lib/idempotency');
+    const keys: string[] = [];
+    const run = (body: unknown): Promise<void> =>
+      withActionIdempotencyKey(
+        { method: 'POST', path: '/api/v1/clientes/venta-suscripcion', body },
+        async (key) => {
+          keys.push(key);
+          await new Promise((r) => setTimeout(r, 5));
+        },
+      );
+    await Promise.all([
+      run(conFin),
+      run({ ...conFin }),
+      run({ ...inputBase, fecha_fin_cobertura: '2026-10-06' }),
+    ]);
+    expect(keys).toHaveLength(3);
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[2]).not.toBe(keys[0]);
   });
 });

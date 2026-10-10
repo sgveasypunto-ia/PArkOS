@@ -40,8 +40,31 @@ describe('ResumenCierreTurnoSchema', () => {
         'medios_pago',
         'reversos_count',
         'reversos_total_cop',
+        'base_entregada',
+        'efectivo_reportado',
+        'producido',
       ].sort(),
     );
+  });
+
+  it('keeps the cash-handover fields null until an arqueo exists and coerces Decimal strings', () => {
+    const sinArqueo = ResumenCierreTurnoSchema.parse({
+      ...BASE_OK,
+      base_entregada: '100000.0000',
+      efectivo_reportado: null,
+      producido: null,
+    });
+    expect(sinArqueo.base_entregada).toBe(100000);
+    expect(sinArqueo.efectivo_reportado).toBeNull();
+    expect(sinArqueo.producido).toBeNull();
+
+    const conArqueo = ResumenCierreTurnoSchema.parse({
+      ...BASE_OK,
+      base_entregada: '100000',
+      efectivo_reportado: '350000',
+      producido: '250000',
+    });
+    expect(conArqueo.producido).toBe(250000);
   });
 
   it('rejects unknown keys (strict) and missing required fields', () => {

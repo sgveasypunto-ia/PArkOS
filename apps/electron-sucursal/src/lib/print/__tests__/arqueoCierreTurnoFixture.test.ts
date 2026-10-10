@@ -22,10 +22,10 @@
  */
 import { describe, expect, it } from 'vitest';
 
+import { copPlano } from './copPlano';
 import { build, validatePayload } from '../escposBuilder';
 import {
   arqueoPayloadSchema,
-  formatCOP,
   formatFechaCorta,
   type ArqueoPayload,
 } from '../escposTemplates';
@@ -65,9 +65,9 @@ describe('HU-F10.2 — escposBuilder.build("arqueo", { auditoria_codigo: "cierre
     // arqueoFixture.test.ts:90-91 lesson).
     expect(utf8).toContain(`Fecha: ${formatFechaCorta(VALID_PAYLOAD.fecha)}`);
     expect(utf8).toContain('Sesion: abcdef0');
-    expect(utf8).toContain(`Base: ${formatCOP(50_000)}`);
+    expect(utf8).toContain(`Base: ${copPlano(50_000)}`);
     // diferencia=0 → `+` sign per spec (NEVER `±`).
-    expect(utf8).toContain(`Diferencia efectivo: +${formatCOP(0)}`);
+    expect(utf8).toContain(`Diferencia efectivo: +${copPlano(0)}`);
     // PT-6: the efectivo-only cuadre prints NO datafono block at all.
     expect(utf8).not.toContain('datafono');
     // justificacion empty → NO "Justificacion:" line.
@@ -89,7 +89,7 @@ describe('HU-F10.2 — escposBuilder.build("arqueo", { auditoria_codigo: "cierre
     // Same discriminator round-trips.
     expect(utf8).toContain('Codigo: cierre_turno');
     // Sign prefix MUST be `-` for negative diferencia (NEVER `±`).
-    expect(utf8).toContain(`Diferencia efectivo: -${formatCOP(3_000)}`);
+    expect(utf8).toContain(`Diferencia efectivo: -${copPlano(3_000)}`);
     // Justificacion line MUST be present when the descuadre path is taken.
     expect(utf8).toContain('Justificacion: Faltante menor en caja');
   });

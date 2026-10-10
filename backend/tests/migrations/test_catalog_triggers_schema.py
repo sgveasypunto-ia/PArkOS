@@ -21,6 +21,7 @@ _ALREADY_TRIGGERED = frozenset(
     {
         "configuracion_tolerancias",
         "configuracion_seguridad",
+        "configuracion_caja",  # AFTER INSERT fn_enqueue_sync() since 0066
         "resolucion_facturacion",
         "usuarios_sucursal",
         "documentos",

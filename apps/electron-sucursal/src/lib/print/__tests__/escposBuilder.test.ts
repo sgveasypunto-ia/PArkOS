@@ -2,17 +2,15 @@
  * Unit tests for `escposBuilder.ts` (HU-F5.2 / F6.2).
  *
  * Covers:
- *   - 5 byte-level ESC/POS opcode fixtures (init / cut / center / bold / 2x).
+ *   - 4 byte-level ESC/POS opcode fixtures (init / cut / center / bold). The
+ *     text-2x opcode was retired with the 80 mm tickets (2x text halves the 48 columns).
  *   - `EscposInvalidTipoError` carries `code` and `given`.
  *   - Payload missing required field throws `EscposPayloadMissingFieldError`.
  *   - `build()` is pure — does NOT call `window.print()` (no DOM side effects).
  *   - `formatCOP` inline copy: `100000` → `"$ 100.000"` (es-CO, 0 decimales).
  *
- * F6.2 — `entradaPayloadSchema` tightened qr + logo to REQUIRED (F5.2
- * shipped them as `.optional()`). The exported `validEntradaPayload()`
- * fixture provides both keys verbatim, so the existing scenarios
- * continue to pass against the strict schema. The dedicated 17-byte
- * presence scenarios live in `escposBuilder.entrada.test.ts`.
+ * The dedicated content scenarios live in `escposBuilder.entrada.test.ts`; the
+ * common 80 mm format (48 columns, logos, no QR) in `tiquetes80mm.test.ts`.
  */
 import { describe, it, expect, vi } from 'vitest';
 
@@ -21,7 +19,6 @@ import {
   escInit,
   escCenter,
   escBoldOn,
-  escText2x,
   cutPartial,
   EscposInvalidTipoError,
   EscposPayloadMissingFieldError,
@@ -42,12 +39,8 @@ describe('escposBuilder byte fixtures', () => {
     expect(escCenter()).toEqual(Buffer.from([0x1b, 0x61, 0x01]));
   });
 
-  it('esc_bold_on returns Buffer [0x1B, 0x45]', () => {
-    expect(escBoldOn()).toEqual(Buffer.from([0x1b, 0x45]));
-  });
-
-  it('esc_text_2x returns Buffer [0x1B, 0x21, 0x30]', () => {
-    expect(escText2x()).toEqual(Buffer.from([0x1b, 0x21, 0x30]));
+  it('esc_bold_on returns Buffer [0x1B, 0x45, 0x01]', () => {
+    expect(escBoldOn()).toEqual(Buffer.from([0x1b, 0x45, 0x01]));
   });
 
   it('cut_partial returns Buffer [0x1D, 0x56, 0x00]', () => {
@@ -152,8 +145,6 @@ export function validEntradaPayload() {
     variant: 'con-placa' as const,
     placa: 'ABC123',
     fechaEntrada: '2026-09-16T08:30:00Z',
-    qrDataUrl: 'data:image/png;base64,AAA',
-    logoDataUrl: 'data:image/png;base64,BBB',
     empresa: {
       nombre: 'Parkos Demo S.A.S.',
       nit: '900123456-7',

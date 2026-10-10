@@ -210,6 +210,25 @@ describe('<RenovarSuscripcionPanel /> — PT-3', () => {
     );
   });
 
+  it('P3b (caja bug 3): voucher duplicado -> mensaje accesible junto al campo, aria-invalid y foco', async () => {
+    mockTrigger.mockRejectedValueOnce(
+      new RenovacionError(422, 'voucher_datafono_duplicado', { referencia: 'V-778899' }),
+    );
+    setup();
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByTestId('renovar-medio-pago'), 'datafono');
+    await user.type(screen.getByTestId('renovar-referencia'), 'V-778899');
+    await user.click(screen.getByTestId('renovar-confirmar'));
+
+    const err = screen.getByTestId('renovar-error');
+    expect(err).toHaveTextContent('V-778899');
+    expect(err).toHaveTextContent('ya fue registrado');
+    const input = screen.getByTestId('renovar-referencia');
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(input.getAttribute('aria-describedby')).toContain(err.id);
+    expect(input).toHaveFocus();
+  });
+
   it('P4: suscripcion_no_renovable -> clear message, onStale, and a NEW attempt id afterwards', async () => {
     mockTrigger.mockRejectedValueOnce(
       new RenovacionError(409, 'suscripcion_no_renovable'),

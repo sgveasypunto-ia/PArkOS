@@ -1,4 +1,4 @@
-"""catalog/entries/sync_entries_v.py — 26 [V] catalog entries (T-PR2-002..006).
+"""catalog/entries/sync_entries_v.py — 27 [V] catalog entries (T-PR2-002..006).
 
 Direction and ``broadcast_policy`` are derived from ``modelo_datos_er.mmd``
 per D5-rev (REQ-CAT-004); ``apply_strategy="close_and_insert"`` and
@@ -25,6 +25,7 @@ from __future__ import annotations
 from ....models.V.cantidad_vehiculos_sucursal import CantidadVehiculosSucursal
 from ....models.V.clientes import Clientes
 from ....models.V.clientes_b2b import ClientesB2B
+from ....models.V.configuracion_caja import ConfiguracionCaja
 from ....models.V.configuracion_seguridad import ConfiguracionSeguridad
 from ....models.V.configuracion_tolerancias import ConfiguracionTolerancias
 from ....models.V.costos_servicios import CostosServicios
@@ -329,6 +330,26 @@ _CONFIGURACION_SEGURIDAD = SyncCatalogEntry(
     hook_pre_insert=identity_reconciler,
 )
 
+_CONFIGURACION_CAJA = SyncCatalogEntry(
+    name="configuracion_caja",
+    model_cls=ConfiguracionCaja,
+    audit_class="V",
+    sync_strategy="append",
+    direction="cloud_to_branch",
+    # Same shape as its two siblings: global default (uuid_sucursal IS NULL)
+    # + per-branch override. The cloud authors it (web_admin); the branch
+    # reads the effective base de caja when it opens a shift.
+    broadcast_policy="all_branches_with_override",
+    apply_strategy="close_and_insert",
+    depends_on=(),
+    has_uuid_sucursal=True,  # nullable — NULL row is the global default
+    seq_strategy="max_created_at",
+    # ER UK01 (uuid_sucursal, vigente_desde) — see configuracion_tolerancias
+    # above for the NULL-is-global-default resolver note.
+    natural_key=("uuid_sucursal",),
+    hook_pre_insert=identity_reconciler,
+)
+
 # ---------------------------------------------------------------------------
 # T-PR2-005 — group 4: sucursal + 5 single-branch dependents
 # ---------------------------------------------------------------------------
@@ -578,6 +599,7 @@ SYNC_ENTRIES_V: tuple[SyncCatalogEntry, ...] = (
     _PERMISOS_USUARIO,
     _CONFIGURACION_TOLERANCIAS,
     _CONFIGURACION_SEGURIDAD,
+    _CONFIGURACION_CAJA,
     _SUCURSAL,
     _RESOLUCION_FACTURACION,
     _USUARIOS_SUCURSAL,
@@ -591,6 +613,6 @@ SYNC_ENTRIES_V: tuple[SyncCatalogEntry, ...] = (
     _SUBSCRIPCION_VEHICULOS,
 )
 
-assert len(SYNC_ENTRIES_V) == 26, f"expected 26 [V] entries, got {len(SYNC_ENTRIES_V)}"
+assert len(SYNC_ENTRIES_V) == 27, f"expected 27 [V] entries, got {len(SYNC_ENTRIES_V)}"
 
 __all__ = ["SYNC_ENTRIES_V"]

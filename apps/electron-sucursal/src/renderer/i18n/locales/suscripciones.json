@@ -63,6 +63,7 @@
       "vehiculo_ya_inscrito": "La placa {{placa}} ya está inscrita en esta suscripción.",
       "placa_con_suscripcion_activa": "La placa {{placa}} ya está en otra suscripción activa de esta sucursal.",
       "tipo_vehiculo_plan_incompatible": "El plan es para vehículos tipo {{tipoPlan}}; la placa corresponde a {{tipos}}.",
+      "placa_duplicada_en_venta": "Hay una placa repetida en la venta; cada vehículo debe tener una placa distinta.",
       "tipo_vehiculo_incompatible": "Este plan exige que todos los vehículos sean del mismo tipo.",
       "cantidad_maxima_excedida": "El plan alcanzó su cantidad máxima de vehículos.",
       "sesion_expirada": "Tu sesión expiró. Ingresá de nuevo.",
@@ -141,10 +142,27 @@
       "titulo": "Pago",
       "feSuscriptor": "Facturar a nombre del suscriptor (opcional)",
       "total_a_pagar": "Total a pagar: {{monto}} (IVA incluido)",
-      "iva_incluido": "Incluye IVA {{porcentaje}}%: {{iva}} (base {{base}})"
+      "iva_incluido": "Incluye IVA {{porcentaje}}%: {{iva}} (base {{base}})",
+      "vigencia": {
+        "titulo": "Vigencia de la suscripción",
+        "inicio": "Inicio de cobertura",
+        "fin": "Fin de cobertura",
+        "ajustar": "Ajustar fecha de fin",
+        "restablecer": "Usar fin del plan",
+        "ayuda": "Solo se puede acortar: entre {{min}} y {{max}}. El valor a cobrar no cambia.",
+        "error": {
+          "vacia": "Ingresa la fecha de fin de cobertura.",
+          "invalida": "La fecha de fin no es válida.",
+          "antes_inicio": "La fecha de fin no puede ser anterior al inicio ({{min}}).",
+          "despues_maximo": "La fecha de fin no puede superar el fin del plan ({{max}}). Para extender la vigencia usa otro plan o una renovación."
+        }
+      }
     },
     "errors": {
+      "fecha_fin_fuera_de_rango": "La fecha de fin está fuera del rango permitido: solo se puede acortar la vigencia.",
       "suscripcion_duplicada_placa": "Esta placa ya tiene una suscripción vigente",
+      "placa_duplicada_en_venta": "Hay una placa repetida en la venta; cada vehículo debe tener una placa distinta.",
+      "validacion_servidor": "El servidor rechazó los datos de la venta. Revisa las placas.",
       "tipo_vehiculo_incompatible": "Este plan exige que todas las placas sean del mismo tipo",
       "cantidad_maxima_excedida": "Cantidad máxima de vehículos excedida",
       "placa_formato_invalido": "Formato de placa inválido",

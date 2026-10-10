@@ -173,6 +173,23 @@ async def venta_suscripcion(
             headers=no_store,
         )
 
+    # --- Step 2b: same placa twice in one venta -> 422 (defecto 5.4). --
+    try:
+        repo_venta.validar_placas_no_duplicadas(placas=payload.placas)
+    except repo_venta.PlacaDuplicadaEnVentaError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "placa_duplicada_en_venta",
+                "placa": exc.placa,
+                "message": (
+                    f"La placa {exc.placa} esta repetida en la misma venta; "
+                    "cada vehiculo debe tener una placa distinta."
+                ),
+            },
+            headers=no_store,
+        ) from exc
+
     # --- Step 3: V1 cliente lookup-or-create (DEC-VENTA-07 drops 'dv'). -
     try:
         cliente = await repo_venta.buscar_cliente_por_uuid_o_crear(
@@ -258,7 +275,7 @@ async def venta_suscripcion(
     # is `fecha_inicio_cobertura + duracion_dias`, not the calendar month.
     try:
         monto_a_cobrar = repo_venta.calcular_monto_suscripcion(plan=plan)
-        fecha_vencimiento = repo_venta.calcular_fecha_vencimiento(
+        fecha_fin_plan = repo_venta.calcular_fecha_vencimiento(
             plan=plan,
             fecha_inicio_cobertura=payload.fecha_inicio_cobertura,
         )
@@ -266,6 +283,32 @@ async def venta_suscripcion(
         raise HTTPException(
             status_code=422,
             detail={"error": "plan_duracion_dias_invalido"},
+            headers=no_store,
+        ) from exc
+
+    # The operator may only SHORTEN the coverage end (never extend past
+    # what the plan covers). Optional; absent -> plan-computed end.
+    try:
+        fecha_vencimiento = repo_venta.resolver_fecha_fin_cobertura(
+            fecha_inicio_cobertura=payload.fecha_inicio_cobertura,
+            fecha_fin_plan=fecha_fin_plan,
+            fecha_fin_solicitada=payload.fecha_fin_cobertura,
+        )
+    except repo_venta.FechaFinFueraDeRangoError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "fecha_fin_fuera_de_rango",
+                "message": (
+                    "La fecha de fin debe estar entre el "
+                    f"{exc.fecha_inicio_cobertura.strftime('%d/%m/%Y')} y el "
+                    f"{exc.fecha_fin_maxima.strftime('%d/%m/%Y')}: solo se puede "
+                    "acortar la vigencia, no extenderla."
+                ),
+                "fecha_inicio_cobertura": exc.fecha_inicio_cobertura.isoformat(),
+                "fecha_fin_maxima": exc.fecha_fin_maxima.isoformat(),
+                "fecha_fin_solicitada": exc.fecha_fin_solicitada.isoformat(),
+            },
             headers=no_store,
         ) from exc
 
@@ -285,6 +328,18 @@ async def venta_suscripcion(
         uuid_subscripcion_cliente=subscripcion.uuid,
         uuid_vehiculos=[v.uuid for v in vehiculos],
     )
+    if fecha_vencimiento != fecha_fin_plan:
+        # Audit: the operator shortened the end vs the plan-computed one.
+        # Appends to the log_transaccional hash chain (no [A] mutation).
+        await repo_venta.registrar_ajuste_fin_vigencia(
+            session,
+            actor_uuid=ctx.actor_uuid,
+            uuid_sucursal=ctx.sucursal_uuid,
+            uuid_subscripcion=subscripcion.uuid,
+            fecha_inicio_cobertura=payload.fecha_inicio_cobertura,
+            fecha_fin_plan=fecha_fin_plan,
+            fecha_fin_efectiva=fecha_vencimiento,
+        )
 
     # --- Step 8a: Optional V8 cobro sub-chain (F1.9 helpers reused). ----
     # V8 wires 4 sub-chain tables (facturas + factura_detalle +
@@ -376,20 +431,27 @@ async def venta_suscripcion(
         # (the claim is absent when the turno is opened after login).
         # None only when there is no open turno (column is nullable).
         assert ctx.sucursal_uuid is not None  # operador- issuer always carries one
-        await repo_factura.crear_factura_pago(
+        sesion_pago = await resolver_sesion_de_pago(
             session,
-            uuid_factura=uuid_factura,
+            actor_uuid=ctx.actor_uuid,
             uuid_sucursal=ctx.sucursal_uuid,
-            medio_pago=payload.medio_pago,
-            valor=total_con_iva,
-            referencia=payload.referencia,
-            uuid_sesion=await resolver_sesion_de_pago(
-                session,
-                actor_uuid=ctx.actor_uuid,
-                uuid_sucursal=ctx.sucursal_uuid,
-                uuid_sesion_explicita=ctx.uuid_sesion,
-            ),
+            uuid_sesion_explicita=ctx.uuid_sesion,
         )
+        try:
+            await repo_factura.crear_factura_pago(
+                session,
+                uuid_factura=uuid_factura,
+                uuid_sucursal=ctx.sucursal_uuid,
+                medio_pago=payload.medio_pago,
+                valor=total_con_iva,
+                referencia=payload.referencia,
+                uuid_sesion=sesion_pago,
+            )
+        except repo_factura.VoucherDatafonoDuplicadoError as exc:
+            # Voucher already used today in this branch: nothing of the sale
+            # (subscripción + factura) may persist.
+            await session.rollback()
+            raise _helpers.voucher_duplicado_http(exc) from exc
 
     # --- Step 10: KD-VENTA-01 SINGLE COMMIT (subscripción + cobro only). ---
     # KD-VENTA-03b: FE emission (Step 9b below) intentionally happens

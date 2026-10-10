@@ -178,6 +178,12 @@ export function CerrarTurnoForm({
   // pre-flight y el POST real.
   const requiereMotivo = (requiereMotivoServer ?? true) || forceRequireMotivo;
 
+  // Until the operator starts counting, the field holds 0: showing "-base" as
+  // the producido would read as a shortage nobody has counted yet.
+  const conteoIniciado =
+    (watchEfectivoReportado ?? 0) !== 0 ||
+    form.formState.dirtyFields.valor_efectivo_reportado === true;
+
   // REQ-OPS-158 — strict-mode gate: botón deshabilitado mientras el motivo
   // (Observaciones) tenga < 3 caracteres, pero SOLO cuando una diferencia
   // realmente lo exige. Además `handleValid` re-chequea al enviar, porque
@@ -329,6 +335,25 @@ export function CerrarTurnoForm({
             </FormItem>
           )}
         />
+
+        {/* Producido del turno = efectivo contado − base de caja. Solo usa la
+            base que el operador ya ve arriba y su propio conteo: no revela el
+            esperado del servidor (conteo ciego intacto). Es lo que consigna. */}
+        <div
+          className="flex items-center justify-between rounded-md border border-border/60 px-3 py-2 text-sm"
+          data-testid="cerrar-turno-producido"
+        >
+          <span className="text-muted-foreground/90">
+            {t('caja:cerrarTurno.producidoConsignar', {
+              defaultValue: 'Producido a consignar',
+            })}
+          </span>
+          <span className="font-mono font-semibold tabular-nums">
+            {conteoIniciado
+              ? formatCOP((watchEfectivoReportado ?? 0) - sesion.valor_inicial_efectivo)
+              : '—'}
+          </span>
+        </div>
 
         {/* PT-4: único campo de texto libre del cierre. Cuando hay
             diferencia de efectivo (conteo ciego: el veredicto viene del

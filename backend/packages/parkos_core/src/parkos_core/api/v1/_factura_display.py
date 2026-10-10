@@ -28,11 +28,10 @@ already been released at this point.
 **MVP scope** (HU-F8.4-PR1): the helper covers the operator's
 explicit request — minutos, segregación de valores (subtotal + total
 + items + impuestos), datos sucursal/cliente/vehiculo. Deferred for
-later PRs: ``pagos[]`` array (FE can derive from `medio_pago` +
-form), ``factura_electronica`` (cloud-only, NULL at branch emission
+later PRs: ``factura_electronica`` (cloud-only, NULL at branch emission
 time 99% of the time), ``vuelto_cents`` / ``monto_recibido_cents``
-(FE computes client-side from PagoModal state), ``voucher`` (FE has
-it in the form).
+(FE computes client-side from PagoModal state). ``voucher`` and ``pagos[]``
+are read from the init ``factura_pagos`` row.
 
 The helper is intentionally not in ``repo/`` because it composes data
 from 4 tables for a single consumer (the FE display); it is not a
@@ -62,12 +61,15 @@ from ...models.V.impuestos import Impuestos
 from ...models.V.sucursal import Sucursal
 from ...repo.fe_emision import FeEmisionResultado
 from ...repo.nit_modulo11 import dv_esperado
+from ...repo.subscripcion_activa import resolver_empresa_suscripcion
+from ...runtime.tiempo import hoy_bogota
 from ...schemas.clientes import VentaSuscripcionCreate
 from ...schemas.facturacion import (
     FacturaCreate,
     FacturaDisplayCliente,
     FacturaDisplayFE,
     FacturaDisplayImpuesto,
+    FacturaDisplayPago,
     FacturaDisplaySucursal,
     FacturaDisplayVehiculo,
     FacturaItemRead,
@@ -106,6 +108,29 @@ def _dv_cliente_para_display(
         return str(dv_esperado(numero_identificacion))
     except ValueError:
         return None
+
+
+def _proyectar_pago_display(
+    init_pago_row: FacturaPagos | None,
+) -> tuple[str | None, list[FacturaDisplayPago]]:
+    """``(voucher, pagos)`` of the display, read from the init pago row.
+
+    ``voucher`` is the datafono reference only (NULL for any other medio);
+    ``pagos`` carries the init pago (no reversos), empty when there is none.
+    """
+    if init_pago_row is None:
+        return None, []
+    voucher = (
+        init_pago_row.referencia if init_pago_row.medio_pago == "datafono" else None
+    )
+    return voucher, [
+        FacturaDisplayPago(
+            uuid=init_pago_row.uuid,
+            medio_pago=init_pago_row.medio_pago,
+            valor=_to_decimal(init_pago_row.valor),
+            referencia=init_pago_row.referencia,
+        )
+    ]
 
 
 async def _empresa_de_sucursal(
@@ -189,6 +214,8 @@ async def build_display_factura(
         if init_pago_row is not None and init_pago_row.medio_pago is not None
         else payload.medio_pago
     )
+
+    voucher, pagos_display = _proyectar_pago_display(init_pago_row)
 
     # ---- 2) Impuestos snapshot + nombre from prod.impuestos ----
     # DEC-SUC-24 segregation: the display must show the breakdown
@@ -301,6 +328,12 @@ async def build_display_factura(
             fecha_ingreso=ingreso_row.fecha_ingreso,
             fecha_salida=salida_row.fecha_salida,
             minutos=minutos,
+            empresa_suscripcion=await resolver_empresa_suscripcion(
+                session,
+                placa=ingreso_row.placa,
+                uuid_sucursal=new_factura.uuid_sucursal,
+                as_of=hoy_bogota(salida_row.fecha_salida),
+            ),
         )
 
     # ---- 5) Cliente display (NULL for consumidor final) ----
@@ -402,13 +435,13 @@ async def build_display_factura(
         medio_pago=medio_pago,  # type: ignore[arg-type]
         monto_recibido_cents=None,  # FE computes client-side from PagoModal
         vuelto_cents=None,  # FE computes client-side from PagoModal
-        voucher=None,  # FE has it in the form
+        voucher=voucher,
         numero_recibo=numero_recibo,
         cliente=cliente_display,
         datos_sucursal=datos_sucursal,
         datos_vehiculo=datos_vehiculo,
         impuestos=impuestos_display,
-        pagos=[],  # MVP: empty; FE reads medio_pago + form values for vueltos/voucher
+        pagos=pagos_display,
         factura_electronica=fe_display,
         factura_electronica_error=fe_resultado.error if fe_resultado else None,
         factura_electronica_pendiente=bool(fe_resultado and fe_resultado.pendiente),

@@ -40,6 +40,7 @@ EXPECTED_SCOPE: dict[str, str] = {
     # global default + per-branch override
     "configuracion_tolerancias": "override",
     "configuracion_seguridad": "override",
+    "configuracion_caja": "override",
     # sold by one branch
     "subscripciones_cliente": "subscription",
     "subscripcion_vehiculos": "subscription",

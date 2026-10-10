@@ -8,6 +8,7 @@
 export type RenovacionErrorCode =
   | 'idempotency_key_requerido'
   | 'voucher_requerido'
+  | 'voucher_datafono_duplicado'
   | 'missing_sucursal_context'
   | 'permission_denied'
   | 'subscripcion_no_encontrada'
@@ -26,6 +27,7 @@ export type RenovacionErrorCode =
 const KNOWN: ReadonlySet<string> = new Set<RenovacionErrorCode>([
   'idempotency_key_requerido',
   'voucher_requerido',
+  'voucher_datafono_duplicado',
   'missing_sucursal_context',
   'permission_denied',
   'subscripcion_no_encontrada',
@@ -45,17 +47,19 @@ export class RenovacionError extends Error {
   public readonly status: number;
   public readonly code: RenovacionErrorCode;
   public readonly placa: string | null;
+  public readonly referencia: string | null;
 
   constructor(
     status: number,
     code: RenovacionErrorCode,
-    extra: { placa?: string } = {},
+    extra: { placa?: string; referencia?: string } = {},
   ) {
     super(code);
     this.name = 'RenovacionError';
     this.status = status;
     this.code = code;
     this.placa = extra.placa ?? null;
+    this.referencia = extra.referencia ?? null;
   }
 
   /**
@@ -71,6 +75,7 @@ export class RenovacionError extends Error {
 interface RenovacionBody {
   error?: string;
   placa?: string;
+  referencia?: string;
 }
 
 function parseBody(body: string): RenovacionBody | null {
@@ -91,6 +96,7 @@ export function mapRenovacionHttpError(status: number, body: string): Renovacion
   const code = (KNOWN.has(raw) ? raw : 'desconocido') as RenovacionErrorCode;
   return new RenovacionError(status, code, {
     placa: parsed?.placa,
+    referencia: typeof parsed?.referencia === 'string' ? parsed.referencia : undefined,
   });
 }
 
@@ -110,6 +116,12 @@ export function renovacionErrorMessage(err: unknown, t: Translate): string {
     case 'voucher_requerido':
       return t('suscripciones:renovar.errors.voucher_requerido', {
         defaultValue: 'Ingresá el número de voucher del datáfono.',
+      });
+    case 'voucher_datafono_duplicado':
+      return t('suscripciones:renovar.errors.voucher_datafono_duplicado', {
+        defaultValue: err.referencia
+          ? `El voucher ${err.referencia} ya fue registrado hoy en esta sucursal. Verifique el número del datáfono.`
+          : 'Este voucher ya fue registrado hoy en esta sucursal. Verifique el número del datáfono.',
       });
     case 'missing_sucursal_context':
       return t('suscripciones:renovar.errors.missing_sucursal_context', {

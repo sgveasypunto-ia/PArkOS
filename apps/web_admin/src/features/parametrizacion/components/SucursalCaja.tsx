@@ -159,7 +159,7 @@ function CajaBaseRedondeoForm({
           render={({ field }) => (
             <FormItem>
               <FormLabel htmlFor="caja-base-inicial">
-                {t('sucursalCaja.base.field.baseInicial', 'Base inicial sugerida (COP)')}
+                {t('sucursalCaja.base.field.baseInicial', 'Base de caja por turno (COP)')}
               </FormLabel>
               <FormControl>
                 <Input
@@ -179,7 +179,7 @@ function CajaBaseRedondeoForm({
               <FormDescription>
                 {t(
                   'sucursalCaja.base.field.baseInicialHelp',
-                  'Valor sugerido que web_sucursal prellena al abrir un turno. No modifica sesiones ya abiertas (BR1). Debe ser >= 0.',
+                  'Efectivo fijo que recibe cada operador al abrir un turno en esta sucursal y que entrega al cerrarlo. La sucursal lo recibe por sincronización; no modifica turnos ya abiertos. Debe ser >= 0.',
                 )}
               </FormDescription>
               <FormMessage />

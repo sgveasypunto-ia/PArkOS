@@ -78,7 +78,7 @@ const PLANES = [
   ...p,
   valor: 30000,
   duracion_dias: 30,
-  cantidad_maxima_vehiculos: 1,
+  cantidad_maxima_vehiculos: p.uuid === PLAN_ANY ? 2 : 1,
   mismo_tipo_vehiculo: true,
   tipo_cliente_permitido: 'natural',
 }));
@@ -119,6 +119,10 @@ interface PagoStubProps {
   onDraftChange?: (v: unknown) => void;
   clientePrefill?: { fe?: boolean };
 }
+const pagoStub = vi.hoisted(() => ({
+  medio_pago: 'efectivo' as 'efectivo' | 'datafono',
+  voucher: '',
+}));
 vi.mock('../../facturacion/components/PagoModal', () => ({
   PagoModal: ({ onSubmit, total_cop, draft, onDraftChange, clientePrefill }: PagoStubProps) => (
     <div data-testid="pago-modal">
@@ -139,7 +143,7 @@ vi.mock('../../facturacion/components/PagoModal', () => ({
         data-testid="pago-confirmar-stub"
         onClick={() =>
           onSubmit({
-            medio_pago: 'efectivo',
+            medio_pago: pagoStub.medio_pago,
             monto_recibido_cop: total_cop,
             // Mirrors the real PagoModal default: `p?.fe ?? false`.
             fe: clientePrefill?.fe ?? false,
@@ -147,7 +151,7 @@ vi.mock('../../facturacion/components/PagoModal', () => ({
             dv: '',
             nombre_cliente: 'Consumidor final',
             email_cliente: '',
-            voucher: '',
+            voucher: pagoStub.voucher,
           })
         }
       >
@@ -246,6 +250,8 @@ const FACTURA_BASE = {
 beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
+  pagoStub.medio_pago = 'efectivo';
+  pagoStub.voucher = '';
   mockIsMutating.mockReturnValue(false);
   mockTrigger.mockResolvedValue({
     uuid_subscripcion: '00000000-0000-0000-0000-0000000000b1',
@@ -278,9 +284,9 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     expect(screen.getByTestId('venta-cliente-numero-error').textContent).toMatch(/al menos 5 caracteres/);
   });
 
-  it('T4: pago submit -> 422 typed error -> revert to step 5 (Placas) with inline placa group error', async () => {
+  it('T4: pago submit -> 422 typed error SIN placa identificable -> revert to step 5 (Placas) with group alert', async () => {
     const mod = await import('../hooks/useVentaSuscripcion');
-    mockTrigger.mockRejectedValueOnce(new mod.VentaSuscripcionDuplicatePlateError('ABC123'));
+    mockTrigger.mockRejectedValueOnce(new mod.VentaSuscripcionDuplicatePlateError(''));
 
     renderVenta();
     await hastaPago();
@@ -289,6 +295,133 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     expect(screen.getByTestId('venta-paso-5')).toBeDefined();
     expect(screen.getByTestId('venta-placas-error').textContent).toMatch(/duplicada|placa/i);
     expect((screen.getByTestId('venta-placa-input-0') as HTMLInputElement).value).toBe('ABC123');
+  });
+
+  it('T4b: pago submit -> 422 generico con mensaje del servidor -> vuelve al paso 5 y lo muestra', async () => {
+    const mod = await import('../hooks/useVentaSuscripcion');
+    mockTrigger.mockRejectedValueOnce(
+      new mod.VentaSuscripcionValidationError('La placa ABC123 ya existe como vehículo'),
+    );
+
+    renderVenta();
+    await hastaPago();
+    await click('pago-confirmar-stub');
+    expect(screen.getByTestId('venta-paso-5')).toBeDefined();
+    expect(screen.getByTestId('venta-placas-error').textContent).toBe(
+      'La placa ABC123 ya existe como vehículo',
+    );
+    expect((screen.getByTestId('venta-placa-input-0') as HTMLInputElement).value).toBe('ABC123');
+  });
+
+  describe('T4c: 422 que identifica una placa -> error pegado al input de esa placa', () => {
+    async function hastaPagoDosPlacas(): Promise<void> {
+      await paso1();
+      await paso2();
+      await paso3(PLAN_ANY);
+      await change('venta-cantidad-input', '2');
+      await click('venta-paso-4-siguiente');
+      await change('venta-placa-input-0', 'ABC123');
+      await change('venta-placa-input-1', 'XYZ987');
+      await click('venta-paso-5-siguiente');
+    }
+    const input = (i: number): HTMLInputElement =>
+      screen.getByTestId(`venta-placa-input-${i}`) as HTMLInputElement;
+    const MSG_DUP = 'suscripciones:venta.errors.suscripcion_duplicada_placa';
+
+    it('suscripcion_duplicada_placa con placa -> aria-invalid + descripcion + foco en ESE input', async () => {
+      const mod = await import('../hooks/useVentaSuscripcion');
+      mockTrigger.mockRejectedValueOnce(new mod.VentaSuscripcionDuplicatePlateError('XYZ987'));
+      renderVenta();
+      await hastaPagoDosPlacas();
+      await click('pago-confirmar-stub');
+
+      expect(screen.getByTestId('venta-paso-5')).toBeDefined();
+      expect(input(1)).toHaveAttribute('aria-invalid', 'true');
+      expect(input(1)).toHaveAccessibleDescription(MSG_DUP);
+      expect(input(1)).toHaveFocus();
+      expect(input(0)).not.toHaveAttribute('aria-invalid', 'true');
+      expect(input(0)).not.toHaveAccessibleDescription();
+      expect(screen.queryByTestId('venta-placas-error')).toBeNull();
+      expect(input(0).value).toBe('ABC123');
+      expect(input(1).value).toBe('XYZ987');
+    });
+
+    it('compara normalizado (trim + mayuscula)', async () => {
+      const mod = await import('../hooks/useVentaSuscripcion');
+      mockTrigger.mockRejectedValueOnce(new mod.VentaSuscripcionDuplicatePlateError('  abc123 '));
+      renderVenta();
+      await hastaPagoDosPlacas();
+      await click('pago-confirmar-stub');
+      expect(input(0)).toHaveAttribute('aria-invalid', 'true');
+      expect(input(0)).toHaveAccessibleDescription(MSG_DUP);
+      expect(input(0)).toHaveFocus();
+    });
+
+    it('placa_duplicada_en_venta con placa -> error de campo', async () => {
+      const mod = await import('../hooks/useVentaSuscripcion');
+      mockTrigger.mockRejectedValueOnce(new mod.VentaSuscripcionPlacaRepetidaError('ABC123'));
+      renderVenta();
+      await hastaPagoDosPlacas();
+      await click('pago-confirmar-stub');
+      expect(input(0)).toHaveAccessibleDescription(
+        'suscripciones:venta.errors.placa_duplicada_en_venta',
+      );
+      expect(screen.queryByTestId('venta-placas-error')).toBeNull();
+    });
+
+    it('tipo_vehiculo_incompatible con placa y 422 generico con placa -> error de campo', async () => {
+      const mod = await import('../hooks/useVentaSuscripcion');
+      mockTrigger.mockRejectedValueOnce(
+        new mod.VentaSuscripcionTipoIncompatibleError(['a', 'b'], 'XYZ987'),
+      );
+      renderVenta();
+      await hastaPagoDosPlacas();
+      await click('pago-confirmar-stub');
+      expect(input(1)).toHaveAccessibleDescription(
+        'suscripciones:venta.errors.tipo_vehiculo_incompatible',
+      );
+
+      mockTrigger.mockRejectedValueOnce(
+        new mod.VentaSuscripcionValidationError('Placa rechazada por el servidor', 'ABC123'),
+      );
+      await click('venta-paso-5-siguiente');
+      await click('pago-confirmar-stub');
+      expect(input(0)).toHaveAccessibleDescription('Placa rechazada por el servidor');
+      expect(input(1)).not.toHaveAttribute('aria-invalid', 'true');
+    });
+
+    it('placa que no coincide con ningun campo -> conserva la alerta de grupo', async () => {
+      const mod = await import('../hooks/useVentaSuscripcion');
+      mockTrigger.mockRejectedValueOnce(new mod.VentaSuscripcionDuplicatePlateError('ZZZ000'));
+      renderVenta();
+      await hastaPagoDosPlacas();
+      await click('pago-confirmar-stub');
+      expect(screen.getByTestId('venta-placas-error').textContent).toBe(MSG_DUP);
+      expect(input(0)).not.toHaveAttribute('aria-invalid', 'true');
+      expect(input(1)).not.toHaveAttribute('aria-invalid', 'true');
+    });
+
+    it('sin placa identificable -> alerta de grupo', async () => {
+      const mod = await import('../hooks/useVentaSuscripcion');
+      mockTrigger.mockRejectedValueOnce(new mod.VentaSuscripcionDuplicatePlateError(''));
+      renderVenta();
+      await hastaPagoDosPlacas();
+      await click('pago-confirmar-stub');
+      expect(screen.getByTestId('venta-placas-error').textContent).toBe(MSG_DUP);
+      expect(input(0)).not.toHaveAttribute('aria-invalid', 'true');
+    });
+
+    it('editar la placa con error limpia el error de campo', async () => {
+      const mod = await import('../hooks/useVentaSuscripcion');
+      mockTrigger.mockRejectedValueOnce(new mod.VentaSuscripcionDuplicatePlateError('XYZ987'));
+      renderVenta();
+      await hastaPagoDosPlacas();
+      await click('pago-confirmar-stub');
+      expect(input(1)).toHaveAttribute('aria-invalid', 'true');
+      await change('venta-placa-input-1', 'XYZ988');
+      expect(input(1)).not.toHaveAttribute('aria-invalid', 'true');
+      expect(input(1)).not.toHaveAccessibleDescription();
+    });
   });
 
   it('T5: cliente + tipo + plan + cantidad + placas -> advances to step 6 (Pago)', async () => {
@@ -349,6 +482,22 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     }
   });
 
+  it('T6b: el paso de pago muestra la vigencia (inicio y fin) en dd/mm/aaaa antes de confirmar', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-01T01:00:00Z'));
+    try {
+      renderVenta();
+      await hastaPago();
+      const bloque = screen.getByTestId('venta-vigencia');
+      // 2026-09-30 (Bogota) + 30 dias - 1 = 2026-10-29
+      expect(screen.getByTestId('venta-vigencia-inicio').textContent).toBe('30/09/2026');
+      expect(screen.getByTestId('venta-vigencia-fin').textContent).toBe('29/10/2026');
+      expect(bloque.textContent).toMatch(/vigencia.titulo/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('T7: confirm -> useVentaSuscripcion.trigger called with full payload', async () => {
     renderVenta();
     await hastaPago();
@@ -368,6 +517,27 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     expect(arg.cobrar_ahora).toBe(true);
     // The FE is always emitted by the backend; `false` = standard customer.
     expect(arg.emitir_factura_electronica).toBe(false);
+  });
+
+  it('T7c (6.4): datafono envía el voucher como `referencia`; efectivo no la envía', async () => {
+    pagoStub.medio_pago = 'datafono';
+    pagoStub.voucher = '  TEST123 ';
+    renderVenta();
+    await hastaPago();
+    await click('pago-confirmar-stub');
+    const arg = mockTrigger.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(arg.medio_pago).toBe('datafono');
+    expect(arg.referencia).toBe('TEST123');
+  });
+
+  it('T7d (6.4): efectivo no manda `referencia` aunque el voucher quede en el borrador', async () => {
+    pagoStub.medio_pago = 'efectivo';
+    pagoStub.voucher = 'RESIDUAL';
+    renderVenta();
+    await hastaPago();
+    await click('pago-confirmar-stub');
+    const arg = mockTrigger.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(arg).not.toHaveProperty('referencia');
   });
 
   it('T7b: la factura a nombre del cliente llega desmarcada por defecto', async () => {
@@ -632,5 +802,171 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     const msg = screen.getByTestId('venta-cantidad-error').textContent ?? '';
     expect(msg).not.toMatch(/validation\.|_/);
     expect(msg.length).toBeGreaterThan(10);
+  });
+  describe('T17 (5.4): la misma placa dos veces se rechaza en el paso 5 como error de campo', () => {
+    const input = (i: number): HTMLInputElement =>
+      screen.getByTestId(`venta-placa-input-${i}`) as HTMLInputElement;
+    const MSG = 'repetida';
+
+    async function hastaPlacasRepetidas(segunda = 'abc123'): Promise<void> {
+      renderVenta();
+      await paso1();
+      await paso2();
+      await paso3(PLAN_ANY);
+      await change('venta-cantidad-input', '2');
+      await click('venta-paso-4-siguiente');
+      await change('venta-placa-input-0', 'ABC123');
+      await change('venta-placa-input-1', segunda);
+      await click('venta-paso-5-siguiente');
+    }
+
+    it('marca ambos inputs (aria-invalid + descripcion en espanol) y enfoca el primero', async () => {
+      await hastaPlacasRepetidas();
+      for (const i of [0, 1]) {
+        expect(input(i)).toHaveAttribute('aria-invalid', 'true');
+        expect(input(i)).toHaveAccessibleDescription(new RegExp(MSG));
+        expect(screen.getByTestId(`venta-placa-error-${i}`)).toHaveAttribute('role', 'alert');
+      }
+      expect(input(0)).toHaveFocus();
+      expect(screen.getByTestId('venta-placa-error-1').textContent).not.toContain(
+        'placa_duplicada_en_venta',
+      );
+      expect(screen.queryByTestId('venta-placas-format-error')).toBeNull();
+      expect(screen.queryByTestId('venta-paso-6')).toBeNull();
+    });
+
+    it('editar uno de los campos repetidos limpia el error', async () => {
+      await hastaPlacasRepetidas();
+      await change('venta-placa-input-1', 'XYZ987');
+      for (const i of [0, 1]) {
+        expect(input(i)).not.toHaveAttribute('aria-invalid', 'true');
+        expect(input(i)).not.toHaveAccessibleDescription();
+      }
+      expect(screen.queryByTestId('venta-placa-error-1')).toBeNull();
+      await click('venta-paso-5-siguiente');
+      expect(screen.getByTestId('venta-paso-6')).toBeDefined();
+    });
+  });
+});
+
+describe('<Venta /> paso 6 — fecha de fin editable (solo acortar)', () => {
+  // 2026-09-30 (Bogota) + plan de 30 dias => fin del plan 2026-10-29.
+  const INICIO = '2026-09-30';
+  const MAX = '2026-10-29';
+
+  async function hastaPagoConFecha(): Promise<void> {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-01T01:00:00Z'));
+    renderVenta();
+    await hastaPago();
+  }
+  const finInput = (): HTMLInputElement =>
+    screen.getByTestId('venta-vigencia-fin-input') as HTMLInputElement;
+  const payload = (): Record<string, unknown> =>
+    mockTrigger.mock.calls[0]?.[0] as Record<string, unknown>;
+
+  it('el input de fin limita min/max al rango [inicio, fin del plan]', async () => {
+    try {
+      await hastaPagoConFecha();
+      expect(finInput().type).toBe('date');
+      expect(finInput().min).toBe(INICIO);
+      expect(finInput().max).toBe(MAX);
+      expect(finInput().value).toBe(MAX);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('acortar la fecha actualiza el resumen, se envia en el payload y no cambia el total', async () => {
+    try {
+      await hastaPagoConFecha();
+      await change('venta-vigencia-fin-input', '2026-10-15');
+      expect(screen.getByTestId('venta-vigencia-fin').textContent).toBe('15/10/2026');
+      expect(screen.getByTestId('pago-total').textContent).toBe('30000');
+      await click('pago-confirmar-stub');
+      expect(mockTrigger).toHaveBeenCalledTimes(1);
+      expect(payload().fecha_fin_cobertura).toBe('2026-10-15');
+      expect(payload().fecha_inicio_cobertura).toBe(INICIO);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('sin tocar la fecha el payload NO lleva fecha_fin_cobertura (compatibilidad)', async () => {
+    try {
+      await hastaPagoConFecha();
+      await click('pago-confirmar-stub');
+      expect('fecha_fin_cobertura' in payload()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('dejar la fecha igual al fin del plan tampoco la envia', async () => {
+    try {
+      await hastaPagoConFecha();
+      await change('venta-vigencia-fin-input', '2026-10-15');
+      await change('venta-vigencia-fin-input', MAX);
+      await click('pago-confirmar-stub');
+      expect('fecha_fin_cobertura' in payload()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['2026-10-30', 'despues_maximo'],
+    ['2026-09-29', 'antes_inicio'],
+    ['', 'vacia'],
+  ])('fecha %s fuera de rango: mensaje accesible, foco y NO se cobra', async (valor, codigo) => {
+    try {
+      await hastaPagoConFecha();
+      await change('venta-vigencia-fin-input', valor);
+      const err = screen.getByTestId('venta-vigencia-fin-error');
+      expect(err.textContent).toMatch(new RegExp(codigo));
+      expect(finInput().getAttribute('aria-invalid')).toBe('true');
+      expect(finInput().getAttribute('aria-describedby')).toContain(err.id);
+      await click('pago-confirmar-stub');
+      expect(mockTrigger).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(finInput());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('422 fecha_fin_fuera_de_rango del servidor: se queda en el paso 6, muestra el mensaje y enfoca el campo', async () => {
+    const mod = await import('../hooks/useVentaSuscripcion');
+    mockTrigger.mockRejectedValueOnce(
+      new mod.VentaSuscripcionFechaFinError('Solo se puede acortar la vigencia', '2026-10-29'),
+    );
+    try {
+      await hastaPagoConFecha();
+      await change('venta-vigencia-fin-input', '2026-10-15');
+      await click('pago-confirmar-stub');
+      expect(screen.getByTestId('venta-paso-6')).toBeDefined();
+      expect(screen.getByTestId('venta-vigencia-fin-error').textContent).toBe(
+        'Solo se puede acortar la vigencia',
+      );
+      expect(finInput().getAttribute('aria-invalid')).toBe('true');
+      expect(document.activeElement).toBe(finInput());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('volver y cambiar de plan descarta la fecha editada', async () => {
+    try {
+      await hastaPagoConFecha();
+      await change('venta-vigencia-fin-input', '2026-10-15');
+      await click('venta-volver');
+      await click('venta-volver');
+      await click('venta-volver');
+      await paso3(PLAN_ANY);
+      await paso4();
+      await paso5();
+      expect(finInput().value).toBe(MAX);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

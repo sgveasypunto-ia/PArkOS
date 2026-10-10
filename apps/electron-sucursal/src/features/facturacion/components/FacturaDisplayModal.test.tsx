@@ -97,6 +97,69 @@ describe('<FacturaDisplayModal /> — HU-F8.4', () => {
     expect(screen.getByTestId('factura-display-mediopago').textContent).toContain('efectivo');
   });
 
+  describe('Empresa dueña de la suscripción en la vista del ticket', () => {
+    const conEmpresa = (empresa: string | null | undefined): FacturaRead => ({
+      ...BASE_FACTURA,
+      datos_vehiculo: {
+        ...BASE_FACTURA.datos_vehiculo!,
+        ...(empresa === undefined ? {} : { empresa_suscripcion: empresa }),
+      },
+    });
+
+    it('muestra "Empresa: <razón social>" justo bajo la placa y antes del tiempo', () => {
+      render(<FacturaDisplayModal factura={conEmpresa('Verif Empresa Ronda Tres SAS')} onClose={vi.fn()} />);
+      const vehiculo = screen.getByTestId('factura-display-vehiculo');
+      const empresa = screen.getByTestId('factura-display-empresa');
+      // Mismo ancho que la impresión (80 mm = 48 columnas): 36 caracteres caben en una línea.
+      expect(screen.getAllByTestId('factura-display-empresa-linea').map((l) => l.textContent)).toEqual([
+        'Empresa: Verif Empresa Ronda Tres SAS',
+      ]);
+      const hijos = Array.from(vehiculo.children);
+      const iPlaca = hijos.findIndex((h) => h.textContent === 'BUG023');
+      expect(iPlaca).toBeGreaterThanOrEqual(0);
+      expect(hijos[iPlaca + 1]).toBe(empresa);
+      expect(hijos[iPlaca + 2]).toBe(screen.getByTestId('factura-display-minutos'));
+    });
+
+    it('nombre corto: una sola línea "Empresa: <razón social>"', () => {
+      render(<FacturaDisplayModal factura={conEmpresa('ACME SAS')} onClose={vi.fn()} />);
+      expect(screen.getByTestId('factura-display-empresa').textContent).toBe('Empresa: ACME SAS');
+    });
+
+    it.each([[undefined], [null], [''], ['   '], ['\x00\x1b']])(
+      'sin empresa (%j): no renderiza la línea',
+      (valor) => {
+        render(<FacturaDisplayModal factura={conEmpresa(valor)} onClose={vi.fn()} />);
+        expect(screen.queryByTestId('factura-display-empresa')).toBeNull();
+        expect(screen.getByTestId('factura-display-vehiculo').textContent).not.toContain('Empresa');
+      },
+    );
+
+    it('sanea caracteres de control y colapsa espacios', () => {
+      render(<FacturaDisplayModal factura={conEmpresa('  ACME\x1b@\x00   Parqueo\n\tSAS  ')} onClose={vi.fn()} />);
+      const texto = screen.getByTestId('factura-display-empresa').textContent ?? '';
+      expect(texto).toBe('Empresa: ACME @ Parqueo SAS');
+      expect(Array.from(texto).some((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f)).toBe(false);
+    });
+
+    it('un nombre largo se ajusta al ancho del ticket, igual que la impresión', () => {
+      const largo = 'Corporacion Internacional de Servicios de Parqueo y Logistica Urbana del Caribe SAS ' + 'X'.repeat(50);
+      render(<FacturaDisplayModal factura={conEmpresa(largo)} onClose={vi.fn()} />);
+      const lineas = screen.getAllByTestId('factura-display-empresa-linea').map((l) => l.textContent ?? '');
+      expect(lineas.length).toBeGreaterThan(1);
+      for (const l of lineas) expect(l.length).toBeLessThanOrEqual(48);
+      expect(lineas[0].startsWith('Empresa: ')).toBe(true);
+      expect(lineas.slice(1).every((l) => l.startsWith('  '))).toBe(true);
+      expect(lineas.join('').replace(/\s+/g, '')).toBe('Empresa:' + largo.replace(/\s+/g, ''));
+    });
+
+    it('el nombre se escapa (no se interpreta como HTML)', () => {
+      render(<FacturaDisplayModal factura={conEmpresa('<img src=x onerror=alert(1)> SAS')} onClose={vi.fn()} />);
+      expect(screen.getByTestId('factura-display-empresa').querySelector('img')).toBeNull();
+      expect(screen.getByTestId('factura-display-empresa').textContent).toContain('<img');
+    });
+  });
+
   it('D3: cliente=null → renders "Consumidor final" fallback', () => {
     render(<FacturaDisplayModal factura={BASE_FACTURA} onClose={vi.fn()} />);
     expect(screen.getByTestId('factura-display-cliente').textContent).toContain('Consumidor final');
@@ -445,5 +508,19 @@ describe('<FacturaDisplayModal /> — textos de la factura (FB3)', () => {
     render(<FacturaDisplayModal factura={SUSCRIPCION_REAL} onClose={vi.fn()} />);
     expect(screen.getByTestId('factura-display-sucursal').textContent).toContain('NIT 900000000-5');
     expect(screen.getByTestId('factura-display-desc').textContent).toContain('16:07');
+  });
+});
+
+describe('FacturaDisplayModal — logo en la vista previa (igual que el impreso)', () => {
+  it('muestra el logo easypunto arriba y abajo dentro del papel de la vista previa', () => {
+    render(<FacturaDisplayModal factura={BASE_FACTURA} onClose={vi.fn()} />);
+    const papel = screen.getByTestId('factura-display-preview');
+    const cab = papel.querySelector('[data-testid="marca-ticket-encabezado"]');
+    const pie = papel.querySelector('[data-testid="marca-ticket-pie"]');
+    expect(cab?.getAttribute('src')).toMatch(/^data:image\/svg\+xml/);
+    expect(cab?.getAttribute('alt')).toBe('easypunto');
+    expect(pie?.getAttribute('src')).toMatch(/^data:image\/svg\+xml/);
+    expect(papel.firstElementChild?.contains(cab as Node)).toBe(true);
+    expect(papel.lastElementChild?.contains(pie as Node)).toBe(true);
   });
 });

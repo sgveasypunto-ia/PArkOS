@@ -139,7 +139,7 @@ describe('entrada ticket output', () => {
     expect(s).toContain('Fecha:');
   });
   it('HTML mirrors both cases', () => {
-    expect(renderEntradaTiqueteHtml(con)).toMatch(/<p>Tarifa: \$\s+1\.500\/hora<\/p>/);
+    expect(renderEntradaTiqueteHtml(con)).toMatch(/>Tarifa: \$\s+1\.500\/hora<\/p>/);
     expect(renderEntradaTiqueteHtml(sin)).not.toContain('Tarifa:');
   });
 });

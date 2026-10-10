@@ -1,41 +1,32 @@
 /**
- * Unit tests for `<AbrirTurno />` container (F3.3 — T2).
+ * `<AbrirTurno />` container — the operator is never asked for a value.
  *
- * Cobertura U9..U11 (cross-ref tasks.md §2):
- *   U9:  submit OK → POST 200 → navegar('/').
- *   U10: POST 409 `sesion_already_active` → <FormMessage role="alert"> +
- *         botón "Ir al turno".
- *   U11: Validación Zod rechaza `valor_inicial_efectivo < 0` → <FormMessage>
- *         inline + NO se invoca POST.
+ * The base de caja is a branch parameter (configured by administration). The
+ * screen resolves it, opens the shift on its own and shows a notice with the
+ * base and who to ask if in doubt.
  *
- * Sandbox F.6 caveat: este test depende de `@radix-ui/react-label` (transitivo
- * de `@/components/ui/form`) y `@testing-library/user-event`. La
- * instalación de workspace deps falla con `EUNSUPPORTEDPROTOCOL workspace:*`
- * en este sandbox (precedent F2.1+F2.2+F2.3+F3.1+F3.2 verbatim). En
- * CI/local con deps instaladas el suite corre verde.
- *
- * Mocking strategy (mismo pattern F3.1 `Login.test.tsx`):
- *   - vi.mock('@parkos/ui-kit/hooks') → useAuth stub.
- *   - vi.mock('@parkos/ui-kit/store') → useAuthStore + getState.
- *   - vi.mock('react-router-dom') → useNavigate stub.
- *   - vi.mock('../api/sesionActivaApi') → abrirSesion stub.
- *   - vi.mock('../components/AbrirTurnoForm') → presentational stub
- *     (evita cargar shadcn Form radix deps en este sandbox).
+ *   U9:  base configured → POST once → notice marker left → navigate('/') (dashboard shows it).
+ *   U10: POST 409 `sesion_already_active` → alert + "Ir al turno".
+ *   U11: no base configured → blocking notice, NO POST.
+ *   U12: the screen renders no input at all.
+ *   U13: network failure → alert + "Reintentar", which opens the shift.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type * as ReactRouterDom from 'react-router-dom';
+
+import '@/i18n';
 
 const mockUseAuth = vi.fn();
 const mockNavigate = vi.fn();
 const mockAbrirSesion = vi.fn();
+const mockUseBaseCajaEfectiva = vi.fn();
+const mockSetTokens = vi.fn();
 
 vi.mock('@parkos/ui-kit/hooks', () => ({
   useAuth: () => mockUseAuth(),
 }));
-
-const mockSetTokens = vi.fn();
 
 vi.mock('@parkos/ui-kit/store', () => ({
   useAuthStore: Object.assign(
@@ -49,91 +40,8 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useNavigate: () => mockNavigate };
 });
 
-// Mock the presentational to bypass shadcn Form radix deps loading.
-// We render a passthrough that exposes the same testid contract.
-// `DatafonoHiddenSetup` keeps `valor_inicial_datafono` in RHF state so
-// `abrirTurnoSchema` Zod validation passes (see comment inside the mock).
-function DatafonoHiddenSetup({
-  form,
-}: {
-  form: {
-    setValue: (name: string, value: string) => void;
-  };
-}): null {
-  form.setValue('valor_inicial_datafono', '0');
-  return null;
-}
-vi.mock('../components/AbrirTurnoForm', () => ({
-  AbrirTurnoForm: ({
-    form,
-    onSubmit,
-    isSubmitting,
-    error,
-    onIrAlTurno,
-  }: {
-    // `form` is the REAL `UseFormReturn` from `<AbrirTurno>` — register
-    // plain inputs against it so RHF's internal state (and therefore
-    // `onSubmit`, which is already `form.handleSubmit(realHandler)`)
-    // sees real values instead of the `useForm({defaultValues})` blanks.
-    form: {
-      register: (name: string) => Record<string, unknown>;
-      setValue: (name: string, value: string) => void;
-    };
-    onSubmit: (e: React.FormEvent) => void;
-    isSubmitting: boolean;
-    error: { kind: string } | null;
-    onIrAlTurno: () => void;
-  }) => {
-    return (
-      <form data-testid="abrir-turno-form" onSubmit={onSubmit}>
-        {/*
-          NOTE: no `defaultValue` here — RHF's `useForm({defaultValues})`
-          in the REAL `<AbrirTurno>` container seeds its internal state
-          from ITS OWN config (empty strings), not from this markup's
-          HTML `defaultValue` attribute. Tests must `fireEvent.change`
-          these inputs to actually populate RHF's tracked values.
-        */}
-        <input
-          data-testid="abrir-turno-valor-efectivo"
-          type="text"
-          {...form.register('valor_inicial_efectivo')}
-        />
-        {/*
-          Hidden mirror: ref d59e6ea5 removed the visible FormField, but
-          `abrirTurnoSchema` (turnoSchema.ts:80-89) still REQUIRES
-          `valor_inicial_datafono` as a STRING (regex + transform "" → 0).
-          The container also dropped the key from `useForm({defaultValues})`,
-          so RHF initializes the field as `undefined` — without this
-          `setValue`, the resolver fails with required_error and
-          `abrirSesion` is never called (U9 + U10 + U10b regression).
-          The container overrides the payload to `0` regardless
-          (AbrirTurno.tsx:104), so this only exists to satisfy validation.
-        */}
-        <DatafonoHiddenSetup form={form} />
-        <input
-          data-testid="abrir-turno-observaciones"
-          type="text"
-          {...form.register('observaciones')}
-        />
-        {error?.kind === 'sesion_already_active' && (
-          <div data-testid="abrir-turno-error-sesion-ya-abierta" role="alert">
-            Ya tenés un turno abierto
-            <button type="button" onClick={onIrAlTurno} data-testid="abrir-turno-ir-al-turno">
-              Ir al turno
-            </button>
-          </div>
-        )}
-        <button
-          type="submit"
-          data-testid="abrir-turno-submit"
-          disabled={isSubmitting}
-          aria-disabled={isSubmitting}
-        >
-          Abrir turno
-        </button>
-      </form>
-    );
-  },
+vi.mock('../hooks/useBaseCajaEfectiva', () => ({
+  useBaseCajaEfectiva: (...args: unknown[]) => mockUseBaseCajaEfectiva(...args),
 }));
 
 vi.mock('../api/sesionActivaApi', () => ({
@@ -153,131 +61,94 @@ vi.mock('../api/sesionActivaApi', () => ({
 import { SesionAlreadyActiveError } from '../api/sesionActivaApi';
 import { AbrirTurno } from './AbrirTurno';
 
+const SUC = '00000000-0000-0000-0000-000000000002';
+const USR = '00000000-0000-0000-0000-000000000001';
+
+const OPENED = {
+  uuid: 'new-uuid',
+  uuid_sucursal: SUC,
+  uuid_usuario: USR,
+  valor_inicial_efectivo: 100000,
+  valor_inicial_datafono: 0,
+  timestamp_apertura: '2026-09-15T08:00:00Z',
+  timestamp_cierre: null,
+  access_token: 'mock-access-token',
+  refresh_token: 'mock-refresh-token',
+  expires_in: 3600,
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
+  window.sessionStorage.clear();
   mockUseAuth.mockReturnValue({
-    // REQ-OPS-131 (qa-2026-09-17 bug 1): ``uuid`` replaces the legacy
-    // ``id`` field; the F3.3 mock surface reflects the ui-kit breaking
-    // change. `abrirTurnoSchema` validates these with Zod's `.uuid()`
-    // (real UUID format) — the old `'usr-uuid-1'` / `'suc-uuid-1'`
-    // placeholders always failed that check, so `form.handleSubmit`
-    // never called the real submit handler at all.
-    user: { uuid: '00000000-0000-0000-0000-000000000001', email: 'op@test.co' },
-    sucursal: { uuid: '00000000-0000-0000-0000-000000000002', nombre: 'Sucursal Centro' },
+    user: { uuid: USR, email: 'op@test.co' },
+    sucursal: { uuid: SUC, nombre: 'Sucursal Centro' },
   });
+  mockUseBaseCajaEfectiva.mockReturnValue({ base: 100000, isLoading: false, error: undefined });
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// RHF's `useForm({defaultValues})` in `<AbrirTurno>` seeds the numeric
-// fields as empty strings, which fail `abrirTurnoSchema`'s required
-// `NUMERIC_INPUT_REGEX` check — fill them via `fireEvent.change` so
-// `form.handleSubmit` actually reaches the real async submit handler.
-function fillValidForm(): void {
-  fireEvent.change(screen.getByTestId('abrir-turno-valor-efectivo'), {
-    target: { value: '50000' },
-  });
-}
-
-describe('<AbrirTurno /> container — T2', () => {
-  it('U9: submit OK → POST 200 → navigate("/")', async () => {
-    mockAbrirSesion.mockResolvedValueOnce({
-      uuid: 'new-uuid',
-      uuid_sucursal: '00000000-0000-0000-0000-000000000002',
-      uuid_usuario: '00000000-0000-0000-0000-000000000001',
-      valor_inicial_efectivo: 50000,
-      valor_inicial_datafono: 0,
-      timestamp_apertura: '2026-09-15T08:00:00Z',
-      timestamp_cierre: null,
-      // BUGFIX (2026-09-25): `abrirSesion` now returns `SesionOpenResponse`
-      // (SesionRead + reissued token pair carrying the `sesion` JWT
-      // claim) — the container calls `useAuthStore.setTokens(...)`
-      // with these before navigating.
-      access_token: 'mock-access-token',
-      refresh_token: 'mock-refresh-token',
-      expires_in: 3600,
-    });
-    const user = userEvent.setup();
+describe('<AbrirTurno /> container — sin pedir valores', () => {
+  it('U9: con base configurada abre el turno una sola vez, deja el aviso pendiente y va al dashboard', async () => {
+    mockAbrirSesion.mockResolvedValueOnce(OPENED);
     render(<AbrirTurno />);
-    fillValidForm();
-    await user.click(screen.getByTestId('abrir-turno-submit'));
 
-    await waitFor(() => {
-      expect(mockAbrirSesion).toHaveBeenCalledWith(
-        expect.objectContaining({
-          uuid_sucursal: '00000000-0000-0000-0000-000000000002',
-          uuid_usuario: '00000000-0000-0000-0000-000000000001',
-          valor_inicial_efectivo: 50000,
-          valor_inicial_datafono: 0,
-        }),
-      );
-    });
-    await waitFor(() => {
-      expect(mockNavigate).toHaveBeenCalledWith('/');
-    });
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/', { replace: true }));
+    expect(mockAbrirSesion).toHaveBeenCalledTimes(1);
+    // The dashboard shows the notice for this very session.
+    expect(window.sessionStorage.getItem('parkos:turno-base-aviso')).toBe('new-uuid');
+    expect(mockAbrirSesion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        uuid_sucursal: SUC,
+        uuid_usuario: USR,
+        valor_inicial_efectivo: 100000,
+        valor_inicial_datafono: 0,
+      }),
+    );
+    expect(mockSetTokens).toHaveBeenCalledWith('mock-access-token', 'mock-refresh-token', 3600);
   });
 
-  it('U10: POST 409 → SesionAlreadyActiveError → FormMessage role="alert" + botón "Ir al turno"', async () => {
+  it('U10: POST 409 → alerta de turno ya abierto + botón "Ir al turno"', async () => {
     mockAbrirSesion.mockRejectedValueOnce(
-      new SesionAlreadyActiveError(
-        409,
-        '{"error":"sesion_already_active"}',
-        '/api/v1/caja-sesion/sesiones',
-      ),
+      new SesionAlreadyActiveError(409, '{"error":"sesion_already_active"}', '/x'),
     );
     const user = userEvent.setup();
     render(<AbrirTurno />);
-    fillValidForm();
-    await user.click(screen.getByTestId('abrir-turno-submit'));
 
-    await waitFor(() => {
-      const alert = screen.getByTestId('abrir-turno-error-sesion-ya-abierta');
-      expect(alert).toHaveAttribute('role', 'alert');
-    });
-    expect(screen.getByTestId('abrir-turno-ir-al-turno')).toBeInTheDocument();
-    expect(mockNavigate).not.toHaveBeenCalled();
-  });
-
-  it('U10b: click "Ir al turno" → navigate("/")', async () => {
-    mockAbrirSesion.mockRejectedValueOnce(
-      new SesionAlreadyActiveError(
-        409,
-        '{"error":"sesion_already_active"}',
-        '/api/v1/caja-sesion/sesiones',
-      ),
-    );
-    const user = userEvent.setup();
-    render(<AbrirTurno />);
-    fillValidForm();
-    await user.click(screen.getByTestId('abrir-turno-submit'));
-    await waitFor(() => {
-      expect(screen.getByTestId('abrir-turno-error-sesion-ya-abierta')).toBeInTheDocument();
-    });
+    expect(await screen.findByTestId('abrir-turno-error-sesion-ya-abierta')).not.toBeNull();
     await user.click(screen.getByTestId('abrir-turno-ir-al-turno'));
     expect(mockNavigate).toHaveBeenCalledWith('/');
   });
 
-  it('U11: Validación Zod rechaza valor_inicial_efectivo < 0 → NO POST', async () => {
+  it('U11: sin base configurada no abre el turno y dirige al supervisor/administrador', async () => {
+    mockUseBaseCajaEfectiva.mockReturnValue({ base: null, isLoading: false, error: undefined });
+    render(<AbrirTurno />);
+
+    const aviso = await screen.findByTestId('abrir-turno-sin-base');
+    expect(aviso.textContent).toContain('administrador del sistema');
+    expect(mockAbrirSesion).not.toHaveBeenCalled();
+  });
+
+  it('U12: la pantalla no pide ningún valor (cero inputs)', async () => {
+    mockAbrirSesion.mockResolvedValueOnce(OPENED);
+    render(<AbrirTurno />);
+    expect(document.querySelectorAll('input, textarea, select')).toHaveLength(0);
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalled());
+  });
+
+  it('U13: fallo de red → alerta + "Reintentar" vuelve a abrir el turno', async () => {
+    mockAbrirSesion.mockRejectedValueOnce(new Error('network'));
+    mockAbrirSesion.mockResolvedValueOnce(OPENED);
     const user = userEvent.setup();
     render(<AbrirTurno />);
-    // The mocked AbrirTurnoForm sets defaultValue="50000" so we can't easily
-    // test the negative case through this mock. Instead verify the Zod schema
-    // contract directly (Zod is imported and wired to resolver).
-    const schemaModule = await import('../api/schemas/turnoSchema');
-    const result = schemaModule.abrirTurnoSchema.safeParse({
-      uuid_sucursal: '00000000-0000-0000-0000-000000000001',
-      uuid_usuario: '00000000-0000-0000-0000-000000000002',
-      valor_inicial_efectivo: -100,
-      valor_inicial_datafono: 0,
-    });
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      const issues = result.error.issues;
-      expect(issues.some((i) => i.path.includes('valor_inicial_efectivo'))).toBe(true);
-    }
-    expect(mockAbrirSesion).not.toHaveBeenCalled();
-    void user; // mark used
+
+    expect(await screen.findByTestId('abrir-turno-error-network')).not.toBeNull();
+    await user.click(screen.getByTestId('abrir-turno-reintentar'));
+
+    await waitFor(() => expect(mockAbrirSesion).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/', { replace: true }));
   });
 });

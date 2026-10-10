@@ -17,7 +17,7 @@
  * - PT-1: "Volver" returns to the previous screen (list / cupos) and is
  *   disabled while the payment is in flight and removed once charged.
  */
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
@@ -93,6 +93,13 @@ export function RenovarSuscripcionPanel({
     () => (error ? renovacionErrorMessage(error, t) : null),
     [error, t],
   );
+  // Caja bug 3: el voucher repetido es un error del campo -> aria-invalid + foco.
+  const voucherDuplicado =
+    error instanceof RenovacionError && error.code === 'voucher_datafono_duplicado';
+  const referenciaRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (voucherDuplicado) referenciaRef.current?.focus();
+  }, [voucherDuplicado, error]);
 
   const handleConfirmar = async (event: React.FormEvent): Promise<void> => {
     event.preventDefault();
@@ -246,6 +253,9 @@ export function RenovarSuscripcionPanel({
               </label>
               <Input
                 id="renovar-referencia"
+                ref={referenciaRef}
+                aria-invalid={voucherDuplicado || undefined}
+                aria-describedby={voucherDuplicado ? 'renovar-error' : undefined}
                 data-testid="renovar-referencia"
                 value={referencia}
                 onChange={(e) => {
@@ -260,6 +270,7 @@ export function RenovarSuscripcionPanel({
 
           {errorMessage && (
             <p
+              id="renovar-error"
               role="alert"
               className="text-sm text-destructive"
               data-testid="renovar-error"

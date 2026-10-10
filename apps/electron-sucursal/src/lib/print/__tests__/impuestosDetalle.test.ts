@@ -9,6 +9,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import { build } from '../escposBuilder';
+import { copDecimalPlano } from './copPlano';
 import { print } from '../fallbackBrowser';
 import { impuestosDesdeFactura } from '../printBuilder';
 import { formatCOPDecimal, type ReciboPagoPayload, type SalidaPayload } from '../escposTemplates';
@@ -32,10 +33,10 @@ describe('ESC/POS salida — detalle de impuestos', () => {
   it('prints tax name, rate, base and amount plus subtotal/total with cents', () => {
     const buf = build('salida', conImpuestos(validSalidaPayload() as SalidaPayload));
     expect(has(buf, 'IVA 19.00%')).toBe(true);
-    expect(has(buf, `Base: ${formatCOPDecimal(100840.34)}`)).toBe(true);
-    expect(has(buf, formatCOPDecimal(19159.66))).toBe(true);
-    expect(has(buf, `Subtotal: ${formatCOPDecimal(100840.34)}`)).toBe(true);
-    expect(has(buf, `TOTAL: ${formatCOPDecimal(120000)}`)).toBe(true);
+    expect(has(buf, `Base: ${copDecimalPlano(100840.34)}`)).toBe(true);
+    expect(has(buf, copDecimalPlano(19159.66))).toBe(true);
+    expect(has(buf, `Subtotal: ${copDecimalPlano(100840.34)}`)).toBe(true);
+    expect(has(buf, `TOTAL: ${copDecimalPlano(120000)}`)).toBe(true);
   });
 
   it('keeps the legacy "IVA:" line when the invoice has no tax rows', () => {
@@ -54,8 +55,8 @@ describe('ESC/POS recibo_pago — detalle de impuestos', () => {
     } as ReciboPagoPayload;
     const buf = build('recibo_pago', payload);
     expect(has(buf, 'IVA 19.00%')).toBe(true);
-    expect(has(buf, `Base: ${formatCOPDecimal(100840.34)}`)).toBe(true);
-    expect(has(buf, `TOTAL: ${formatCOPDecimal(120000)}`)).toBe(true);
+    expect(has(buf, `Base: ${copDecimalPlano(100840.34)}`)).toBe(true);
+    expect(has(buf, `TOTAL: ${copDecimalPlano(120000)}`)).toBe(true);
   });
 });
 
@@ -70,9 +71,9 @@ describe('fallback HTML — detalle de impuestos', () => {
     print('salida', conImpuestos(validSalidaPayload() as SalidaPayload));
     const html = document.getElementById('parkos-escpos-fallback-container')?.textContent ?? '';
     expect(html).toContain('IVA 19.00%');
-    expect(html).toContain(`Base: ${formatCOPDecimal(100840.34)}`);
-    expect(html).toContain(formatCOPDecimal(19159.66));
-    expect(html).toContain(`TOTAL: ${formatCOPDecimal(120000)}`);
+    expect(html).toContain(`Base: ${copDecimalPlano(100840.34)}`);
+    expect(html).toContain(copDecimalPlano(19159.66));
+    expect(html).toContain(`TOTAL: ${copDecimalPlano(120000)}`);
   });
 
   it('recibo HTML lists each tax with rate, base and amount', () => {
@@ -83,7 +84,7 @@ describe('fallback HTML — detalle de impuestos', () => {
     });
     const html = document.getElementById('parkos-escpos-fallback-container')?.textContent ?? '';
     expect(html).toContain('IVA 19.00%');
-    expect(html).toContain(`Base: ${formatCOPDecimal(100840.34)}`);
+    expect(html).toContain(`Base: ${copDecimalPlano(100840.34)}`);
   });
 });
 

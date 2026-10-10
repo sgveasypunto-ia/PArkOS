@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import exists, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +34,7 @@ from ..models.A.factura_impuestos import FacturaImpuestos
 from ..models.A.factura_pagos import FacturaPagos
 from ..models.A.salidas import Salidas
 from ..models.L_E.facturas import Facturas
+from ..runtime.tiempo import dia_bogota_rango_utc, hoy_bogota
 from ..schemas.facturacion import FacturaItemCreate
 
 # ---------------------------------------------------------------------------
@@ -87,6 +88,23 @@ class PagoDuplicadoError(Exception):
     def __init__(self, *, uuid_factura: uuid_lib.UUID) -> None:
         self.uuid_factura = uuid_factura
         super().__init__(f"pago_duplicado: uuid_factura={uuid_factura}")
+
+
+class VoucherDatafonoDuplicadoError(Exception):
+    """422 — the datafono voucher is already used by a live payment.
+
+    Rule: within one branch and one business day (Bogota), the normalized
+    ``referencia`` (trim + upper) of ``medio_pago='datafono'`` /
+    ``tipo_movimiento='pago'`` rows is unique, unless the earlier payment
+    already carries a ``reverso``. Enforced here (before the INSERT)
+    because ``prod.factura_pagos`` is an ``[A]`` table partitioned by
+    ``fecha_retencion_hasta``: no UPDATE is possible and a partial unique
+    index cannot express the reverso exception.
+    """
+
+    def __init__(self, *, referencia: str) -> None:
+        self.referencia = referencia
+        super().__init__(f"voucher_datafono_duplicado: referencia={referencia}")
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +454,74 @@ async def crear_factura_impuesto_iva(
 # ---------------------------------------------------------------------------
 
 
+def normalizar_voucher(referencia: str | None) -> str | None:
+    """Normalize a datafono voucher for comparison (trim + upper).
+
+    Returns ``None`` for ``None``/blank values. The stored ``referencia``
+    is never mutated; only the comparison key is normalized.
+    """
+    if referencia is None:
+        return None
+    limpio = referencia.strip().upper()
+    return limpio or None
+
+
+async def _validar_voucher_datafono_unico(
+    session: AsyncSession,
+    *,
+    uuid_factura: uuid_lib.UUID,
+    uuid_sucursal: uuid_lib.UUID,
+    referencia: str | None,
+) -> None:
+    """Reject a datafono voucher already used today in this branch.
+
+    Skips blank vouchers (V7 ``voucher_requerido`` is the handlers' job) and
+    payments of the SAME factura (a retry is answered by the existing
+    ``pago_duplicado`` guard, never by this rule). Serialized per
+    (branch, voucher, day) with a transaction advisory lock so two
+    concurrent charges cannot both pass the check.
+    """
+    clave = normalizar_voucher(referencia)
+    if clave is None:
+        return
+    inicio, fin = dia_bogota_rango_utc(hoy_bogota())
+    await session.execute(
+        select(
+            func.pg_advisory_xact_lock(
+                func.hashtextextended(f"voucher_datafono:{uuid_sucursal}:{inicio.date()}:{clave}", 0)
+            )
+        )
+    )
+    reverso = FacturaPagos.__table__.alias("reverso")
+    revertido = exists().where(
+        reverso.c.tipo_movimiento == "reverso",
+        reverso.c.uuid_pago_revertido == FacturaPagos.uuid,
+    )
+    existente = (
+        await session.execute(
+            select(FacturaPagos.uuid)
+            .where(
+                FacturaPagos.uuid_sucursal == uuid_sucursal,
+                FacturaPagos.medio_pago == "datafono",
+                FacturaPagos.tipo_movimiento == "pago",
+                func.upper(func.btrim(FacturaPagos.referencia)) == clave,
+                # Partition pruning: the bounded range keeps the scan on the
+                # 1-2 monthly partitions of the day (fecha_retencion_hasta is
+                # the UTC insert date; a Bogota day spans two UTC dates).
+                FacturaPagos.fecha_retencion_hasta >= inicio.date(),
+                FacturaPagos.fecha_retencion_hasta <= fin.date(),
+                FacturaPagos.timestamp_evento >= inicio,
+                FacturaPagos.timestamp_evento < fin,
+                FacturaPagos.uuid_factura != uuid_factura,
+                ~revertido,
+            )
+            .limit(1)
+        )
+    ).first()
+    if existente is not None:
+        raise VoucherDatafonoDuplicadoError(referencia=clave)
+
+
 async def crear_factura_pago(
     session: AsyncSession,
     *,
@@ -468,6 +554,13 @@ async def crear_factura_pago(
     payment belongs to (the owning factura's ``uuid_sucursal`` / the
     operator's ``ctx.sucursal_uuid`` -- see call sites).
     """
+    if medio_pago == "datafono":
+        await _validar_voucher_datafono_unico(
+            session,
+            uuid_factura=uuid_factura,
+            uuid_sucursal=uuid_sucursal,
+            referencia=referencia,
+        )
     new_row = FacturaPagos(
         uuid_factura=uuid_factura,
         uuid_sucursal=uuid_sucursal,
@@ -499,6 +592,7 @@ __all__ = [
     "PagoDuplicadoError",
     "SalidaNoFacturableError",
     "TotalNoCoherenteError",
+    "VoucherDatafonoDuplicadoError",
     "VoucherRequeridoError",
     "buscar_o_crear_cliente_por_nit",
     "buscar_salida_facturable",
@@ -509,5 +603,6 @@ __all__ = [
     "crear_factura_impuesto_iva",
     "crear_factura_pago",
     "lock_tarifas_sucursal_para_items",
+    "normalizar_voucher",
     "validar_items",
 ]

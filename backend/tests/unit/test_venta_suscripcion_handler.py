@@ -81,6 +81,7 @@ def _build_payload(
     payload.placas = placas if placas is not None else ["ABC123"]
     payload.uuid_tipo_subscripcion = uuid_lib.uuid4()
     payload.fecha_inicio_cobertura = date(2026, 9, 20)
+    payload.fecha_fin_cobertura = None
     payload.cobrar_ahora = cobrar_ahora
     payload.emitir_factura_electronica = False
     payload.medio_pago = "efectivo"
@@ -636,3 +637,41 @@ async def test_cross_branch_operador_rejected_at_auth_layer() -> None:
     # No ``Cache-Control`` header at the auth layer (that is the
     # handler-level Layer-5 invariant from DEC-VENTA-06). The auth layer
     # emits a bare 403; downstream proxies add no-store if needed.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("placas", [["ABC123", "ABC123"], ["abc123", " ABC123 "]])
+async def test_venta_suscripcion_422_placa_duplicada_en_la_venta(
+    placas: list[str],
+) -> None:
+    """Defecto 5.4: la misma placa dos veces en una venta -> 422, sin escribir."""
+    from parkos_core.api.v1 import clientes_venta as handler_mod
+
+    session = MagicMock()
+    session.commit = AsyncMock()
+    crear_vehiculo = AsyncMock()
+
+    with patch.object(
+        handler_mod.repo_venta, "buscar_tipo_subscripcion_vigente_por_uuid",
+        new=AsyncMock(return_value=_make_plan()),
+    ), patch.object(
+        handler_mod.repo_venta, "buscar_cliente_por_uuid_o_crear",
+        new=AsyncMock(return_value=MagicMock()),
+    ), patch.object(
+        handler_mod.repo_venta, "buscar_o_crear_vehiculo_por_placa", new=crear_vehiculo,
+    ), pytest.raises(HTTPException) as excinfo:
+        await handler_mod.venta_suscripcion(
+            response=_new_response(),
+            payload=_build_payload(placas=placas),
+            session=session,
+            ctx=_make_ctx(),
+            _claims=None,
+        )
+
+    assert excinfo.value.status_code == 422
+    assert excinfo.value.detail["error"] == "placa_duplicada_en_venta"
+    assert excinfo.value.detail["placa"] == "ABC123"
+    assert "ABC123" in excinfo.value.detail["message"]
+    assert excinfo.value.headers == {"Cache-Control": "no-store"}
+    assert crear_vehiculo.await_count == 0
+    assert session.commit.await_count == 0

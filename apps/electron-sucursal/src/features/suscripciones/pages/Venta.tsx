@@ -32,7 +32,7 @@
  * On a charged sale the receipt is shown and then `onSuccess` (embedded) or a
  * navigation to `/suscripciones` runs.
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { z } from 'zod';
@@ -55,8 +55,11 @@ import type { FacturaRead } from '../../facturacion/api/facturaApi';
 import {
   useVentaSuscripcion,
   VentaSuscripcionDuplicatePlateError,
+  VentaSuscripcionPlacaRepetidaError,
   VentaSuscripcionTipoIncompatibleError,
   VentaSuscripcionCantidadMaximaError,
+  VentaSuscripcionFechaFinError,
+  VentaSuscripcionValidationError,
   type VentaSuscripcionCreate,
 } from '../hooks/useVentaSuscripcion';
 import { useTiposSubscripciones } from '../hooks/useTiposSubscripciones';
@@ -65,6 +68,8 @@ import { desglosarIvaIncluido } from '../lib/ivaIncluido';
 import { useTiposVehiculo } from '../../catalogos/hooks/useTiposVehiculo';
 import { feWarningMessage } from '../../facturacion/lib/feEstado';
 import { hoyBogotaISO } from '../lib/fechaInicio';
+import { VigenciaResumen } from '../components/VigenciaResumen';
+import { calcularFechaFinCobertura, validarFechaFin } from '../lib/vigencia';
 import { buildClienteVentaPayload } from '../lib/clienteVentaPayload';
 import { validarIdentificacion } from '../../../lib/validation/identificacion';
 import { validarNitModulo11 } from '../../../lib/validation/nit';
@@ -265,6 +270,15 @@ export function Venta({
   // Generic inline error for the placas step -- shared by both duplicate-plate
   // 422 (server response) and invalid-format (local Zod).
   const [placaGroupError, setPlacaGroupError] = useState<string | null>(null);
+  // Error atribuido a una o varias placas concretas (422 con `placa`, o placa
+  // repetida detectada en local): se pega a los inputs de esos índices
+  // (aria-invalid + aria-describedby) y el primero recibe el foco. Sin placa
+  // identificable se usa `placaGroupError`.
+  const [placaFieldError, setPlacaFieldError] = useState<{
+    indices: number[];
+    message: string;
+  } | null>(null);
+  const [placaFoco, setPlacaFoco] = useState<number | null>(null);
   // PT-1: payment form values, kept while the operator steps back from the
   // payment step (and restored when returning to it).
   const [pagoDraft, setPagoDraft] = useState<PagoFormValues | null>(null);
@@ -280,6 +294,11 @@ export function Venta({
   // PT-1: once the sale is charged the wizard is FINAL -- "Volver" and a
   // second submit are disabled so the payment can never be re-sent.
   const [ventaCompletada, setVentaCompletada] = useState(false);
+  // Fin de cobertura editado por el operador (solo se puede ACORTAR). `null` =
+  // fin calculado por el plan. El backend es la autoridad (422).
+  const [fechaFinEditada, setFechaFinEditada] = useState<string | null>(null);
+  const [fechaFinErrorServidor, setFechaFinErrorServidor] = useState<string | null>(null);
+  const [fechaFinFoco, setFechaFinFoco] = useState(0);
   const { trigger, isMutating } = useVentaSuscripcion();
   const { tipos: tiposVehiculo, isFromFallback: tiposFromFallback } = useTiposVehiculo();
   const {
@@ -301,6 +320,16 @@ export function Venta({
     );
   }, [planes, state.uuid_tipo_subscripcion]);
   const totalPlan = selectedPlan?.valor ?? PLAN_PREVIEW_VALOR;
+  const fechaInicioVenta = state.fecha_inicio_cobertura ?? hoyBogotaISO();
+  // Fin que cubre el plan: tope de la fecha editable (solo se puede acortar).
+  const fechaFinPlan = selectedPlan
+    ? calcularFechaFinCobertura(fechaInicioVenta, selectedPlan.duracion_dias)
+    : null;
+  // El tope depende del plan y del inicio: si cambian, la edición se descarta.
+  useEffect(() => {
+    setFechaFinEditada(null);
+    setFechaFinErrorServidor(null);
+  }, [state.uuid_tipo_subscripcion, state.fecha_inicio_cobertura]);
   const desgloseIva =
     ivaVigente.porcentaje === null
       ? null
@@ -342,6 +371,7 @@ export function Venta({
     setCantidadError(null);
     setPlacasError(null);
     setPlacaGroupError(null);
+    setPlacaFieldError(null);
     setState((s) => ({ ...s, paso: (s.paso - 1) as VentaStepState['paso'] }));
   };
 
@@ -431,6 +461,7 @@ export function Venta({
     if (n !== state.cantidad_vehiculos) setPagoDraft(null);
     setPlacasInputs((prev) => Array.from({ length: n }, (_, i) => prev[i] ?? ''));
     setPlacaGroupError(null);
+    setPlacaFieldError(null);
     setState((s) => ({
       ...s,
       paso: 5,
@@ -442,11 +473,28 @@ export function Venta({
   const handlePaso5Siguiente = (): void => {
     // paso 5 = Placas -- validate exactly N placas (N from step 4), each
     // matching the auto/moto regex AND the vehicle type chosen at step 2.
+    setPlacaFieldError(null);
     const n = state.cantidad_vehiculos ?? 1;
     const parsed = buildPlacasSchema(n).safeParse({ placas: placasInputs });
     if (!parsed.success) {
       const issue = parsed.error.issues[0];
       setPlacasError(issue?.message ?? 'invalid');
+      return;
+    }
+    // 5.4: the same plate twice in one sale is rejected (backend answers 422
+    // `placa_duplicada_en_venta`; fail fast here with the same rule).
+    const normalizadas = parsed.data.placas.map((p) => p.trim().toUpperCase());
+    const repetidas = normalizadas.flatMap((p, i) =>
+      normalizadas.indexOf(p) !== i || normalizadas.lastIndexOf(p) !== i ? [i] : [],
+    );
+    if (repetidas.length > 0) {
+      setPlacasError(null);
+      setPlacaGroupError(null);
+      setPlacaFieldError({
+        indices: repetidas,
+        message: mensajeIdentificacion('placa_duplicada_en_venta'),
+      });
+      setPlacaFoco(repetidas[0] ?? null);
       return;
     }
     const tipoNombre = (selectedTipoVehiculo?.tipo ?? '').trim().toLowerCase();
@@ -483,6 +531,10 @@ export function Venta({
       // payment step only picks WHO is billed -- it no longer decides
       // whether an FE exists.
       emitir_factura_electronica: values.fe,
+      // Solo viaja si el operador acortó el fin respecto al del plan.
+      ...(fechaFinEditada !== null && fechaFinEditada !== fechaFinPlan
+        ? { fecha_fin_cobertura: fechaFinEditada }
+        : {}),
     };
     if (values.medio_pago === 'efectivo') {
       return {
@@ -495,6 +547,9 @@ export function Venta({
       ...base,
       cobrar_ahora: true,
       medio_pago: 'datafono',
+      // El backend exige el voucher del datáfono en `referencia`
+      // (sin él responde 400 `voucher_requerido`).
+      referencia: values.voucher?.trim(),
     };
   };
 
@@ -526,6 +581,15 @@ export function Venta({
   const handlePagoSubmit = async (values: PagoFormValues): Promise<void> => {
     // PT-1: the sale is final once charged -- never re-send the payment.
     if (ventaCompletada) return;
+    // Feedback inmediato: un fin fuera de rango no se envía (el backend igual lo valida).
+    if (
+      fechaFinEditada !== null &&
+      fechaFinPlan !== null &&
+      validarFechaFin(fechaFinEditada, fechaInicioVenta, fechaFinPlan) !== null
+    ) {
+      setFechaFinFoco((n) => n + 1);
+      return;
+    }
     try {
       const result = await trigger(buildVentaPayload(values));
       setVentaCompletada(true);
@@ -545,18 +609,43 @@ export function Venta({
       }
       completeVenta();
     } catch (err) {
+      if (err instanceof VentaSuscripcionFechaFinError) {
+        // El rechazo es del campo de fin: se queda en el paso de pago.
+        setFechaFinErrorServidor(
+          err.mensaje ||
+            t('suscripciones:venta.errors.fecha_fin_fuera_de_rango', {
+              defaultValue:
+                'La fecha de fin está fuera del rango permitido: solo se puede acortar la vigencia.',
+            }),
+        );
+        setFechaFinFoco((n) => n + 1);
+        return;
+      }
       if (
         err instanceof VentaSuscripcionDuplicatePlateError ||
+        err instanceof VentaSuscripcionPlacaRepetidaError ||
         err instanceof VentaSuscripcionTipoIncompatibleError ||
-        err instanceof VentaSuscripcionCantidadMaximaError
+        err instanceof VentaSuscripcionCantidadMaximaError ||
+        err instanceof VentaSuscripcionValidationError
       ) {
         // Revert to the placas step (paso 5) so the operator sees which
         // input was rejected without losing the rest of the wizard state.
         const msg =
-          err instanceof VentaSuscripcionDuplicatePlateError
+          err instanceof VentaSuscripcionPlacaRepetidaError
+          ? t('suscripciones:venta.errors.placa_duplicada_en_venta', {
+              defaultValue:
+                'Hay una placa repetida en la venta; cada vehículo debe tener una placa distinta.',
+            })
+          : err instanceof VentaSuscripcionDuplicatePlateError
             ? t('suscripciones:venta.errors.suscripcion_duplicada_placa', {
                 defaultValue: 'Esta placa ya tiene una suscripción vigente',
               })
+            : err instanceof VentaSuscripcionValidationError
+              ? err.mensaje ||
+                t('suscripciones:venta.errors.validacion_servidor', {
+                  defaultValue:
+                    'El servidor rechazó los datos de la venta. Revisa las placas.',
+                })
             : err instanceof VentaSuscripcionTipoIncompatibleError
               ? t('suscripciones:venta.errors.tipo_vehiculo_incompatible', {
                   defaultValue:
@@ -565,13 +654,34 @@ export function Venta({
               : t('suscripciones:venta.errors.cantidad_maxima_excedida', {
                   defaultValue: 'Cantidad máxima de vehículos excedida',
                 });
-        setPlacaGroupError(msg);
+        // Si el 422 identifica una placa que está en el formulario, el mensaje
+        // va pegado a ese input; si no, queda la alerta de grupo.
+        const placaError = 'placa' in err ? err.placa : '';
+        const norm = (p: string): string => p.trim().toUpperCase();
+        const idx = placaError
+          ? placasInputs.findIndex((p) => norm(p) === norm(placaError))
+          : -1;
+        if (idx >= 0) {
+          setPlacaGroupError(null);
+          setPlacaFieldError({ indices: [idx], message: msg });
+          setPlacaFoco(idx);
+        } else {
+          setPlacaFieldError(null);
+          setPlacaGroupError(msg);
+        }
         setState((s) => ({ ...s, paso: 5 }));
       } else {
         throw err;
       }
     }
   };
+
+  // Foco al input de la placa rechazada una vez el paso 5 está montado.
+  useEffect(() => {
+    if (state.paso !== 5 || placaFoco === null) return;
+    document.getElementById(`venta-placa-input-${placaFoco}`)?.focus();
+    setPlacaFoco(null);
+  }, [state.paso, placaFoco]);
 
   const mostrarVolver = !ventaCompletada && (state.paso > 1 || Boolean(onCancel));
 
@@ -894,6 +1004,10 @@ export function Venta({
                   value={placa}
                   maxLength={6}
                   autoCapitalize="characters"
+                  aria-invalid={placaFieldError?.indices.includes(i) ? true : undefined}
+                  aria-describedby={
+                    placaFieldError?.indices.includes(i) ? `venta-placa-error-${i}` : undefined
+                  }
                   onChange={(e) => {
                     const raw = e.target.value.toUpperCase();
                     // Mirror the turnoSchema regex: keep only valid
@@ -906,10 +1020,21 @@ export function Venta({
                         return next;
                       });
                       setPlacasError(null);
+                      setPlacaFieldError((cur) => (cur?.indices.includes(i) ? null : cur));
                     }
                   }}
                   placeholder="ABC123"
                 />
+                {placaFieldError?.indices.includes(i) && (
+                  <p
+                    id={`venta-placa-error-${i}`}
+                    data-testid={`venta-placa-error-${i}`}
+                    className="text-sm text-destructive"
+                    role="alert"
+                  >
+                    {placaFieldError.message}
+                  </p>
+                )}
               </div>
             ))}
           </div>
@@ -959,6 +1084,19 @@ export function Venta({
               monto: formatCopDecimal(totalPlan),
             })}
           </p>
+          {selectedPlan && (
+            <VigenciaResumen
+              fechaInicio={fechaInicioVenta}
+              duracionDias={selectedPlan.duracion_dias}
+              fechaFin={fechaFinEditada}
+              errorServidor={fechaFinErrorServidor}
+              focusSignal={fechaFinFoco}
+              onFechaFinChange={(fin) => {
+                setFechaFinEditada(fin);
+                setFechaFinErrorServidor(null);
+              }}
+            />
+          )}
           {desgloseIva !== null && ivaVigente.porcentaje !== null && (
             <p
               className="text-sm text-muted-foreground"

@@ -7,7 +7,7 @@
  * an `<Outlet />` wrapper, and `lib/admin-sections.ts` -- the one place
  * that LOOKS like a nav catalog -- is dead code outside its own test,
  * per `ReporteriaSuscripciones.tsx`'s own docblock admission). The
- * closest LIVE, rendered nav surface is `pages/HomeHub.tsx`'s
+ * closest LIVE, rendered nav surface is `pages/GlobalHQ.tsx`'s
  * `HUB_CARDS` grid (same surface `/arqueos` uses), so this component is
  * mounted there, overlaid on the "Alertas" card's icon -- see that
  * file for the mount point.

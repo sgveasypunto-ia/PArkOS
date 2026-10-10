@@ -55,6 +55,38 @@ beforeEach(() => {
   descargarMock.mockResolvedValue(undefined);
 });
 
+describe('<ResumenCierreTurno /> — producido y base entregada', () => {
+  it('deriva el producido (contado − base) y muestra la base que pasa al siguiente turno', () => {
+    render(
+      <ResumenCierreTurno
+        sesion={SESION}
+        arqueo={ARQUEO}
+        resumen={null}
+        onFinalizar={() => {}}
+      />,
+    );
+
+    const text = screen.getByTestId('resumen-cierre-turno').textContent ?? '';
+    expect(text).toContain('Producido consignado');
+    expect(text).toContain('25.000'); // 75.000 contado − 50.000 base
+    expect(text).toContain('Base entregada al siguiente turno');
+  });
+
+  it('prefiere las cifras del servidor cuando vienen en el resumen', () => {
+    render(
+      <ResumenCierreTurno
+        sesion={SESION}
+        arqueo={ARQUEO}
+        resumen={{ ...RESUMEN, base_entregada: 50_000, efectivo_reportado: 75_000, producido: 31_000 }}
+        onFinalizar={() => {}}
+      />,
+    );
+
+    const text = screen.getByTestId('resumen-cierre-turno').textContent ?? '';
+    expect(text).toContain('31.000');
+  });
+});
+
 describe('<ResumenCierreTurno />', () => {
   it('muestra TODOS los datos: base, esperado vs contado, diferencia, hora de cierre, nº de transacciones, totales por medio y observaciones', () => {
     render(
@@ -245,5 +277,48 @@ describe('<ResumenCierreTurno />', () => {
       />,
     );
     expect(screen.getByTestId('resumen-cierre-turno').textContent).toContain('—');
+  });
+});
+
+describe('<ResumenCierreTurno /> — logo easypunto en el encabezado', () => {
+  function montar(): HTMLElement {
+    render(
+      <ResumenCierreTurno sesion={SESION} arqueo={ARQUEO} resumen={null} onFinalizar={() => {}} />,
+    );
+    return screen.getByTestId('resumen-cierre-turno');
+  }
+
+  it('incluye el logo en el encabezado, antes del titulo "Turno cerrado"', () => {
+    const raiz = montar();
+    const encabezado = screen.getByTestId('resumen-cierre-encabezado');
+    expect(raiz.firstElementChild).toBe(encabezado);
+    expect(encabezado.contains(screen.getByTestId('logo-marca-claro'))).toBe(true);
+    expect(encabezado.contains(screen.getByTestId('logo-marca-oscuro'))).toBe(true);
+    expect(encabezado.contains(screen.getByTestId('resumen-cierre-titulo'))).toBe(true);
+    expect(screen.getByTestId('resumen-cierre-titulo').textContent).toBe('Turno cerrado');
+  });
+
+  it('tiene una variante por tema: la clara se oculta en dark y la blanca solo se ve en dark', () => {
+    montar();
+    const claro = screen.getByTestId('logo-marca-claro');
+    const oscuro = screen.getByTestId('logo-marca-oscuro');
+    expect(claro.className).toContain('dark:hidden');
+    expect(claro.className).not.toMatch(/(^|\s)hidden(\s|$)/);
+    expect(oscuro.className).toMatch(/(^|\s)hidden(\s|$)/);
+    expect(oscuro.className).toContain('dark:block');
+    expect(claro.getAttribute('src')).not.toBe(oscuro.getAttribute('src'));
+    expect(oscuro.getAttribute('src')).toMatch(/logo-horizontal-light\.svg/);
+  });
+
+  it('es decorativo (alt vacio): el titulo ya identifica la pantalla', () => {
+    montar();
+    expect(screen.getByTestId('logo-marca-claro').getAttribute('alt')).toBe('');
+    expect(screen.getByTestId('logo-marca-oscuro').getAttribute('alt')).toBe('');
+  });
+
+  it('conserva Imprimir ticket y Descargar PDF', () => {
+    montar();
+    expect(screen.getByTestId('resumen-cierre-imprimir-ticket')).toBeTruthy();
+    expect(screen.getByTestId('resumen-cierre-descargar-pdf')).toBeTruthy();
   });
 });

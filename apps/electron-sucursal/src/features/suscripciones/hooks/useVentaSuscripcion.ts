@@ -32,6 +32,7 @@ import { useAuthStore } from '@parkos/ui-kit/store';
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
 
 import { withActionIdempotencyKey } from '../../operacion/lib/idempotency';
+import { VOUCHER_DUPLICADO_CODE } from '../../facturacion/lib/voucherDuplicado';
 import {
   POST_VENTA_SUSCRIPCION_PATH,
   VentaSuscripcionReadSchema,
@@ -42,8 +43,11 @@ import {
 export type { VentaSuscripcionCreate, VentaSuscripcionRead } from '../api/ventaSuscripcionApi';
 export {
   VentaSuscripcionDuplicatePlateError,
+  VentaSuscripcionPlacaRepetidaError,
   VentaSuscripcionTipoIncompatibleError,
   VentaSuscripcionCantidadMaximaError,
+  VentaSuscripcionFechaFinError,
+  VentaSuscripcionValidationError,
 } from './ventaSuscripcionErrors';
 
 /**
@@ -53,8 +57,12 @@ export {
  */
 import {
   VentaSuscripcionDuplicatePlateError,
+  VentaSuscripcionPlacaRepetidaError,
   VentaSuscripcionTipoIncompatibleError,
   VentaSuscripcionCantidadMaximaError,
+  VentaSuscripcionFechaFinError,
+  VentaSuscripcionValidationError,
+  extraerMensajeDetail422,
 } from './ventaSuscripcionErrors';
 
 export interface UseVentaSuscripcionReturn {
@@ -63,6 +71,7 @@ export interface UseVentaSuscripcionReturn {
   error:
     | ParkosHttpError
     | VentaSuscripcionDuplicatePlateError
+    | VentaSuscripcionPlacaRepetidaError
     | VentaSuscripcionTipoIncompatibleError
     | VentaSuscripcionCantidadMaximaError
     | undefined;
@@ -86,6 +95,8 @@ interface BackendErrorBody {
   placa?: string;
   tipos_encontrados?: string[];
   cantidad_maxima_vehiculos?: number;
+  message?: string;
+  fecha_fin_maxima?: string;
 }
 
 /**
@@ -108,6 +119,15 @@ function parseBackendErrorBody(body: string): BackendErrorBody | null {
     return parsed.detail ?? parsed;
   } catch {
     return null;
+  }
+}
+
+function extraerMensaje422(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { detail?: unknown };
+    return extraerMensajeDetail422(parsed.detail !== undefined ? parsed.detail : parsed);
+  } catch {
+    return '';
   }
 }
 
@@ -139,9 +159,19 @@ async function mutateFn(
         if (code === 'suscripcion_duplicada_placa') {
           throw new VentaSuscripcionDuplicatePlateError(parsed?.placa ?? '');
         }
+        if (code === 'placa_duplicada_en_venta') {
+          throw new VentaSuscripcionPlacaRepetidaError(parsed?.placa ?? '');
+        }
+        if (code === 'fecha_fin_fuera_de_rango') {
+          throw new VentaSuscripcionFechaFinError(
+            typeof parsed?.message === 'string' ? parsed.message : '',
+            typeof parsed?.fecha_fin_maxima === 'string' ? parsed.fecha_fin_maxima : '',
+          );
+        }
         if (code === 'tipo_vehiculo_incompatible') {
           throw new VentaSuscripcionTipoIncompatibleError(
             parsed?.tipos_encontrados ?? [],
+            typeof parsed?.placa === 'string' ? parsed.placa : '',
           );
         }
         if (code === 'cantidad_maxima_excedida') {
@@ -149,6 +179,19 @@ async function mutateFn(
             parsed?.cantidad_maxima_vehiculos ?? 0,
           );
         }
+        // Caja bug 3: el voucher duplicado es un error del CAMPO voucher del
+        // PagoModal, no de la venta: se relanza el original para que
+        // `leerVoucherDuplicado` lo reconozca (no se tipa como placa/validación).
+        if (code === VOUCHER_DUPLICADO_CODE) {
+          throw err;
+        }
+        // Defecto 5.13: cualquier otro 422 (detail string, lista Pydantic u
+        // objeto con código desconocido) se tipa para que el wizard lo
+        // muestre en vez de perderlo en la consola.
+        throw new VentaSuscripcionValidationError(
+          extraerMensaje422(err.body),
+          typeof parsed?.placa === 'string' ? parsed.placa : '',
+        );
       }
     }
     throw err;

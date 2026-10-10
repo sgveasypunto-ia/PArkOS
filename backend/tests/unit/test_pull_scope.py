@@ -62,6 +62,17 @@ def test_override_accepts_global_default_or_own_row() -> None:
     )
 
 
+def test_configuracion_caja_override_reaches_the_branch() -> None:
+    """The base de caja authored in the cloud must reach the branch it applies to."""
+    spec = SYNC_CATALOG_BY_NAME["configuracion_caja"]
+    assert spec.direction == "cloud_to_branch"
+    assert spec.broadcast_policy == "all_branches_with_override"
+    assert _sql("configuracion_caja") == (
+        "prod.configuracion_caja.uuid_sucursal IS NULL OR "
+        f"prod.configuracion_caja.uuid_sucursal = '{BRANCH}'"
+    )
+
+
 def test_subscription_direct_filters_on_uuid_sucursal() -> None:
     spec = SYNC_CATALOG_BY_NAME["subscripciones_cliente"]
     assert spec.broadcast_policy == "subscription"

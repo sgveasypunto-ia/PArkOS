@@ -210,6 +210,7 @@ describe('useRenovarSuscripcion — PT-3', () => {
     [422, 'cantidad_maxima_excedida'],
     [422, 'tipo_vehiculo_incompatible'],
     [422, 'plan_duracion_dias_invalido'],
+    [422, 'voucher_datafono_duplicado'],
     [500, 'iva_no_configurado'],
   ];
 

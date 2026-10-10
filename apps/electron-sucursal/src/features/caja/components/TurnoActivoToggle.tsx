@@ -39,6 +39,7 @@ import { useTranslation } from 'react-i18next';
 
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 
+import { CobradoEnTurno } from '../../operacion/components/CobradoEnTurno';
 import { useMiTurno } from '../../operacion/hooks/useMiTurno';
 import { useOcupacion } from '../../operacion/hooks/useOcupacion';
 import type { SesionRead } from '../api/sesionActivaApi';
@@ -61,7 +62,8 @@ export function TurnoActivoToggle({
   // si el `<MiTurnoPanel />` sigue montado en otra ruta.
   const uuidSesion = sesion?.uuid ?? null;
   const uuidSucursal = sesion?.uuid_sucursal ?? null;
-  const { data: miTurnoData } = useMiTurno(uuidSesion);
+  const miTurno = useMiTurno(uuidSesion);
+  const miTurnoData = miTurno.data;
   const { data: ocupacionData } = useOcupacion(uuidSucursal);
 
   const ingresosTurno = miTurnoData.ingresos_count;
@@ -143,6 +145,12 @@ export function TurnoActivoToggle({
           salidasTurno={salidasTurno}
           cuposLibres={cuposLibres}
         />
+        <CobradoEnTurno
+          data={miTurno.data}
+          error={miTurno.error}
+          isLoaded={miTurno.isLoaded}
+          className="mt-2 border-t border-border/40 pt-2.5"
+        />
       </PopoverContent>
     </Popover>
   );
@@ -178,7 +186,7 @@ function ResumenTurno({
       data-testid="turno-activo-resumen"
       className="mt-3 border-t border-border/40 pt-3"
     >
-      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
+      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
         {t('caja:dashboard.turnoActivoResumenTitulo', {
           defaultValue: 'Resumen del turno',
         })}
@@ -192,7 +200,7 @@ function ResumenTurno({
           data-testid="turno-activo-resumen-row-ingresos"
           className="flex items-center justify-between py-1.5"
         >
-          <span className="text-muted-foreground/90 text-sm">
+          <span className="text-muted-foreground text-sm">
             {t('operacion:miTurno.kpis.ingresos', {
               defaultValue: 'Ingresos en mi turno',
             })}
@@ -205,7 +213,7 @@ function ResumenTurno({
           data-testid="turno-activo-resumen-row-salidas"
           className="flex items-center justify-between py-1.5"
         >
-          <span className="text-muted-foreground/90 text-sm">
+          <span className="text-muted-foreground text-sm">
             {t('operacion:miTurno.kpis.salidas', {
               defaultValue: 'Salidas en mi turno',
             })}
@@ -218,7 +226,7 @@ function ResumenTurno({
           data-testid="turno-activo-resumen-row-cupos-libres"
           className="flex items-center justify-between py-1.5"
         >
-          <span className="text-muted-foreground/90 text-sm">
+          <span className="text-muted-foreground text-sm">
             {t('operacion:miTurno.kpis.cuposLibres', {
               defaultValue: 'Cupos libres en la sucursal',
             })}
@@ -238,6 +246,7 @@ function ResumenTurno({
 function SesionDetails({ sesion }: { sesion: SesionRead }): JSX.Element {
   const { t } = useTranslation('caja');
   return (
+    <>
     <dl className="space-y-1.5">
       <div className="flex justify-between gap-2">
         <dt className="text-sm text-muted-foreground">UUID</dt>
@@ -282,5 +291,15 @@ function SesionDetails({ sesion }: { sesion: SesionRead }): JSX.Element {
           </div>
         )}
     </dl>
+    <p
+      className="mt-2 text-xs text-muted-foreground"
+      data-testid="turno-activo-details-base-nota"
+    >
+      {t('caja:baseDeCajaNota', {
+        defaultValue:
+          'Base de caja configurada por administración. Si tienes dudas, consulta con el supervisor o el administrador del sistema.',
+      })}
+    </p>
+    </>
   );
 }

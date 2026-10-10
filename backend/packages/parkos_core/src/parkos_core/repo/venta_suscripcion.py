@@ -46,18 +46,23 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..models.A.log_transaccional import LogTransaccional
 from ..models.V.clientes import Clientes
 from ..models.V.subscripcion_vehiculos import SubscripcionVehiculos
 from ..models.V.subscripciones_cliente import SubscripcionesCliente
 from ..models.V.tipo_subscripciones import TipoSubscripciones
 from ..models.V.vehiculos import Vehiculos
 from ..runtime.tiempo import hoy_bogota
+from . import hash_chain
 from . import placa as repo_placa
 from . import versioned
 from .tipo_persona import resolve_uuid_tipo_persona
 
 __all__ = [
     "CantidadMaximaExcedidaError",
+    "FechaFinFueraDeRangoError",
+    "registrar_ajuste_fin_vigencia",
+    "resolver_fecha_fin_cobertura",
     "ClienteNoEncontradoError",
     "PlanDuracionDiasInvalidoError",
     "SubscripcionDuplicadaPlacaError",
@@ -79,6 +84,8 @@ __all__ = [
     "validar_placa_duplicada_subscripcion",
     "validar_mismo_tipo_vehiculos",
     "validar_placas_mismo_tipo_vehiculo",
+    "validar_placas_no_duplicadas",
+    "PlacaDuplicadaEnVentaError",
     "validar_tipo_vehiculo_del_plan",
 ]
 
@@ -139,6 +146,14 @@ class SubscripcionDuplicadaPlacaError(Exception):
         )
 
 
+class PlacaDuplicadaEnVentaError(Exception):
+    """422 discriminator -- the same placa appears twice in one venta."""
+
+    def __init__(self, *, placa: str) -> None:
+        self.placa = placa
+        super().__init__(f"placa_duplicada_en_venta: placa={placa}")
+
+
 class TipoVehiculoIncompatibleError(Exception):
     """V5 422 discriminator -- ``mismo_tipo_vehiculo`` plan + mixed tipos in placas."""
 
@@ -168,6 +183,31 @@ class PlanDuracionDiasInvalidoError(Exception):
 
     def __init__(self) -> None:
         super().__init__("plan_duracion_dias_invalido: duracion_dias must be > 0")
+
+
+class FechaFinFueraDeRangoError(Exception):
+    """422 discriminator -- the requested coverage end is outside the allowed range.
+
+    The end can only be SHORTENED: it must fall in
+    ``[fecha_inicio_cobertura, fecha_fin_maxima]`` where ``fecha_fin_maxima``
+    is the plan-computed end (what was paid for).
+    """
+
+    def __init__(
+        self,
+        *,
+        fecha_inicio_cobertura: date_cls,
+        fecha_fin_maxima: date_cls,
+        fecha_fin_solicitada: date_cls,
+    ) -> None:
+        self.fecha_inicio_cobertura = fecha_inicio_cobertura
+        self.fecha_fin_maxima = fecha_fin_maxima
+        self.fecha_fin_solicitada = fecha_fin_solicitada
+        super().__init__(
+            "fecha_fin_fuera_de_rango: "
+            f"solicitada={fecha_fin_solicitada}, "
+            f"rango=[{fecha_inicio_cobertura}, {fecha_fin_maxima}]"
+        )
 
 
 class TipoVehiculoPlanIncompatibleError(TipoVehiculoIncompatibleError):
@@ -383,6 +423,19 @@ def validar_tipo_vehiculo_del_plan(
         )
 
 
+def validar_placas_no_duplicadas(*, placas: list[str]) -> None:
+    """Reject a venta whose ``placas`` repeat a plate (trim + upper first).
+
+    Raises :class:`PlacaDuplicadaEnVentaError` BEFORE any INSERT (422).
+    """
+    vistas: set[str] = set()
+    for placa in placas:
+        norm = placa.strip().upper()
+        if norm in vistas:
+            raise PlacaDuplicadaEnVentaError(placa=norm)
+        vistas.add(norm)
+
+
 def validar_placas_mismo_tipo_vehiculo(
     *, plan: TipoSubscripciones, vehiculos: list[Vehiculos]
 ) -> None:
@@ -558,6 +611,72 @@ def calcular_fecha_vencimiento(
     Raises :class:`PlanDuracionDiasInvalidoError` on an invalid duration.
     """
     return fecha_inicio_cobertura + timedelta(days=_duracion_dias_valida(plan) - 1)
+
+
+def resolver_fecha_fin_cobertura(
+    *,
+    fecha_inicio_cobertura: date_cls,
+    fecha_fin_plan: date_cls,
+    fecha_fin_solicitada: date_cls | None,
+) -> date_cls:
+    """Effective last covered day of a sale.
+
+    Without ``fecha_fin_solicitada`` the plan-computed end is used (legacy
+    behaviour). With it, the operator may only SHORTEN the coverage:
+    ``fecha_inicio_cobertura <= solicitada <= fecha_fin_plan``. Extending
+    beyond what was paid for is a different plan / a renewal, never an
+    edit. The amount charged is unaffected (PT-3: no proration).
+
+    Raises :class:`FechaFinFueraDeRangoError` when out of range.
+    """
+    if fecha_fin_solicitada is None:
+        return fecha_fin_plan
+    if not (fecha_inicio_cobertura <= fecha_fin_solicitada <= fecha_fin_plan):
+        raise FechaFinFueraDeRangoError(
+            fecha_inicio_cobertura=fecha_inicio_cobertura,
+            fecha_fin_maxima=fecha_fin_plan,
+            fecha_fin_solicitada=fecha_fin_solicitada,
+        )
+    return fecha_fin_solicitada
+
+
+async def registrar_ajuste_fin_vigencia(
+    session: AsyncSession,
+    *,
+    actor_uuid: uuid_lib.UUID,
+    uuid_sucursal: uuid_lib.UUID,
+    uuid_subscripcion: uuid_lib.UUID,
+    fecha_inicio_cobertura: date_cls,
+    fecha_fin_plan: date_cls,
+    fecha_fin_efectiva: date_cls,
+) -> None:
+    """Audit trail when the operator shortens the end vs the plan-computed one.
+
+    APPENDS one ``log_transaccional`` row (hash chain, ``[A]`` table, never
+    mutated). Commit-free: it rides the handler's single commit.
+    """
+    await hash_chain.append(
+        session,
+        LogTransaccional,
+        {
+            "uuid_usuario": actor_uuid,
+            "uuid_sucursal": uuid_sucursal,
+            "accion": "ajustar_fin_vigencia",
+            "tabla_afectada": SubscripcionesCliente.__tablename__,
+            "uuid_registro_afectado": uuid_subscripcion,
+            "datos_anteriores": {
+                "fecha_inicio_cobertura": fecha_inicio_cobertura.isoformat(),
+                "fecha_vencimiento": fecha_fin_plan.isoformat(),
+            },
+            "datos_nuevos": {
+                "fecha_inicio_cobertura": fecha_inicio_cobertura.isoformat(),
+                "fecha_vencimiento": fecha_fin_efectiva.isoformat(),
+                "dias_acortados": (fecha_fin_plan - fecha_fin_efectiva).days,
+            },
+            "timestamp_evento": datetime_utcnow(),
+        },
+        actor_uuid=actor_uuid,
+    )
 
 
 async def crear_subscripcion_cliente(

@@ -29,6 +29,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..app.sql.mi_turno_query import build_mi_turno_counts_sql
+from ..models.A.arqueo import Arqueo
 from ..models.A.factura_pagos import FacturaPagos
 from ..models.L_S.sesion import Sesion
 from ..schemas.operacion import (
@@ -177,6 +178,50 @@ async def calcular_resumen_mi_turno(
     )
 
 
+def producido_de(efectivo_reportado: Decimal, base: Decimal) -> Decimal:
+    """Producido del turno: efectivo que excede la base de caja.
+
+    Derived, never stored (state is derived in this schema). A shortage yields a
+    negative figure on purpose: the supervisor must see it, not a clamped zero.
+    """
+    return efectivo_reportado - base
+
+
+async def _calcular_producido(
+    session: AsyncSession,
+    *,
+    uuid_sesion: uuid_lib.UUID,
+) -> tuple[Decimal | None, Decimal | None, Decimal | None]:
+    """Return ``(base_entregada, efectivo_reportado, producido)`` for a sesion.
+
+    The base handed to the next operator is the one the shift opened with. The
+    reported cash comes from the most recent ``arqueo`` of the sesion (the
+    closing count is always the last one taken); with no arqueo yet the
+    producido stays ``None``. Cash only -- the datafono never enters here.
+    """
+    base_raw = (
+        await session.execute(
+            select(Sesion.valor_inicial_efectivo).where(Sesion.uuid == uuid_sesion)
+        )
+    ).scalar_one_or_none()
+    if base_raw is None:
+        return None, None, None
+    base = Decimal(str(base_raw))
+
+    reportado_raw = (
+        await session.execute(
+            select(Arqueo.valor_efectivo_reportado)
+            .where(Arqueo.uuid_sesion == uuid_sesion)
+            .order_by(Arqueo.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if reportado_raw is None:
+        return base, None, None
+    reportado = Decimal(str(reportado_raw))
+    return base, reportado, producido_de(reportado, base)
+
+
 async def calcular_resumen_cierre_turno(
     session: AsyncSession,
     *,
@@ -233,6 +278,9 @@ async def calcular_resumen_cierre_turno(
         ResumenCierreMedioPagoRead(medio_pago=k, pagos_count=c, total_cop=t)
         for k, (c, t) in sorted(medios.items())
     ]
+    base_entregada, efectivo_reportado, producido = await _calcular_producido(
+        session, uuid_sesion=uuid_sesion
+    )
     return ResumenCierreTurnoRead(
         uuid_sesion=base.uuid_sesion,
         uuid_sucursal=base.uuid_sucursal,
@@ -243,6 +291,9 @@ async def calcular_resumen_cierre_turno(
         medios_pago=medios_pago,
         reversos_count=reversos_count,
         reversos_total_cop=reversos_total,
+        base_entregada=base_entregada,
+        efectivo_reportado=efectivo_reportado,
+        producido=producido,
     )
 
 
@@ -250,4 +301,5 @@ __all__ = [
     "SesionNotFoundError",
     "calcular_resumen_cierre_turno",
     "calcular_resumen_mi_turno",
+    "producido_de",
 ]

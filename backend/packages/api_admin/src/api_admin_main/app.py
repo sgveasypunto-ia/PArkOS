@@ -77,6 +77,11 @@ def create_app() -> FastAPI:
     from parkos_core.api.middleware import IdempotencyKeyMiddleware
     app.add_middleware(IdempotencyKeyMiddleware)
 
+    # Placa format 422 ({error, message, placa}) for every endpoint that
+    # accepts a placa (schemas typed with PlacaVehiculo).
+    from parkos_core.api.placa_errors import register_placa_validation_handler
+    register_placa_validation_handler(app)
+
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {

@@ -42,6 +42,15 @@ def _load_envio_dian_migration():
     return module
 
 
+def _load_configuracion_caja_migration():
+    """0099 puts ``configuracion_caja`` under the same barrier; undo it before 0085."""
+    path = MIGRATION.with_name("0099_sync_configuracion_caja.py")
+    spec = importlib.util.spec_from_file_location("migration_0099", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _pull_tables() -> dict[str, str]:
     """entry name -> physical table name for every pull-eligible catalog entry."""
     from parkos_core.sync.catalog.sync_catalog import SYNC_CATALOG
@@ -185,6 +194,7 @@ async def test_upgrade_is_idempotent_and_downgrade_is_clean(pg_engine) -> None:
     """Run downgrade, re-upgrade and upgrade twice inside one rolled-back transaction."""
     module = _load_migration()
     later = _load_envio_dian_migration()
+    latest = _load_configuracion_caja_migration()
     tables = set(_pull_tables().values())
 
     def exercise(sync_conn) -> dict[str, int]:
@@ -195,6 +205,7 @@ async def test_upgrade_is_idempotent_and_downgrade_is_clean(pg_engine) -> None:
             return sync_conn.execute(text(sql)).scalar_one()
 
         with Operations.context(ctx):
+            latest.downgrade()
             later.downgrade()
             module.downgrade()
             seen["policies_after_down"] = count("SELECT count(*) FROM pg_policies")
@@ -210,6 +221,8 @@ async def test_upgrade_is_idempotent_and_downgrade_is_clean(pg_engine) -> None:
             module.upgrade()
             module.upgrade()
             later.upgrade()
+            latest.upgrade()
+            latest.upgrade()  # idempotent
             seen["policies_after_up"] = count("SELECT count(*) FROM pg_policies")
             seen["rls_after_up"] = count(
                 "SELECT count(*) FROM pg_class WHERE relrowsecurity AND relnamespace = 'prod'::regnamespace"

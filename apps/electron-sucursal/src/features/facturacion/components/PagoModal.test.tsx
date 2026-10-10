@@ -408,4 +408,47 @@ describe('<PagoModal /> — REQ-OPS-167 (FE consumidor final + validarNitModulo1
     const arg = onSubmit.mock.calls[0]?.[0] as PagoFormValues;
     expect(arg.fe).toBe(false);
   });
+
+  it('M6 (caja bug 3): 422 voucher_datafono_duplicado se muestra junto al campo voucher, accesible y con foco', async () => {
+    const err = Object.assign(new Error('http'), {
+      status: 422,
+      body: JSON.stringify({
+        detail: {
+          error: 'voucher_datafono_duplicado',
+          message: 'El voucher TEST999 ya fue registrado hoy en esta sucursal.',
+          referencia: 'TEST999',
+        },
+      }),
+    });
+    const onSubmit = vi.fn().mockRejectedValue(err);
+    render(<PagoModal {...DEFAULT_PROPS} onSubmit={onSubmit} />);
+
+    act(() => {
+      fireEvent.change(screen.getByTestId('pago-medio-pago'), { target: { value: 'datafono' } });
+    });
+    act(() => {
+      fireEvent.change(screen.getByTestId('pago-voucher'), { target: { value: 'TEST999' } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+
+    const msg = screen.getByTestId('pago-voucher-error');
+    expect(msg.textContent).toContain('TEST999 ya fue registrado');
+    const input = screen.getByTestId('pago-voucher');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(input.getAttribute('aria-describedby')).toContain(msg.id);
+    expect(document.activeElement).toBe(input);
+    // No se duplica como error generico del formulario.
+    expect(screen.queryByTestId('pago-error')).toBeNull();
+  });
+
+  it('M7: otros errores del submit siguen mostrando el error generico', async () => {
+    const onSubmit = vi.fn().mockRejectedValue(new Error('boom'));
+    render(<PagoModal {...DEFAULT_PROPS} onSubmit={onSubmit} />);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+    expect(screen.getByTestId('pago-error')).toBeTruthy();
+  });
 });

@@ -81,3 +81,23 @@ describe('clienteEstandar', () => {
     expect(excluirClienteEstandar(rows).map((r) => r.id)).toEqual([2]);
   });
 });
+
+import { coincideBusqueda, normalizarBusqueda } from './busquedaSuscripcion';
+
+describe('busquedaSuscripcion (defecto 7.5)', () => {
+  it('normaliza mayúsculas, acentos y espacios', () => {
+    expect(normalizarBusqueda('  JOSÉ Núñez ')).toBe('jose nunez');
+  });
+  it('coincide por nombre completo, apellido o identificación', () => {
+    const c = { nombre: 'Juan', apellido: 'Pérez', numero_identificacion: '1001' };
+    expect(coincideBusqueda(c, 'juan')).toBe(true);
+    expect(coincideBusqueda(c, 'PEREZ')).toBe(true);
+    expect(coincideBusqueda(c, 'juan perez')).toBe(true);
+    expect(coincideBusqueda(c, '100')).toBe(true);
+    expect(coincideBusqueda(c, 'maria')).toBe(false);
+    expect(coincideBusqueda(c, '   ')).toBe(true);
+  });
+  it('tolera nulos', () => {
+    expect(coincideBusqueda({ nombre: null, apellido: null, numero_identificacion: null }, 'x')).toBe(false);
+  });
+});

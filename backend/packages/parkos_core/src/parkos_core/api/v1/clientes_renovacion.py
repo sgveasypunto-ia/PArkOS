@@ -45,6 +45,7 @@ from ...auth.permissions import require_permission
 from ...auth.tenancy import TenantContext, get_tenant_ctx
 from ...db.engine import get_session
 from ...models.L_E.factura_electronica import FacturaElectronica
+from ...repo import factura as repo_factura
 from ...repo import fe_emision as repo_fe_emision
 from ...repo import idempotency as repo_idempotency
 from ...repo import renovacion as repo_renovacion
@@ -211,6 +212,9 @@ async def renovar_subscripcion(
     except repo_venta.PlanDuracionDiasInvalidoError as exc:
         await session.rollback()
         raise _error(422, "plan_duracion_dias_invalido") from exc
+    except repo_factura.VoucherDatafonoDuplicadoError as exc:
+        await session.rollback()
+        raise _helpers.voucher_duplicado_http(exc) from exc
     except repo_renovacion.VoucherRequeridoError as exc:
         await session.rollback()
         raise _error(400, "voucher_requerido", medio_pago=payload.medio_pago) from exc

@@ -21,6 +21,8 @@ const MENSAJES: Record<string, string> = {
   placa_formato_invalido:
     'Placa no coincide con ningún formato conocido (Auto: ABC123, Moto: ABC12D).',
   placa_tipo_incompatible: 'La placa no corresponde al tipo de vehículo elegido.',
+  placa_duplicada_en_venta:
+    'Hay una placa repetida en la venta; cada vehículo debe tener una placa distinta.',
   placas_cantidad_invalida: 'Ingresá todas las placas de la suscripción.',
   placas_min_1: 'Ingresá al menos una placa.',
   placas_max_2: 'Se permiten como máximo dos placas.',

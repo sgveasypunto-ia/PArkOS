@@ -14,7 +14,7 @@ from parkos_core.sync.catalog.entries.sync_entries_v import SYNC_ENTRIES_V
 
 _V_MODEL_CLASSES = [entry.model_cls for entry in SYNC_ENTRIES_V]
 
-assert len(_V_MODEL_CLASSES) == 26
+assert len(_V_MODEL_CLASSES) == 27
 
 
 @pytest.mark.parametrize(

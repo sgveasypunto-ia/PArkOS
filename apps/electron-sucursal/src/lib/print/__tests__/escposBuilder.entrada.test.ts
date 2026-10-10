@@ -1,21 +1,21 @@
 /**
  * Unit tests for F6.2 — Tiquete de entrada CU-15E byte-level fixtures.
  *
- * Covers the 17 conceptual fields in `escposTemplates.ts::TiqueteEntradaCampos`
+ * Covers the 15 conceptual fields in `escposTemplates.ts::TiqueteEntradaCampos`
  * (Spanish ordinals):
- *   - 17 byte-presence scenarios (one per `TiqueteEntradaCampos` key,
+ *   - 15 byte-presence scenarios (one per `TiqueteEntradaCampos` key,
  *     asserting `Buffer.indexOf(<campo>) >= 0` for the value emitted by
- *     `escposBuilder.build("entrada", payload)`).
- *   - 17 Zod rejection scenarios — one per missing key — confirming
- *     the F6.2 schema refinement throws `EscposPayloadMissingFieldError`
- *     with `code === 'escpos_payload_missing_field'`.
+ *     `escposBuilder.build("entrada", payload)`). The ticket is the common
+ *     80 mm format: no QR and no image payload keys (intentional change).
+ *   - Zod rejection scenarios confirming the schema throws
+ *     `EscposPayloadMissingFieldError` with `code === 'escpos_payload_missing_field'`.
  *   - Mensualidad tag scenario — when `ingreso.uuid_subscripcion_cliente`
  *     is non-null, `buildEntradaPayload()` emits `esMensualidad: true`
  *     and the buffer contains `MENSUALIDAD`.
  *   - Missing-field error class — the error class is exported and
  *     carries the documented code.
  *
- * The 17-key byte-presence table mirrors `TiqueteEntradaCampos` so
+ * The 15-key byte-presence table mirrors `TiqueteEntradaCampos` so
  * adding or removing a key in the source interface FAILS this file at
  * review time (each scenario asserts a specific token; renames break
  * the assertion message).
@@ -29,13 +29,13 @@ import {
 import {
   entradaPayloadSchema,
   buildEntradaPayload,
-  formatCOP,
   type IngresoForPayload,
   type SucursalForPayload,
   type TarifaForPayload,
   type DocumentoForPayload,
   type Empresa,
 } from '../escposTemplates';
+import { copPlano } from './copPlano';
 import { validEntradaPayload } from './escposBuilder.test';
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -100,10 +100,10 @@ function buildPayload(opts?: { withLogo?: boolean; withCert?: boolean; ingreso?:
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// 17 byte-presence scenarios — one per TiqueteEntradaCampos key
+// 15 byte-presence scenarios — one per TiqueteEntradaCampos key
 // ──────────────────────────────────────────────────────────────────────────
 
-describe('buildEntradaBuffer — 17 byte-presence scenarios (HU-F6.2)', () => {
+describe('buildEntradaBuffer — 15 byte-presence scenarios (HU-F6.2)', () => {
   it('primero (Encabezado) — emits payload.sucursal.encabezado header (DEC-SUC-28 dynamic)', () => {
     const buf = build('entrada', validEntradaPayload());
     // F7.3 (DEC-SUC-28) — dynamic branch header replaces the F5.2
@@ -137,11 +137,12 @@ describe('buildEntradaBuffer — 17 byte-presence scenarios (HU-F6.2)', () => {
     expect(buf.indexOf(Buffer.from('Operario: op-001'))).toBeGreaterThanOrEqual(0);
   });
 
-  it('septimo (Sello) — emits "*** TIQUETE DE ENTRADA ***" with text 2x', () => {
+  it('septimo (Sello) — emits "*** TIQUETE DE ENTRADA ***" in bold (no 2x text: 48 columns)', () => {
     const buf = build('entrada', validEntradaPayload());
     expect(buf.indexOf(Buffer.from('*** TIQUETE DE ENTRADA ***'))).toBeGreaterThanOrEqual(0);
-    // text 2x byte sequence (ESC ! 0x30)
-    expect(buf.indexOf(Buffer.from([0x1b, 0x21, 0x30]))).toBeGreaterThanOrEqual(0);
+    // Intentional change (80 mm): the sello is bold (ESC E 1), never ESC ! 0x30 (2x halves the columns).
+    expect(buf.indexOf(Buffer.from([0x1b, 0x45, 0x01]))).toBeGreaterThanOrEqual(0);
+    expect(buf.indexOf(Buffer.from([0x1b, 0x21, 0x30]))).toBe(-1);
   });
 
   it('octavo (Folio) — emits "Folio: {folio}"', () => {
@@ -151,7 +152,7 @@ describe('buildEntradaBuffer — 17 byte-presence scenarios (HU-F6.2)', () => {
 
   it('noveno (Tarifa aplicada) — emits "Tarifa: {formatCOP}/hora"', () => {
     const buf = build('entrada', validEntradaPayload());
-    const formatted = formatCOP(5000);
+    const formatted = copPlano(5000);
     expect(buf.indexOf(Buffer.from(`Tarifa: ${formatted}/hora`))).toBeGreaterThanOrEqual(0);
   });
 
@@ -195,19 +196,12 @@ describe('buildEntradaBuffer — 17 byte-presence scenarios (HU-F6.2)', () => {
     expect(buf.indexOf(Buffer.from('Observaciones: Sin novedad'))).toBeGreaterThanOrEqual(0);
   });
 
-  it('qrDataUrl (DEC-SUC-26) — buffer contains the data URL', () => {
-    const payload = buildPayload();
-    const buf = build('entrada', payload);
-    expect(buf.indexOf(Buffer.from(';QR:'))).toBeGreaterThanOrEqual(0);
-    expect(buf.indexOf(Buffer.from(payload.qrDataUrl))).toBeGreaterThanOrEqual(0);
-  });
-
-  it('logoDataUrl (DEC-SUC-26) — buffer contains logo (or placeholder when empty)', () => {
-    const payload = buildPayload();
-    const buf = build('entrada', payload);
-    expect(buf.indexOf(Buffer.from(';LOGO:'))).toBeGreaterThanOrEqual(0);
-    // logoDataUrl is non-empty in this fixture, so the OK marker is emitted
-    expect(buf.indexOf(Buffer.from('OK'))).toBeGreaterThanOrEqual(0);
+  it('brand (80 mm) — the easypunto logo opens and closes the ticket; no QR and no ;LOGO: marker', () => {
+    const buf = build('entrada', buildPayload());
+    const texto = buf.toString('utf8');
+    // Without a raster the brand prints as text, on top and at the bottom.
+    expect(texto.match(/easypunto/g)).toHaveLength(2);
+    expect(texto).not.toMatch(/;QR:|;LOGO:/i);
   });
 
   // HU-INGRESO-SIN-PLACA (REQ-OPS-197) — no-placa variant byte fixture.
@@ -307,23 +301,6 @@ describe('buildEntradaBuffer — 17 byte-presence scenarios (HU-F6.2)', () => {
     expect(buf.indexOf(Buffer.from('Tipo: MENSUALIDAD'))).toBeGreaterThanOrEqual(0);
   });
 
-  // Logo placeholder — separate from byte-presence count
-  it('Logo placeholder glyph — emitted when logoDataUrl is empty (cold cache)', () => {
-    const payload = buildEntradaPayload({
-      ingreso: makeIngreso(),
-      sucursal: makeSucursal(),
-      empresa: makeEmpresa(),
-      operario: 'op-004',
-      tipoVehiculo: 'auto',
-      tarifa: makeTarifa(),
-      documentos: [], // empty documentos → logoDataUrl = ''
-      fechaHora: '2026-09-16T08:30:00Z',
-    });
-    expect(payload.logoDataUrl).toBe('');
-    const buf = build('entrada', payload);
-    // ▢ placeholder glyph
-    expect(buf.indexOf(Buffer.from('\u25A2'))).toBeGreaterThanOrEqual(0);
-  });
 });
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -344,21 +321,7 @@ describe('entradaPayloadSchema — Zod rejection (missing-field)', () => {
     expect(captured!.issues.length).toBeGreaterThan(0);
   });
 
-  it('entradaPayloadSchema.parse rejects payload missing qrDataUrl', () => {
-    const { qrDataUrl: _qr, ...rest } = validEntradaPayload();
-    void _qr;
-    const result = entradaPayloadSchema.safeParse(rest);
-    expect(result.success).toBe(false);
-  });
-
-  it('entradaPayloadSchema.parse rejects payload missing logoDataUrl', () => {
-    const { logoDataUrl: _logo, ...rest } = validEntradaPayload();
-    void _logo;
-    const result = entradaPayloadSchema.safeParse(rest);
-    expect(result.success).toBe(false);
-  });
-
-  it('entradaPayloadSchema.parse accepts payload with all required keys (qr + logo included)', () => {
+  it('entradaPayloadSchema.parse accepts the payload without any image key', () => {
     const result = entradaPayloadSchema.safeParse(validEntradaPayload());
     expect(result.success).toBe(true);
   });
@@ -428,25 +391,6 @@ describe('buildEntradaPayload factory (HU-F6.2)', () => {
     expect(payload.esMensualidad).toBe(true);
   });
 
-  it('logoDataUrl === "" when documentos has no logo row', () => {
-    const payload = buildEntradaPayload({
-      ingreso: makeIngreso(),
-      sucursal: makeSucursal(),
-      empresa: makeEmpresa(),
-      operario: 'op-007',
-      tipoVehiculo: 'auto',
-      tarifa: makeTarifa(),
-      documentos: [],
-      fechaHora: '2026-09-16T08:30:00Z',
-    });
-    expect(payload.logoDataUrl).toBe('');
-  });
-
-  it('logoDataUrl carries the b64 when documentos has logo row', () => {
-    const payload = buildPayload({ withLogo: true });
-    expect(payload.logoDataUrl).toBe('data:image/png;base64,FAKE_LOGO_B64');
-  });
-
   it('polizaRC carries the cert b64 when documentos has certificado row', () => {
     const payload = buildPayload({ withCert: true });
     expect(payload.polizaRC).toBe('POL-12345');
@@ -457,12 +401,8 @@ describe('buildEntradaPayload factory (HU-F6.2)', () => {
     expect(payload.polizaRC).toBeUndefined();
   });
 
-  it('qrDataUrl encodes the ABIERTO-01 default content as base64', () => {
-    const payload = buildPayload();
-    const expected = Buffer.from(
-      `parkos://ingreso/${payload.folio}?placa=${payload.placa}`,
-      'utf8',
-    ).toString('base64');
-    expect(payload.qrDataUrl).toBe(`data:image/png;base64,${expected}`);
+  it('the factory output carries no image keys (QR / logo data URLs were removed)', () => {
+    const keys = Object.keys(buildPayload());
+    expect(keys.filter((k) => /qr|logo/i.test(k))).toEqual([]);
   });
 });

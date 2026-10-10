@@ -16,20 +16,28 @@ import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
+import { LogoMarca } from '../../../components/LogoMarca';
+
 import { descargarResumenCierrePdf } from '../../../lib/print/resumenCierrePdf';
+import { useImprimirCierre } from '../hooks/useImprimirCierre';
 import { buildResumenCierreSections, type ResumenCierreInput } from '../lib/resumenCierre';
 
 export interface ResumenCierreTurnoProps extends ResumenCierreInput {
   onFinalizar: () => void;
+  /** True while the summary data is still loading: the ticket cannot be printed yet. */
+  cargando?: boolean;
 }
 
 export function ResumenCierreTurno({
   onFinalizar,
+  cargando = false,
   ...input
 }: ResumenCierreTurnoProps): JSX.Element {
   const { t } = useTranslation(['caja', 'common']);
   const [pdfError, setPdfError] = useState(false);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+  const [isPrinting, setIsPrinting] = useState(false);
+  const imprimir = useImprimirCierre();
 
   const sections = useMemo(
     () => buildResumenCierreSections(input, t),
@@ -64,18 +72,47 @@ export function ResumenCierreTurno({
     }
   };
 
+  // The ticket needs the operator's count (the figure confirmed on screen); without it there is nothing to print.
+  const puedeImprimir = !cargando && input.arqueo.valor_efectivo_reportado !== undefined;
+
+  // Same single print route as the invoice and the automatic slip: failures leave the visible notice with retry.
+  const onImprimir = async (): Promise<void> => {
+    setIsPrinting(true);
+    try {
+      await imprimir.resumenTurno({
+        sesion: input.sesion,
+        arqueo: input.arqueo,
+        secciones: sections,
+        nota: t('caja:cerrarTurno.resumenCierre.notaElectronicos', {
+          defaultValue:
+            'Los pagos electrónicos se muestran solo como información: no cuentan como base ni para el cuadre de efectivo.',
+        }),
+      });
+    } finally {
+      setIsPrinting(false);
+    }
+  };
+
   return (
     <div className="space-y-4" data-testid="resumen-cierre-turno">
-      <div role="status" className="space-y-1">
-        <h2 className="text-base font-semibold" data-testid="resumen-cierre-titulo">
-          {title}
-        </h2>
-        <p className="text-sm text-muted-foreground">
-          {t('caja:cerrarTurno.resumenCierre.descripcion', {
-            defaultValue:
-              'Este resumen es de solo lectura y no se guarda en la aplicación. Descárgalo si lo necesitas antes de salir.',
-          })}
-        </p>
+      {/* Logo por tema (blanco sobre fondo oscuro, oscuro sobre fondo claro).
+          Decorativo: el título "Turno cerrado" ya identifica la pantalla, y
+          queda fuera del `role="status"` para que no se anuncie. */}
+      <div className="space-y-3" data-testid="resumen-cierre-encabezado">
+        <div className="flex">
+          <LogoMarca className="h-8 w-auto" />
+        </div>
+        <div role="status" className="space-y-1">
+          <h2 className="text-base font-semibold" data-testid="resumen-cierre-titulo">
+            {title}
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            {t('caja:cerrarTurno.resumenCierre.descripcion', {
+              defaultValue:
+                'Este resumen es de solo lectura y no se guarda en la aplicación. Descárgalo si lo necesitas antes de salir.',
+            })}
+          </p>
+        </div>
       </div>
 
       {sections.map((section, index) => (
@@ -128,6 +165,16 @@ export function ResumenCierreTurno({
           data-testid="resumen-cierre-descargar-pdf"
         >
           {t('caja:cerrarTurno.resumenCierre.descargarPdf', { defaultValue: 'Descargar PDF' })}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => void onImprimir()}
+          disabled={!puedeImprimir || isPrinting}
+          aria-busy={isPrinting}
+          data-testid="resumen-cierre-imprimir-ticket"
+        >
+          {t('caja:cerrarTurno.resumenCierre.imprimirTicket', { defaultValue: 'Imprimir ticket' })}
         </Button>
         <Button
           type="button"

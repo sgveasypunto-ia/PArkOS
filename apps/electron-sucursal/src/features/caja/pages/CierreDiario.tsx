@@ -44,6 +44,7 @@ import {
   useArqueoResumenPorSesion,
   type ArqueoResumenPorSesion,
 } from '../hooks/useArqueoResumenPorSesion';
+import { esSesionAbierta } from '../lib/sesionEstado';
 import { CierreDiarioForm } from './CierreDiarioForm';
 import {
   runCierreDiarioChain,
@@ -74,7 +75,7 @@ function computeTotals(sesiones: ArqueoResumenPorSesion['sesiones']): {
   let efectivo = 0;
   let diferencia = 0;
   for (const s of sesiones) {
-    if (s.estado !== 'cerrado') continue;
+    if (esSesionAbierta(s)) continue;
     efectivo += s.valor_efectivo_reportado ?? 0;
     // Per-session diferencia: (reported - expected) summed in abs.
     const efDiff = Math.abs(

@@ -82,6 +82,8 @@ const ventaCreateBase = {
     .max(2, 'placas_max_2'),
   uuid_tipo_subscripcion: z.string().uuid('uuid_tipo_subscripcion_invalido'),
   fecha_inicio_cobertura: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  // Opcional: solo ACORTAR la cobertura (el backend valida el rango).
+  fecha_fin_cobertura: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 };
 
 export const VentaSuscripcionCreateSchema = z
@@ -91,6 +93,9 @@ export const VentaSuscripcionCreateSchema = z
         ...ventaCreateBase,
         cobrar_ahora: z.literal(true),
         medio_pago: z.enum(['efectivo', 'datafono']),
+        // Voucher del datáfono (backend `referencia`); obligatorio allá
+        // cuando `medio_pago='datafono'` (400 `voucher_requerido`).
+        referencia: z.string().trim().min(1).max(255).optional(),
         emitir_factura_electronica: z.boolean().optional(),
       })
       .strict(),

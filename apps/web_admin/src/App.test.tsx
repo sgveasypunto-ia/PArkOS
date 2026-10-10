@@ -46,7 +46,7 @@ describe('App (authenticated)', () => {
     window.localStorage.setItem('parkos.lastSelectedSucursal', ALLOWED_UUID);
   });
 
-  it('renders the HomeHub at / (the post-login landing)', () => {
+  it('renders the GlobalHQ at / (the post-login landing)', () => {
     render(
       <Providers>
         <MemoryRouter initialEntries={['/']}>
@@ -54,9 +54,9 @@ describe('App (authenticated)', () => {
         </MemoryRouter>
       </Providers>,
     );
-    // The HomeHub is the canonical landing post-login. It is mounted
+    // The GlobalHQ is the canonical landing post-login. It is mounted
     // OUTSIDE `<RequireSucursal>`, so the picker must NOT take over.
-    expect(screen.getByTestId('home-hub')).toBeInTheDocument();
+    expect(screen.getByTestId('global-hq')).toBeInTheDocument();
     expect(screen.getByTestId('home-hub-card-sucursales')).toBeInTheDocument();
     expect(screen.getByTestId('home-hub-card-catalogos')).toBeInTheDocument();
     expect(screen.queryByTestId('sucursal-picker')).not.toBeInTheDocument();
@@ -96,7 +96,7 @@ describe('App (authenticated)', () => {
     expect(screen.getByTestId('topnav-email')).toHaveTextContent('admin@parkos.local');
   });
 
-  it('mounts TopNav on / (HomeHub is global)', () => {
+  it('mounts TopNav on / (GlobalHQ is global)', () => {
     render(
       <Providers>
         <MemoryRouter initialEntries={['/']}>

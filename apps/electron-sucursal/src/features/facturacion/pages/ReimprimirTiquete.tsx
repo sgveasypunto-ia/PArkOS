@@ -37,9 +37,10 @@
  *     factura (decisión de alcance explícita, no un bug — reversar un
  *     cobro real es un flujo aparte de factura_pagos.reverse_payment,
  *     fuera de esta HU).
- *   - `escposBuilder.build('reimpresion', payload)` + `window.bridge
- *     .imprimir(...)` — reimpresión real del tiquete de entrada
- *     (best-effort, DEC-SUC-27, mismo patrón que `<IngresoPanel />`).
+ *   - `imprimirTiquete('reimpresion', payload)` — reimpresión real del
+ *     tiquete de entrada en 80 mm (ESC/POS por el bridge o HTML +
+ *     `window.print`), con la leyenda REIMPRESIÓN y su número (últimos 8
+ *     dígitos del uuid de la reimpresión); best-effort, DEC-SUC-27.
  *
  * El operador NUNCA tipea un UUID: la búsqueda resuelve `uuid_ingreso`
  * automáticamente.
@@ -107,7 +108,13 @@ import { resolverIngresoReimpresion } from '../lib/resolverIngresoReimpresion';
 import { formatCOP } from '../../caja/lib/format';
 import { ejecutarImpresion } from '../../../lib/print/avisoImpresion';
 import { imprimirTiquete } from '../../../lib/print/tiquetePrint';
-import { buildReimpresionEntradaPayload } from '../../../lib/print/printBuilder';
+import { construirReimpresion } from '../../../lib/print/tiqueteLineas';
+import type { ReimpresionPayload } from '../../../lib/print/escposTemplates';
+import { LineasTicket } from '../../../components/LineasTicket';
+import {
+  buildReimpresionEntradaPayload,
+  numeroReimpresionCorto,
+} from '../../../lib/print/printBuilder';
 import { resolverTarifaHoraDeTipo } from '../../../lib/print/tarifaHoraEntrada';
 import { resolverContextoImpresion } from '../../../lib/print/contextoImpresion';
 import { formatFechaHoraCorta } from '../../caja/lib/format';
@@ -144,26 +151,40 @@ function identificadorDe(ingreso: Ingreso): string {
   return ingreso.placa ?? ingreso.consecutivo ?? ingreso.uuid;
 }
 
+const ETIQUETA_TIQUETE_REIMPRESO = 'el tiquete reimpreso';
+
+/** Reprinted ticket kept for the on-screen preview and the "Imprimir de nuevo" button. */
+interface VistaReimpresion {
+  payload: ReimpresionPayload;
+  ticketId: string;
+}
+
 /**
  * Prints the reimpresión of the ingreso tiquete on both channels (ESC/POS in
- * Electron, HTML + `window.print` in browser mode). Never throws and never
- * blocks the flow: a failure leaves a visible "No se pudo imprimir…" notice
- * with retry (the cobro / reimpresión are already registered).
+ * Electron, HTML + `window.print` in browser mode). `alConstruir` receives the
+ * payload that is printed, so the on-screen preview is built from the SAME lines.
+ * Never throws and never blocks the flow: a failure leaves a visible "No se pudo
+ * imprimir…" notice with retry (the cobro / reimpresión are already registered).
  */
 async function imprimirReimpresionEntrada(
   ingreso: Ingreso,
   motivo: string,
+  uuidReimpresion: string,
+  alConstruir: (vista: VistaReimpresion) => void,
 ): Promise<void> {
-  await ejecutarImpresion('el tiquete reimpreso', async () => {
+  await ejecutarImpresion(ETIQUETA_TIQUETE_REIMPRESO, async () => {
     const tarifaHora = await resolverTarifaHoraDeTipo(ingreso.uuid_tipo_vehiculo);
-    return imprimirTiquete(
-      'reimpresion',
-      buildReimpresionEntradaPayload(ingreso, motivo, {
+    const payload = buildReimpresionEntradaPayload(
+      ingreso,
+      motivo,
+      {
         ...(await resolverContextoImpresion()),
         tarifaHora,
-      }),
-      { ticketId: ingreso.uuid },
+      },
+      numeroReimpresionCorto(uuidReimpresion),
     );
+    alConstruir({ payload, ticketId: ingreso.uuid });
+    return imprimirTiquete('reimpresion', payload, { ticketId: ingreso.uuid });
   });
 }
 
@@ -194,6 +215,13 @@ export function ReimprimirTiquete(): JSX.Element {
   const [anularOpen, setAnularOpen] = useState(false);
   const [resultado, setResultado] = useState<ReimpresionTicketRead | null>(null);
   const [facturaDisplay, setFacturaDisplay] = useState<FacturaRead | null>(null);
+  // Reprinted ticket shown on screen (same lines as the printed one) + its re-print.
+  const [vista, setVista] = useState<VistaReimpresion | null>(null);
+  const [reimprimiendoVista, setReimprimiendoVista] = useState(false);
+  const lineasVista = useMemo(
+    () => (vista === null ? null : construirReimpresion(vista.payload)),
+    [vista],
+  );
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [suggestionsClosed, setSuggestionsClosed] = useState(false);
@@ -361,7 +389,7 @@ export function ReimprimirTiquete(): JSX.Element {
         // Best-effort (DEC-SUC-27) — el cobro y la reimpresión ya quedaron
         // registrados; un fallo de impresión avisa (con reintento) sin
         // bloquear ni revertir el flujo.
-        await imprimirReimpresionEntrada(ingresoEncontrado, motivoConfirmado);
+        await imprimirReimpresionEntrada(ingresoEncontrado, motivoConfirmado, out.uuid, setVista);
         // La factura del servicio se imprime completa (detalle de impuestos);
         // nunca lanza y avisa si falla.
         void ejecutarImpresion('la factura', () => imprimirFactura(factura));
@@ -401,7 +429,7 @@ export function ReimprimirTiquete(): JSX.Element {
       });
       setResultado(out);
       // Best-effort print (DEC-SUC-27), igual que el flujo con cobro.
-      await imprimirReimpresionEntrada(ingresoEncontrado, motivoConfirmado);
+      await imprimirReimpresionEntrada(ingresoEncontrado, motivoConfirmado, out.uuid, setVista);
     } catch (err) {
       setErrorMsg(
         esIngresoYaTieneSalida(err)
@@ -425,6 +453,7 @@ export function ReimprimirTiquete(): JSX.Element {
       setAnularOpen(false);
       setResultado(null);
       setFacturaDisplay(null);
+      setVista(null);
       resetBusqueda();
       buscarForm.reset();
       motivoForm.reset();
@@ -433,6 +462,20 @@ export function ReimprimirTiquete(): JSX.Element {
       setErrorMsg(err instanceof Error ? err.message : 'error');
     }
   });
+
+  // Same single print route (and failure notice) as the automatic print, with the
+  // payload already built for the preview: no second automatic print, only on click.
+  const handleImprimirDeNuevo = useCallback(async (): Promise<void> => {
+    if (vista === null) return;
+    setReimprimiendoVista(true);
+    try {
+      await ejecutarImpresion(ETIQUETA_TIQUETE_REIMPRESO, () =>
+        imprimirTiquete('reimpresion', vista.payload, { ticketId: vista.ticketId }),
+      );
+    } finally {
+      setReimprimiendoVista(false);
+    }
+  }, [vista]);
 
   return (
     <article
@@ -753,6 +796,33 @@ export function ReimprimirTiquete(): JSX.Element {
               <dd className="break-words">{resultado.motivo}</dd>
             </div>
           </dl>
+          {lineasVista !== null && (
+            <div className="space-y-2">
+              <LineasTicket
+                lineas={lineasVista}
+                testId="reimprimir-vista-previa"
+                etiqueta={t('reimprimir.success.vista_previa', {
+                  defaultValue: 'Vista previa del tiquete reimpreso',
+                })}
+              />
+              <div className="flex justify-center">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={reimprimiendoVista}
+                  onClick={() => {
+                    void handleImprimirDeNuevo();
+                  }}
+                  data-testid="reimprimir-imprimir-de-nuevo"
+                >
+                  {t('reimprimir.success.imprimir_de_nuevo', {
+                    defaultValue: 'Imprimir de nuevo',
+                  })}
+                </Button>
+              </div>
+            </div>
+          )}
           <div className="flex gap-2">
             <Button
               type="button"
@@ -767,6 +837,7 @@ export function ReimprimirTiquete(): JSX.Element {
               onClick={() => {
                 setResultado(null);
                 setFacturaDisplay(null);
+                setVista(null);
                 resetBusqueda();
                 buscarForm.reset();
                 motivoForm.reset();

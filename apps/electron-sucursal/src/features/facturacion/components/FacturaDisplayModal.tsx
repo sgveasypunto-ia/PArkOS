@@ -34,6 +34,7 @@
  */
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
+import { MarcaTicketPantalla } from '../../../components/MarcaTicketPantalla';
 import {
   Dialog,
   DialogContent,
@@ -47,7 +48,7 @@ import type { FacturaRead } from '../api/facturaApi';
 import { feEstadoLabel, feWarningMessage } from '../lib/feEstado';
 import { FacturaImpuestosDetalle } from './FacturaImpuestosDetalle';
 import { formatCOP, formatFechaHoraCorta } from '../../caja/lib/format';
-import { imprimirFactura } from '../../../lib/print/facturaPrint';
+import { imprimirFactura, lineasEmpresaTicket } from '../../../lib/print/facturaPrint';
 import {
   conceptoLegible,
   etiquetaSemanticaLineas,
@@ -167,6 +168,7 @@ export function FacturaDisplayModal({
               aria-label={t('facturacion:display.titulo', { defaultValue: 'Factura emitida' })}
               className="mx-auto w-full max-w-sm rounded border border-dashed border-muted-foreground/40 bg-white p-3 font-mono text-xs leading-relaxed text-neutral-900 shadow-inner"
             >
+              <MarcaTicketPantalla posicion="encabezado" />
               <div className="mb-1 text-center font-bold uppercase tracking-wide">
                 {t('facturacion:display.titulo', { defaultValue: 'Factura emitida' })}
               </div>
@@ -221,6 +223,19 @@ export function FacturaDisplayModal({
                   <div className="text-sm font-bold tracking-wider">
                     {f.datos_vehiculo.placa ?? '—'}
                   </div>
+                  {lineasEmpresaTicket(f.datos_vehiculo.empresa_suscripcion).length > 0 && (
+                    <div data-testid="factura-display-empresa">
+                      {lineasEmpresaTicket(f.datos_vehiculo.empresa_suscripcion).map((linea, i) => (
+                        <div
+                          key={i}
+                          data-testid="factura-display-empresa-linea"
+                          className="whitespace-pre overflow-hidden"
+                        >
+                          {linea}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <div data-testid="factura-display-minutos">
                     <span className="font-semibold">
                       {t('facturacion:display.tiempo', { defaultValue: 'Tiempo' })}:
@@ -309,6 +324,7 @@ export function FacturaDisplayModal({
                   )}
                 </div>
               )}
+              <MarcaTicketPantalla posicion="pie" />
             </div>
 
             {feWarning && (

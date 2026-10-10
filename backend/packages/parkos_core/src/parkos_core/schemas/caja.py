@@ -512,6 +512,22 @@ class RequiereJustificacionQueryParams(_Base):
     valor_datafono_reportado: Decimal | None = None  # REQ-OPS-191 nullable; ignored
 
 
+class EsperadoParcialQueryParams(_Base):
+    """GET /arqueo/esperado-parcial query params (arqueo parcial, no cierre)."""
+
+    uuid_sesion: uuid_lib.UUID
+
+
+class ArqueoEsperadoParcialRead(_Base):
+    """Efectivo esperado del turno abierto, para el arqueo parcial (auditoria).
+
+    Solo el arqueo parcial lo consume: ese cuadre ya muestra el esperado al
+    operador. El cierre de turno sigue a conteo ciego y NO usa este endpoint.
+    """
+
+    valor_efectivo_esperado: Decimal
+
+
 class ArqueoRequiereJustificacionRead(_Base):
     """HU-F10.2 follow-up: GET /arqueo/requiere-justificacion response.
 
@@ -579,6 +595,7 @@ __all__ = [
     "ArqueoRead",
     "ArqueoReadForHandler",
     "ArqueoReadList",
+    "ArqueoEsperadoParcialRead",
     "ArqueoRequiereJustificacionRead",
     "ArqueoResumenItem",
     "ArqueoResumenRead",
@@ -591,6 +608,7 @@ __all__ = [
     "CierreDiaNoAceptaSesionErrorRead",
     "CierreDiarioQueryParams",
     "JustificacionRequeridaErrorRead",
+    "EsperadoParcialQueryParams",
     "RequiereJustificacionQueryParams",
     "SesionCreate",
     "SesionFilter",
