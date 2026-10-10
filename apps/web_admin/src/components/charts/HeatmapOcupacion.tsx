@@ -11,7 +11,7 @@
  * toggle is mandatory accessibility relief for a sequential/heatmap
  * form (dataviz skill, check 6) -- it is not optional chrome here.
  *
- * Bundled (with its 3 sibling charts) inside `ChartsSection.tsx`, which
+ * Bundled (with its 2 sibling charts) inside `CrossBranchCharts.tsx`, which
  * `Dashboard.tsx` loads via `React.lazy` (dynamic import) -- see that
  * file for why all 4 charts share one lazy boundary.
  *
@@ -22,7 +22,7 @@
  * (existing callers/tests pass it unchanged); four NEW optional props
  * let a caller override the unit label, the bottom disclaimer, the
  * empty-state copy, and add a row-click (drill-down) -- all default to
- * the exact original ingresos copy/behavior, so `ChartsSection.tsx` and
+ * the exact original ingresos copy/behavior, so `CrossBranchCharts.tsx` and
  * `Reporteria.tsx` need no changes.
  */
 import { useId, useMemo, useState } from 'react';

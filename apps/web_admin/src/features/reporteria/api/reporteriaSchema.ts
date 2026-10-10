@@ -116,7 +116,7 @@ export type ReporteOperacionalItem = z.infer<typeof reporteOperacionalItemSchema
 // HU-F17.2 additions -- ingresos filtrados (sucursal/fecha/tipo) con
 // paginacion cursor estandar, y tiempos de estancia (BR1). Additive on
 // the wire (backend keeps `items`/`totales` unchanged for the existing
-// "Totales del periodo" panel + the dashboard's `ChartsSection`).
+// "Totales del periodo" panel + the dashboard's `BranchCharts`).
 export const reporteOperacionalIngresoItemSchema = z.object({
   uuid: z.string().uuid(),
   uuid_sucursal: z.string().uuid().nullable(),

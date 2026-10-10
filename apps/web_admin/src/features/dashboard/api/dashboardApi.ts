@@ -6,7 +6,8 @@
  *   - GET /api/v1/admin/dashboard/resumen?sucursales=X,Y,Z
  *
  * Thin transport only — SWR caching + key-building lives in
- * `hooks/useKpiData.ts`, same split as `features/reporteria`.
+ * `hooks/useResumenKpi.ts` and `hooks/useSucursalKpi.ts`, same split as
+ * `features/reporteria`.
  */
 import { parkosFetchRaw } from '@/lib/fetch';
 
