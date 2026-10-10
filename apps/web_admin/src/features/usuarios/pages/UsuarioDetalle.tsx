@@ -1,6 +1,7 @@
 import { useParams } from 'react-router-dom';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useBreadcrumbs } from '@/lib/useBreadcrumbs';
 import { useUsuario } from '../hooks/useUsuario';
 import { UsuarioForm } from '../components/UsuarioForm';
 import { PermisosTree } from '../components/PermisosTree';
@@ -8,9 +9,25 @@ import { SucursalesAsignadas } from '../components/SucursalesAsignadas';
 import { BitacoraUsuario } from '../components/BitacoraUsuario';
 import { SesionesActivasTable } from '../components/SesionesActivasTable';
 
+function usuarioDisplayLabel(usuario: {
+  nombre: string | null;
+  apellido: string | null;
+  uuid: string;
+} | null): string {
+  if (usuario === null) return '…';
+  const composed = `${usuario.nombre ?? ''} ${usuario.apellido ?? ''}`.trim();
+  return composed.length > 0 ? composed : usuario.uuid.slice(0, 8);
+}
+
 export function UsuarioDetalle() {
   const { uuid } = useParams<{ uuid: string }>();
   const { usuario, isLoading, error } = useUsuario(uuid);
+
+  useBreadcrumbs([
+    { to: '/', i18nKey: 'breadcrumb.home' },
+    { to: '/usuarios', i18nKey: 'breadcrumb.section.usuarios' },
+    { staticLabel: usuarioDisplayLabel(usuario ?? null), current: true },
+  ]);
 
   if (isLoading) {
     return (

@@ -1144,5 +1144,39 @@
       "resolver": "Resolver",
       "rechazar": "Rechazar"
     }
+  },
+  "breadcrumb": {
+    "ariaLabel": "Migas de pan",
+    "home": "Inicio",
+    "detail": "Detalle",
+    "reporteriaFinanciera": "Financiera",
+    "reporteriaSuscripciones": "Suscripciones",
+    "section": {
+      "sucursales": "Sucursales",
+      "catalogos": "Catálogos",
+      "empresa": "Empresa",
+      "usuarios": "Usuarios",
+      "clientes": "Clientes",
+      "arqueos": "Arqueos",
+      "pairing": "Pairing",
+      "alertas": "Alertas",
+      "anulaciones": "Anulaciones",
+      "reclamos": "Reclamos",
+      "sync": "Sincronización",
+      "dian": "DIAN",
+      "auditoria": "Auditoría",
+      "bitacora": "Bitácora",
+      "verifyChain": "Verificar cadena",
+      "buscarGlobal": "Búsqueda global",
+      "perfil": "Mi perfil",
+      "dashboard": "Panel ejecutivo",
+      "tarifas": "Tarifas",
+      "cupos": "Cupos",
+      "tiposVehiculo": "Tipos de vehículo",
+      "tipoTarifa": "Modalidades de tarifa",
+      "configuracionTolerancias": "Tolerancias",
+      "configuracionSeguridad": "Seguridad",
+      "reporteria": "Reportería"
+    }
   }
 }

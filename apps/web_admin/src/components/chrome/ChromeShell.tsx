@@ -7,8 +7,14 @@
  *
  * Structure:
  *   - `<TopNav />` (identity bar + branch switcher, top of the page)
+ *   - `<Breadcrumb />` (navigation trail, just below the TopNav)
  *   - `<AppSidebar />` (left nav, 240px wide, hidden below `lg`)
  *   - `<Outlet />` (the route's page content fills the remaining width)
+ *
+ * The `<BreadcrumbsProvider />` lives here so detail pages (anywhere
+ * under the chrome shell) can call `useBreadcrumbs([...])` to override
+ * the static chain with the resource's real name. Same dual-call
+ * pattern as `useAdminAuth` -- harmless.
  *
  * Calls `useAdminAuth()` to feed `permisos` into `<AppSidebar />` for
  * permission-aware filtering of the 8 nav items. The same hook is
@@ -23,18 +29,23 @@ import { useAdminAuth } from '@parkos/ui-kit/hooks';
 
 import { TopNav } from './TopNav';
 import { AppSidebar } from './AppSidebar';
+import { Breadcrumb } from './Breadcrumb';
 import { HUB_CARDS } from '@/pages/GlobalHQ';
+import { BreadcrumbsProvider } from '@/lib/useBreadcrumbs';
 
 export function ChromeShell(): JSX.Element {
   const { permisos } = useAdminAuth();
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <TopNav />
-      <div className="flex flex-1 min-h-0">
-        <AppSidebar items={HUB_CARDS} permisos={permisos} />
-        <Outlet />
+    <BreadcrumbsProvider>
+      <div className="flex min-h-screen flex-col">
+        <TopNav />
+        <Breadcrumb />
+        <div className="flex flex-1 min-h-0">
+          <AppSidebar items={HUB_CARDS} permisos={permisos} />
+          <Outlet />
+        </div>
       </div>
-    </div>
+    </BreadcrumbsProvider>
   );
 }

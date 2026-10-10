@@ -57,6 +57,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import Tarifas from '@/features/tarifas/pages/Tarifas';
 import Cupos from '@/features/cupos/pages/Cupos';
 import { useSucursal } from '@/lib/sucursal-context';
+import { useBreadcrumbs } from '@/lib/useBreadcrumbs';
 
 import { useSucursalDetalle } from '../../sucursales/hooks/useSucursalDetalle';
 import { ParametrizacionEfectivaSelector } from '../components/ParametrizacionEfectivaSelector';
@@ -102,6 +103,20 @@ export default function SucursalDetalle(): JSX.Element {
   const { sucursal, isLoading, error } = useSucursalDetalle(uuid);
   const { fecha, setFecha, resetAHoy, counts, isLoading: isLoadingEfectiva } =
     useParametrizacionEfectiva(uuid);
+
+  // Miga de pan: "Inicio → Sucursales → <nombre>". El último segmento
+  // usa el mismo `sucursal` que renderiza la H1, así no depende de
+  // `useSucursalesDirectorio` (que puede no estar cargado en deep
+  // links antes de que la página de detalle termine su propio fetch).
+  useBreadcrumbs([
+    { to: '/', i18nKey: 'breadcrumb.home' },
+    { to: '/seleccionar-sucursal', i18nKey: 'breadcrumb.section.sucursales' },
+    {
+      staticLabel:
+        sucursal?.nombre ?? sucursal?.prefijo_nombre ?? (uuid !== undefined ? uuid.slice(0, 8) : '…'),
+      current: true,
+    },
+  ]);
 
   if (isLoading) {
     return (
