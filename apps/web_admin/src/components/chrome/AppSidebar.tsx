@@ -71,9 +71,6 @@ export function AppSidebar({ items, permisos }: AppSidebarProps): JSX.Element {
       data-testid="app-sidebar"
     >
       <nav className="sticky top-0 p-3">
-        <h2 className="mb-2 px-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          {t('sidebar.title', 'Navegación principal')}
-        </h2>
         <ul className="flex flex-col gap-0.5">
           {visible.map((item) => {
             const Icon = item.icon;

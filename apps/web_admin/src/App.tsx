@@ -1,13 +1,11 @@
-import { Route, Routes, Navigate, Outlet } from 'react-router-dom';
-import { useAdminAuth } from '@parkos/ui-kit/hooks';
+import { Route, Routes, Navigate } from 'react-router-dom';
 import { Login } from '@/features/auth/pages/Login';
 import { RequireAdmin } from '@/components/auth/RequireAdmin';
 import { RequireSucursal } from '@/components/auth/RequireSucursal';
 import { WaitForAuth } from '@/components/WaitForAuth';
 import { AdminChrome } from '@/components/chrome/AdminChrome';
-import { TopNav } from '@/components/chrome/TopNav';
-import { AppSidebar } from '@/components/chrome/AppSidebar';
-import GlobalHQ, { HUB_CARDS } from '@/pages/GlobalHQ';
+import { ChromeShell } from '@/components/chrome/ChromeShell';
+import GlobalHQ from '@/pages/GlobalHQ';
 import Dashboard from '@/features/dashboard/pages/Dashboard';
 import SeleccionarSucursal from '@/pages/SeleccionarSucursal';
 import Perfil from '@/pages/Perfil';
@@ -56,21 +54,20 @@ import BuscarGlobal from '@/features/auditoria/pages/BuscarGlobal';
  * `/seleccionar-sucursal` sits OUTSIDE the branch guard (otherwise the
  * guard would redirect the picker back to itself in a loop). It is
  * still gated by `RequireAdmin` so an unauthenticated visitor never
- * sees it. The picker is a focused, fullscreen experience — it does
- * NOT use the persistent sidebar.
+ * sees it.
  *
- * Chrome layout (post-sidebar refactor): `<TopNav /> + <AppSidebar />`
- * is a single layout shell that wraps EVERY authed route except
- * `/login` and `/seleccionar-sucursal`. The shell renders on `/`
- * (outside `<RequireSucursal>`) just fine: the sidebar is pure
- * navigation and the branch selector stays in `<TopNav>` where it
- * only mounts when `selected !== null` — so the H1 invariant
- * ("no branch-scoped chrome on /") is preserved. Pineado por
- * `App.test.tsx` "mounts TopNav AND AppSidebar but NOT AdminChrome
- * on /".
+ * Chrome layout (post-ChromeShell refactor): `<ChromeShell />` is a
+ * single layout shell (TopNav + AppSidebar + Outlet) that wraps EVERY
+ * authed route -- including `/seleccionar-sucursal`. The shell
+ * renders on `/` (outside `<RequireSucursal>`) just fine: the
+ * sidebar is pure navigation and the branch selector stays in
+ * `<TopNav>` where it only mounts when `selected !== null` -- so the
+ * H1 invariant ("no branch-scoped chrome on /") is preserved.
+ * Pineado por `App.test.tsx` "mounts TopNav AND AppSidebar but NOT
+ * AdminChrome on /".
  *
- * Inside the shell, the global routes and the branch-scoped routes
- * are nested:
+ * Inside the authed shell, the global routes and the branch-scoped
+ * routes are nested:
  *   - global routes (`/`, `/catalogos`, `/empresa`, ...) render
  *     directly as `<Outlet />` children.
  *   - branch-scoped routes (`/dashboard`, `/tarifas`, ...) nest a
@@ -87,22 +84,30 @@ import BuscarGlobal from '@/features/auditoria/pages/BuscarGlobal';
  * antiguos sigan funcionando mientras la app apunta al nombre canónico.
  */
 export default function App() {
-  const { permisos } = useAdminAuth();
-
   return (
     <WaitForAuth>
       <Routes>
         <Route path="/login" element={<Login />} />
 
+        {/* `/seleccionar-sucursal` lives in its own top-level route
+            (not inside the authed group below) because the picker
+            is the FALLBACK surface: `RequireSucursal` redirects here
+            when no branch is selected, so wrapping this route in
+            `RequireSucursal` would loop. It still gets the same
+            chrome shell as every other authed route -- the user
+            reported the sidebar should be visible here too (and
+            it should: the picker IS a navigable surface, the
+            sidebar gives an exit path). */}
         <Route
           path="/seleccionar-sucursal"
           element={
             <RequireAdmin>
-              <TopNav />
-              <SeleccionarSucursal />
+              <ChromeShell />
             </RequireAdmin>
           }
-        />
+        >
+          <Route index element={<SeleccionarSucursal />} />
+        </Route>
 
         {/* Authed routes with persistent chrome. The shell renders
             TopNav (identity + branch switcher) AND AppSidebar (left
@@ -113,13 +118,7 @@ export default function App() {
         <Route
           element={
             <RequireAdmin>
-              <div className="flex min-h-screen flex-col">
-                <TopNav />
-                <div className="flex flex-1 min-h-0">
-                  <AppSidebar items={HUB_CARDS} permisos={permisos} />
-                  <Outlet />
-                </div>
-              </div>
+              <ChromeShell />
             </RequireAdmin>
           }
         >

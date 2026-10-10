@@ -276,9 +276,6 @@
     "subtitle": "{{branches}} sucursal(es) autorizada(s) · {{alertas}} alertas · lag máximo {{lag}}.",
     "accessTitle": "Accesos rápidos"
   },
-  "sidebar": {
-    "title": "Navegación principal"
-  },
   "catalogos": {
     "title": "Catálogos",
     "subtitle": "Editá los catálogos globales. \"Nueva versión\" publica un cambio sin perder la versión anterior.",
