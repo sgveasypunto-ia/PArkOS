@@ -5,7 +5,7 @@ import { RequireSucursal } from '@/components/auth/RequireSucursal';
 import { WaitForAuth } from '@/components/WaitForAuth';
 import { AdminChrome } from '@/components/chrome/AdminChrome';
 import { TopNav } from '@/components/chrome/TopNav';
-import HomeHub from '@/pages/HomeHub';
+import GlobalHQ from '@/pages/GlobalHQ';
 import Dashboard from '@/features/dashboard/pages/Dashboard';
 import SeleccionarSucursal from '@/pages/SeleccionarSucursal';
 import Perfil from '@/pages/Perfil';
@@ -61,7 +61,7 @@ import BuscarGlobal from '@/features/auditoria/pages/BuscarGlobal';
  * guard. They render without the `<AdminChrome />`, so no
  * `SucursalSelectorBadge` and no `BranchSelector` are mounted — the
  * admin reaches them on first login, before confirming a branch.
- * The HomeHub links to `/seleccionar-sucursal` to opt into the
+ * The GlobalHQ links to `/seleccionar-sucursal` to opt into the
  * branch-scoped surface.
  *
  * TopNav (identity: email + profile + logout) wraps EVERY authed
@@ -71,7 +71,7 @@ import BuscarGlobal from '@/features/auditoria/pages/BuscarGlobal';
  * wrapper for the Outlet.
  *
  * DEC-LOGIN-07 revisado: el post-login ya no fuerza
- * `/seleccionar-sucursal`. El admin aterriza en `/` (HomeHub). La
+ * `/seleccionar-sucursal`. El admin aterriza en `/` (GlobalHQ). La
  * decisión previa (siempre re-confirmar sucursal) está revertida; el
  * comentario histórico vive en `Login.tsx::getNextPath`.
  *
@@ -110,7 +110,7 @@ export default function App() {
             </RequireAdmin>
           }
         >
-          <Route path="/" element={<HomeHub />} />
+          <Route path="/" element={<GlobalHQ />} />
           <Route path="/catalogos" element={<CatalogPage />} />
           <Route path="/empresa" element={<EmpresaPage />} />
           <Route path="/usuarios" element={<UsuariosList />} />
