@@ -16,6 +16,7 @@
  */
 import { useTranslation } from 'react-i18next';
 
+import { PageHeader } from '@/components/layout/PageHeader';
 import {
   Tabs,
   TabsContent,
@@ -50,18 +51,17 @@ export default function CatalogPage(): JSX.Element {
   const { t } = useTranslation();
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-6" data-testid="catalog-page">
-      <header className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">
-          {t('catalogos.title', 'Catálogos')}
-        </h1>
-        <p className="text-muted-foreground mt-1 text-sm">
-          {t(
-            'catalogos.subtitle',
-            'Editá los catálogos globales. "Nueva versión" publica un cambio sin perder la versión anterior.',
-          )}
-        </p>
-      </header>
+    <main
+      className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+      data-testid="catalog-page"
+    >
+      <PageHeader
+        title={t('catalogos.title', 'Catálogos')}
+        subtitle={t(
+          'catalogos.subtitle',
+          'Editá los catálogos globales. "Nueva versión" publica un cambio sin perder la versión anterior.',
+        )}
+      />
 
       <Tabs defaultValue={ALL_CONFIGS[0].resource}>
         <TabsList
@@ -84,6 +84,6 @@ export default function CatalogPage(): JSX.Element {
           </TabsContent>
         ))}
       </Tabs>
-    </div>
+    </main>
   );
 }

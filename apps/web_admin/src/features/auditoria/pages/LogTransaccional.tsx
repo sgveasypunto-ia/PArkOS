@@ -34,6 +34,7 @@ import { useNavigate } from 'react-router-dom';
 import { useUrlFilters } from '@/lib/useUrlFilters';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader } from '@/components/layout/PageHeader';
 
 import { useSucursalesDirectorio } from '@/features/sucursales/hooks/useSucursalesDirectorio';
 
@@ -104,18 +105,17 @@ export default function LogTransaccional({ swrSalt }: LogTransaccionalProps): JS
   }
 
   return (
-    <main className="space-y-4 p-4 md:p-6" data-testid="log-transaccional-page">
-      <header>
-        <h1 className="text-2xl font-bold tracking-tight">
-          {t('auditoria.title', 'Bitácora')}
-        </h1>
-        <p className="text-muted-foreground text-sm">
-          {t(
-            'auditoria.subtitle',
-            'Listado cross-branch de eventos de bitácora, con filtros por tabla, registro, sucursal, usuario y fecha.',
-          )}
-        </p>
-      </header>
+    <main
+      className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+      data-testid="log-transaccional-page"
+    >
+      <PageHeader
+        title={t('auditoria.title', 'Bitácora')}
+        subtitle={t(
+          'auditoria.subtitle',
+          'Listado cross-branch de eventos de bitácora, con filtros por tabla, registro, sucursal, usuario y fecha.',
+        )}
+      />
 
       <Card>
         <CardHeader>

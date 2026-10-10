@@ -22,6 +22,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQueries } from '@tanstack/react-query';
 
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { listSucursales } from '@/features/sucursales/api/sucursalesApi';
@@ -129,15 +130,17 @@ export function ArqueosPage(): JSX.Element {
   };
 
   return (
-    <main className="space-y-4 p-4 md:p-6" data-testid="arqueos-page">
-      <header>
-        <h1 className="text-2xl font-bold tracking-tight">
-          {t('arqueos.title', 'Arqueos')}
-        </h1>
-        <p className="text-muted-foreground text-sm">
-          {t('arqueos.subtitle', 'Listado admin cross-branch de arqueos con filtros por sucursal, fecha y tipo.')}
-        </p>
-      </header>
+    <main
+      className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+      data-testid="arqueos-page"
+    >
+      <PageHeader
+        title={t('arqueos.title', 'Arqueos')}
+        subtitle={t(
+          'arqueos.subtitle',
+          'Listado admin cross-branch de arqueos con filtros por sucursal, fecha y tipo.',
+        )}
+      />
 
       <Card>
         <CardHeader>

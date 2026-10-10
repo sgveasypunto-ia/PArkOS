@@ -28,6 +28,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 
@@ -92,16 +93,17 @@ export default function DianCola({ swrSalt }: DianColaPageProps): JSX.Element {
   }
 
   return (
-    <main className="space-y-4 p-4 md:p-6" data-testid="dian-cola-page">
-      <header>
-        <h1 className="text-2xl font-bold tracking-tight">{t('dian.title', 'Monitor de envíos DIAN')}</h1>
-        <p className="text-muted-foreground text-sm">
-          {t(
-            'dian.subtitle',
-            'Cola de envíos a la DIAN de todas tus sucursales, con reintento de los rechazados.',
-          )}
-        </p>
-      </header>
+    <main
+      className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+      data-testid="dian-cola-page"
+    >
+      <PageHeader
+        title={t('dian.title', 'Monitor de envíos DIAN')}
+        subtitle={t(
+          'dian.subtitle',
+          'Cola de envíos a la DIAN de todas tus sucursales, con reintento de los rechazados.',
+        )}
+      />
 
       <Card>
         <CardHeader>

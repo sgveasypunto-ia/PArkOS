@@ -25,6 +25,7 @@
  */
 import { useTranslation } from 'react-i18next';
 
+import { PageHeader } from '@/components/layout/PageHeader';
 import {
   Tabs,
   TabsContent,
@@ -46,21 +47,17 @@ export default function EmpresaPage(): JSX.Element {
   const { t } = useTranslation();
 
   return (
-    <div
-      className="mx-auto max-w-6xl px-4 py-6"
+    <main
+      className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
       data-testid="empresa-page"
     >
-      <header className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">
-          {t('empresa.title', 'Empresa')}
-        </h1>
-        <p className="text-muted-foreground mt-1 text-sm">
-          {t(
-            'empresa.subtitle',
-            'Datos tributarios, mensajes de ticket y bitácora del singleton Empresa.',
-          )}
-        </p>
-      </header>
+      <PageHeader
+        title={t('empresa.title', 'Empresa')}
+        subtitle={t(
+          'empresa.subtitle',
+          'Datos tributarios, mensajes de ticket y bitácora del singleton Empresa.',
+        )}
+      />
 
       <Tabs defaultValue="datos">
         <TabsList
@@ -87,6 +84,6 @@ export default function EmpresaPage(): JSX.Element {
           <EmpresaBitacoraTab />
         </TabsContent>
       </Tabs>
-    </div>
+    </main>
   );
 }

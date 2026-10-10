@@ -31,6 +31,7 @@ import { useMemo, useState } from 'react';
 import * as React from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogDescription, DialogTitle } from '@/components/ui/dialog';
@@ -91,32 +92,28 @@ export default function UsuariosList(): JSX.Element {
 
   return (
     <main
-      className="flex min-h-screen flex-col gap-4 bg-background p-4"
+      className="flex flex-1 flex-col gap-6 bg-background p-4 md:p-6 lg:p-8"
       data-testid="page-usuarios"
     >
-      <header className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">
-            {t('gestionUsuarios.title', 'Gestión de usuarios')}
-          </h1>
-          <p className="text-muted-foreground text-sm">
-            {t(
-              'gestionUsuarios.subtitle',
-              'Crea, lista y asigna sucursales a usuarios administradores y operadores.',
-            )}
-          </p>
-        </div>
-        <Button
-          type="button"
-          onClick={() => {
-            setCreateOpen(true);
-            setCreateError(null);
-          }}
-          data-testid="admin-new"
-        >
-          {t('gestionUsuarios.newUser', '+ Nuevo usuario')}
-        </Button>
-      </header>
+      <PageHeader
+        title={t('gestionUsuarios.title', 'Gestión de usuarios')}
+        subtitle={t(
+          'gestionUsuarios.subtitle',
+          'Crea, lista y asigna sucursales a usuarios administradores y operadores.',
+        )}
+        actions={
+          <Button
+            type="button"
+            onClick={() => {
+              setCreateOpen(true);
+              setCreateError(null);
+            }}
+            data-testid="admin-new"
+          >
+            {t('gestionUsuarios.newUser', '+ Nuevo usuario')}
+          </Button>
+        }
+      />
 
       {error !== undefined && (
         <p

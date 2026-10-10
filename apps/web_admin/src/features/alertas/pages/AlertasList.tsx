@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next';
 import { useAdminAuth } from '@parkos/ui-kit/hooks';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { PageHeader } from '@/components/layout/PageHeader';
 import { useSucursalesDirectorio } from '@/features/sucursales/hooks/useSucursalesDirectorio';
 
 import { AlertasFilters, type AlertasFiltersValue } from '../components/AlertasFilters';
@@ -92,16 +93,17 @@ export default function AlertasList({ swrSalt }: AlertasListPageProps): JSX.Elem
   }
 
   return (
-    <main className="space-y-4 p-4 md:p-6" data-testid="alertas-page">
-      <header>
-        <h1 className="text-2xl font-bold tracking-tight">{t('alertas.title', 'Alertas')}</h1>
-        <p className="text-muted-foreground text-sm">
-          {t(
-            'alertas.subtitle',
-            'Bandeja cross-branch de alertas de las sucursales a tu cargo, con severidad y estado.',
-          )}
-        </p>
-      </header>
+    <main
+      className="flex flex-1 flex-col gap-6 p-4 md:p-6 lg:p-8"
+      data-testid="alertas-page"
+    >
+      <PageHeader
+        title={t('alertas.title', 'Alertas')}
+        subtitle={t(
+          'alertas.subtitle',
+          'Bandeja cross-branch de alertas de las sucursales a tu cargo, con severidad y estado.',
+        )}
+      />
 
       <Card>
         <CardHeader>

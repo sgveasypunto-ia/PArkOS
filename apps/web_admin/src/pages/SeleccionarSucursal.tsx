@@ -26,6 +26,7 @@ import { useTranslation } from 'react-i18next';
 import { useAdminAuth } from '@parkos/ui-kit/hooks';
 import { parkosFetchRaw } from '@/lib/fetch';
 import { useSucursal } from '@/lib/sucursal-context';
+import { PageHeader } from '@/components/layout/PageHeader';
 import {
   SucursalPicker,
   type SucursalPickerOption,
@@ -262,7 +263,7 @@ export default function SeleccionarSucursal(): JSX.Element {
 
   return (
     <main
-      className="flex min-h-screen flex-col gap-4 bg-background p-4"
+      className="flex flex-1 flex-col gap-6 bg-background p-4 md:p-6 lg:p-8"
       data-testid="page-seleccionar-sucursal"
     >
       <Tabs
@@ -294,22 +295,23 @@ export default function SeleccionarSucursal(): JSX.Element {
             Tab: Administrar (table + CRUD)
            ================================================================= */}
         <TabsContent value="admin">
-          <header className="mb-4 flex items-center justify-between">
-            <h1 className="text-2xl font-semibold">
-              {t('sucursalAdmin.title.admin', 'Sucursales')}
-            </h1>
-            <Button
-              type="button"
-              onClick={() => {
-                setShowCreate(true);
-                setEditing(null);
-                setErrorState(null);
-              }}
-              data-testid="sucursal-new"
-            >
-              {t('sucursal.new', 'Nueva sucursal')}
-            </Button>
-          </header>
+          <PageHeader
+            className="mb-2"
+            title={t('sucursalAdmin.title.admin', 'Sucursales')}
+            actions={
+              <Button
+                type="button"
+                onClick={() => {
+                  setShowCreate(true);
+                  setEditing(null);
+                  setErrorState(null);
+                }}
+                data-testid="sucursal-new"
+              >
+                {t('sucursal.new', 'Nueva sucursal')}
+              </Button>
+            }
+          />
 
           {/* Free-text filter. Single input matches against nombre,
               prefijo_nombre, AND ciudad (accent/case-insensitive). The
