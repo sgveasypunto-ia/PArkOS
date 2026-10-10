@@ -5,17 +5,19 @@
  * H1: el chrome branch-scoped (con badge de sucursal) NO se monta acá.
  *     Si alguien mueve esta ruta adentro de `<RequireSucursal>` por
  *     simetría, el test falla.
- * H2: las cards de acceso rápido son las de `HUB_CARDS` (data-driven:
- *     agregar una card no requiere tocar este test, solo el array
- *     fuente). Las 8 cards siguen existiendo como rail items.
- * H3: cada card es un `<a>` real con href y nombre accesible.
- * H4: el deep-link `?next=/ruta` sobrevive al login bounce
- *     cuando el guard nos manda a `/` (DEC-LOGIN-07 revisado).
- * H5: el panel ejecutivo se renderiza con las 6 cards cross-branch
- *     (KPI grid) y los accesos rápidos a la derecha.
- * H6: los accesos rápidos viven en un `<aside aria-label="accesos
- *     rápidos">` -- la separación rail/main es la forma en que la
- *     página entra en 1 viewport de 1080p sin scroll.
+ *     Post-sidebar: el branch selector sigue en `<TopNav>` y SOLO se
+ *     monta cuando `selected !== null` (probado en
+ *     `TopNav.test.tsx`). En `/` con `selected = null` no aparece.
+ * H2: el panel ejecutivo se renderiza con header + KPI grid + charts
+ *     (single-column main). El acceso rápido a las secciones vive
+ *     en `<AppSidebar>`, no acá.
+ * H3: el sidebar NO se monta dentro de GlobalHQ (es responsabilidad
+ *     del layout shell en `App.tsx`).
+ *
+ * Las cards de navegación (los 8 HUB_CARDS) se cubren en
+ * `AppSidebar.test.tsx` con el contrato data-driven que antes vivía
+ * acá. El deep-link `?next=` se prueba en AppSidebar (los hrefs
+ * canónicos no se ven afectados por la query string).
  *
  * NOTA: la cobertura de `<TopNav />` montado en `/` vive en
  * `App.test.tsx` ("mounts TopNav but NOT AdminChrome on /"). Este test
@@ -24,9 +26,9 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { MemoryRouter, Routes, Route } from 'react-router-dom';
+import { MemoryRouter } from 'react-router-dom';
 
-import GlobalHQ, { HUB_CARDS } from './GlobalHQ';
+import GlobalHQ from './GlobalHQ';
 
 // Mock the cross-branch data hook so the test does not need the
 // network. The shape mirrors the real `useResumenKpi` return so the
@@ -57,15 +59,7 @@ vi.mock('@parkos/ui-kit/hooks', () => ({
 function renderGlobalHQ(initialPath = '/') {
   return render(
     <MemoryRouter initialEntries={[initialPath]}>
-      <Routes>
-        <Route path="/" element={<GlobalHQ />} />
-        <Route
-          path="/seleccionar-sucursal"
-          element={<div data-testid="dest-sucursales" />}
-        />
-        <Route path="/catalogos" element={<div data-testid="dest-catalogos" />} />
-        <Route path="/empresa" element={<div data-testid="dest-empresa" />} />
-      </Routes>
+      <GlobalHQ />
     </MemoryRouter>,
   );
 }
@@ -77,51 +71,16 @@ describe('GlobalHQ', () => {
     expect(screen.queryByTestId('admin-chrome')).not.toBeInTheDocument();
   });
 
-  it('H2: cada card declarada en HUB_CARDS se renderiza (data-driven, ahora en el rail)', () => {
-    renderGlobalHQ();
-    for (const card of HUB_CARDS) {
-      expect(
-        screen.getByTestId(card.testId),
-        `card "${card.key}" debe estar renderizada en el rail`,
-      ).toBeInTheDocument();
-    }
-  });
-
-  it('H3: cada card es un <a> con href y nombre accesible correcto', () => {
-    renderGlobalHQ();
-    for (const card of HUB_CARDS) {
-      const el = screen.getByTestId(card.testId);
-      expect(el.tagName, `card "${card.key}" debe ser un <a>`).toBe('A');
-      expect(el, `card "${card.key}" debe apuntar a ${card.path}`).toHaveAttribute(
-        'href',
-        card.path,
-      );
-      expect(el, `card "${card.key}" debe tener nombre accesible`).toHaveAccessibleName();
-    }
-  });
-
-  it('H4: el deep-link ?next=/ruta preserva el destino después del login bounce', () => {
-    renderGlobalHQ('/?next=%2Fdashboard');
-    for (const card of HUB_CARDS) {
-      expect(
-        screen.getByTestId(card.testId),
-        `card "${card.key}" debe mantener su href canónico`,
-      ).toHaveAttribute('href', card.path);
-    }
-  });
-
-  it('H5: renderiza el header con KPIs cross-branch y los accesos rápidos', () => {
+  it('H2: renderiza el panel ejecutivo (header + KPIs + charts) en single-column', () => {
     renderGlobalHQ();
     expect(screen.getByTestId('global-hq')).toBeInTheDocument();
     expect(screen.getByTestId('global-hq-header')).toBeInTheDocument();
     expect(screen.getByTestId('global-hq-kpi-grid')).toBeInTheDocument();
-    expect(screen.getByTestId('global-hq-quick-links')).toBeInTheDocument();
+    expect(screen.getByTestId('global-hq-charts')).toBeInTheDocument();
   });
 
-  it('H6: los accesos rápidos viven en un <aside> separado del main (layout 2 columnas)', () => {
+  it('H3: el sidebar NO se monta dentro de GlobalHQ (responsabilidad del layout shell)', () => {
     renderGlobalHQ();
-    const rail = screen.getByTestId('global-hq-quick-links');
-    expect(rail.tagName, 'los accesos rápidos deben ser un <aside>').toBe('ASIDE');
-    expect(rail).toHaveAttribute('aria-label', 'accesos rápidos');
+    expect(screen.queryByTestId('app-sidebar')).not.toBeInTheDocument();
   });
 });

@@ -19,7 +19,7 @@ vi.mock('@parkos/ui-kit/hooks', () => ({
     user: { uuid: '00000000-0000-0000-0000-0000000000ad', email: 'admin@parkos.local' },
     rol: 'admin',
     sucursalUuids: ['2049f2cd-b2a8-4e45-9d19-31fa87eb67c6'],
-    permisos: ['admin_usuarios', 'audit_read', 'config_sucursal'],
+    permisos: ['admin_usuarios', 'audit_read', 'config_sucursal', 'config_catalogo'],
     isAuthenticated: true,
     isLoading: false,
     error: undefined,
@@ -46,7 +46,7 @@ describe('App (authenticated)', () => {
     window.localStorage.setItem('parkos.lastSelectedSucursal', ALLOWED_UUID);
   });
 
-  it('renders the GlobalHQ at / (the post-login landing)', () => {
+  it('renders the GlobalHQ at / (the post-login landing) with the persistent sidebar', () => {
     render(
       <Providers>
         <MemoryRouter initialEntries={['/']}>
@@ -56,7 +56,12 @@ describe('App (authenticated)', () => {
     );
     // The GlobalHQ is the canonical landing post-login. It is mounted
     // OUTSIDE `<RequireSucursal>`, so the picker must NOT take over.
+    // The persistent sidebar (AppSidebar) is part of the chrome shell
+    // and shows on /, /dashboard, and every authed route.
     expect(screen.getByTestId('global-hq')).toBeInTheDocument();
+    expect(screen.getByTestId('app-sidebar')).toBeInTheDocument();
+    // Sidebar items use the same testids as the historical HUB_CARDS
+    // (`home-hub-card-*`) for backward compat with prior assertions.
     expect(screen.getByTestId('home-hub-card-sucursales')).toBeInTheDocument();
     expect(screen.getByTestId('home-hub-card-catalogos')).toBeInTheDocument();
     expect(screen.queryByTestId('sucursal-picker')).not.toBeInTheDocument();

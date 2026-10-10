@@ -1,11 +1,13 @@
 import { Route, Routes, Navigate, Outlet } from 'react-router-dom';
+import { useAdminAuth } from '@parkos/ui-kit/hooks';
 import { Login } from '@/features/auth/pages/Login';
 import { RequireAdmin } from '@/components/auth/RequireAdmin';
 import { RequireSucursal } from '@/components/auth/RequireSucursal';
 import { WaitForAuth } from '@/components/WaitForAuth';
 import { AdminChrome } from '@/components/chrome/AdminChrome';
 import { TopNav } from '@/components/chrome/TopNav';
-import GlobalHQ from '@/pages/GlobalHQ';
+import { AppSidebar } from '@/components/chrome/AppSidebar';
+import GlobalHQ, { HUB_CARDS } from '@/pages/GlobalHQ';
 import Dashboard from '@/features/dashboard/pages/Dashboard';
 import SeleccionarSucursal from '@/pages/SeleccionarSucursal';
 import Perfil from '@/pages/Perfil';
@@ -54,21 +56,26 @@ import BuscarGlobal from '@/features/auditoria/pages/BuscarGlobal';
  * `/seleccionar-sucursal` sits OUTSIDE the branch guard (otherwise the
  * guard would redirect the picker back to itself in a loop). It is
  * still gated by `RequireAdmin` so an unauthenticated visitor never
- * sees it.
+ * sees it. The picker is a focused, fullscreen experience — it does
+ * NOT use the persistent sidebar.
  *
- * Global routes (`/`) sit in their own
- * `<RequireAdmin><Outlet/></RequireAdmin>` group OUTSIDE the branch
- * guard. They render without the `<AdminChrome />`, so no
- * `SucursalSelectorBadge` and no `BranchSelector` are mounted — the
- * admin reaches them on first login, before confirming a branch.
- * The GlobalHQ links to `/seleccionar-sucursal` to opt into the
- * branch-scoped surface.
+ * Chrome layout (post-sidebar refactor): `<TopNav /> + <AppSidebar />`
+ * is a single layout shell that wraps EVERY authed route except
+ * `/login` and `/seleccionar-sucursal`. The shell renders on `/`
+ * (outside `<RequireSucursal>`) just fine: the sidebar is pure
+ * navigation and the branch selector stays in `<TopNav>` where it
+ * only mounts when `selected !== null` — so the H1 invariant
+ * ("no branch-scoped chrome on /") is preserved. Pineado por
+ * `App.test.tsx` "mounts TopNav AND AppSidebar but NOT AdminChrome
+ * on /".
  *
- * TopNav (identity: email + profile + logout) wraps EVERY authed
- * group — global, picker, and branch-scoped alike. In branch-scoped
- * routes, `showBranchNav` is passed so TopNav also renders the section
- * nav and branch selector. The `<AdminChrome />` is now just a layout
- * wrapper for the Outlet.
+ * Inside the shell, the global routes and the branch-scoped routes
+ * are nested:
+ *   - global routes (`/`, `/catalogos`, `/empresa`, ...) render
+ *     directly as `<Outlet />` children.
+ *   - branch-scoped routes (`/dashboard`, `/tarifas`, ...) nest a
+ *     `<RequireSucursal><AdminChrome /></RequireSucursal>` route
+ *     so the picker bounce happens before the route's page mounts.
  *
  * DEC-LOGIN-07 revisado: el post-login ya no fuerza
  * `/seleccionar-sucursal`. El admin aterriza en `/` (GlobalHQ). La
@@ -80,6 +87,8 @@ import BuscarGlobal from '@/features/auditoria/pages/BuscarGlobal';
  * antiguos sigan funcionando mientras la app apunta al nombre canónico.
  */
 export default function App() {
+  const { permisos } = useAdminAuth();
+
   return (
     <WaitForAuth>
       <Routes>
@@ -95,21 +104,31 @@ export default function App() {
           }
         />
 
-        {/* Global routes — auth required, NO branch required.
-            `Catalogos`, `Empresa`, and `Usuarios` are tenant-global
-            surfaces (DEC-CATALOG-01), so they sit OUTSIDE
-            `<RequireSucursal>`. The TopNav wraps them so the operator
-            always sees their identity + logout even before picking a
-            branch — pineado by `App.test.tsx` "mounts TopNav but NOT
-            AdminChrome on /". */}
+        {/* Authed routes with persistent chrome. The shell renders
+            TopNav (identity + branch switcher) AND AppSidebar (left
+            nav with the 8 quick-launch items) for every route in
+            this group. Branch-scoped routes nest RequireSucursal +
+            AdminChrome so the picker bounce happens at the right
+            level. */}
         <Route
           element={
             <RequireAdmin>
-              <TopNav />
-              <Outlet />
+              <div className="flex min-h-screen flex-col">
+                <TopNav />
+                <div className="flex flex-1 min-h-0">
+                  <AppSidebar items={HUB_CARDS} permisos={permisos} />
+                  <Outlet />
+                </div>
+              </div>
             </RequireAdmin>
           }
         >
+          {/* Global routes — auth required, NO branch required.
+              `Catalogos`, `Empresa`, and `Usuarios` are tenant-global
+              surfaces (DEC-CATALOG-01), so they sit OUTSIDE
+              `<RequireSucursal>`. The chrome shell wraps them so
+              the operator always sees their identity + logout even
+              before picking a branch. */}
           <Route path="/" element={<GlobalHQ />} />
           <Route path="/catalogos" element={<CatalogPage />} />
           <Route path="/empresa" element={<EmpresaPage />} />
@@ -175,56 +194,55 @@ export default function App() {
           <Route path="/auditoria/verify-chain" element={<HashChainVerify />} />
           <Route path="/auditoria/buscar" element={<BuscarGlobal />} />
           <Route path="/perfil" element={<Perfil />} />
-        </Route>
 
-        {/* Branch-scoped routes — auth + branch required, render inside AdminChrome.
-            TopNav wraps the whole branch-scoped group as the identity bar.
-            AdminChrome is just a layout wrapper for the Outlet. */}
-        <Route
-          element={
-            <RequireAdmin>
-              <TopNav />
+          {/* Branch-scoped routes — auth + branch required, render inside AdminChrome.
+              RequireSucursal inside the chrome shell redirects to the
+              picker when no branch is selected. AdminChrome is just a
+              layout wrapper for the Outlet (the persistent chrome
+              already lives in the parent shell). */}
+          <Route
+            element={
               <RequireSucursal>
                 <AdminChrome />
               </RequireSucursal>
-            </RequireAdmin>
-          }
-        >
-          <Route path="/dashboard" element={<Dashboard />} />
-          <Route
-            path="/sucursales"
-            element={<Navigate to="/seleccionar-sucursal?tab=admin" replace />}
-          />
-          <Route
-            path="/gestion-usuarios"
-            element={<Navigate to="/usuarios" replace />}
-          />
-          <Route
-            path="/admin/usuarios"
-            element={<Navigate to="/usuarios" replace />}
-          />
-          <Route path="/tarifas" element={<Tarifas />} />
-          <Route path="/cupos" element={<Cupos />} />
-          <Route path="/tipos-vehiculo" element={<TiposVehiculo />} />
-          <Route path="/tipo-tarifa" element={<TipoTarifa />} />
-          <Route
-            path="/configuracion-tolerancias"
-            element={<ConfiguracionTolerancias />}
-          />
-          <Route
-            path="/configuracion-seguridad"
-            element={<ConfiguracionSeguridad />}
-          />
-          <Route path="/reporteria" element={<Reporteria />} />
-          <Route
-            path="/reporteria/financiera"
-            element={<ReporteriaFinanciera />}
-          />
-          <Route
-            path="/reporteria/suscripciones"
-            element={<ReporteriaSuscripciones />}
-          />
-          <Route path="/audit" element={<AuditDashboard />} />
+            }
+          >
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route
+              path="/sucursales"
+              element={<Navigate to="/seleccionar-sucursal?tab=admin" replace />}
+            />
+            <Route
+              path="/gestion-usuarios"
+              element={<Navigate to="/usuarios" replace />}
+            />
+            <Route
+              path="/admin/usuarios"
+              element={<Navigate to="/usuarios" replace />}
+            />
+            <Route path="/tarifas" element={<Tarifas />} />
+            <Route path="/cupos" element={<Cupos />} />
+            <Route path="/tipos-vehiculo" element={<TiposVehiculo />} />
+            <Route path="/tipo-tarifa" element={<TipoTarifa />} />
+            <Route
+              path="/configuracion-tolerancias"
+              element={<ConfiguracionTolerancias />}
+            />
+            <Route
+              path="/configuracion-seguridad"
+              element={<ConfiguracionSeguridad />}
+            />
+            <Route path="/reporteria" element={<Reporteria />} />
+            <Route
+              path="/reporteria/financiera"
+              element={<ReporteriaFinanciera />}
+            />
+            <Route
+              path="/reporteria/suscripciones"
+              element={<ReporteriaSuscripciones />}
+            />
+            <Route path="/audit" element={<AuditDashboard />} />
+          </Route>
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

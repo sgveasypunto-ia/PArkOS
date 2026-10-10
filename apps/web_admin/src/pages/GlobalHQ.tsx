@@ -4,16 +4,16 @@
  * no un grid vacío de links).
  *
  * INVARIANTE ARQUITECTÓNICO (no romper): esta página se monta FUERA de
- * `<RequireSucursal>`. Por eso no tiene `<AdminChrome />`, no tiene
- * `SucursalSelectorBadge`, no tiene `BranchSelector`. El selector de
- * sucursal aparece SOLO en las rutas gateadas por `<RequireSucursal>`
- * (dashboard, audit, etc.). Pineado por `GlobalHQ.test.tsx` H1/H2 y
- * por `App.test.tsx` "does NOT mount the chrome on /".
+ * `<RequireSucursal>`. El branch selector (`chrome-sucursal-selector`)
+ * vive en `<TopNav>` y SOLO se renderiza cuando `selected !== null`,
+ * por eso en `/` con `selected = null` la invariante "no chrome
+ * branch-scoped" sigue cumpliéndose — pineado por `App.test.tsx`
+ * "mounts TopNav but NOT AdminChrome on /".
  *
  * DEC-LOGIN-07 (revisado): el post-login ya no fuerza
  * `/seleccionar-sucursal`. El admin aterriza acá y la selección de
- * sucursal pasa a ser opt-in vía la rail item "Sucursales" o el topbar
- * en rutas branch-scoped.
+ * sucursal pasa a ser opt-in vía el sidebar persistente (item
+ * "Sucursales") o el topbar en rutas branch-scoped.
  *
  * POST-SPLIT: las 6 cards que estaban mezcladas en `/dashboard` (que
  * pretendían ser "de la sucursal seleccionada" pero agregaban TODAS las
@@ -23,22 +23,20 @@
  * corresponde (`useResumenKpi` vs `useSucursalKpi`) — ver
  * `features/dashboard/hooks/`.
  *
- * LAYOUT: 2 columnas (≥1024px) con un rail derecho sticky que aloja
- * los 8 accesos rápidos. Antes era un grid 2×4 de cards al final de
- * la página (725px de alto en viewport 1080p, 82% de la pantalla) que
- * "se perdían" debajo del fold. El rail mantiene los 8 accesos
- * permanentemente visibles sin sacrificar la lectura vertical de los
- * KPIs y los charts. Estilo Linear/Vercel admin.
+ * POST-SIDEBAR: el bloque "Accesos rápidos" que vivía en `<aside>` al
+ * fondo de esta página se movió a `<AppSidebar>` (componente chrome
+ * persistente, montado por `App.tsx` en TODAS las rutas authed). El
+ * `HUB_CARDS` exportado acá sigue siendo la fuente de verdad de los
+ * 8 items del sidebar — `App.tsx` lo consume y le pasa a
+ * `<AppSidebar items={HUB_CARDS} permisos={...} />`.
  */
 import { lazy, Suspense } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Link } from 'react-router-dom';
 import {
   Banknote,
   Bell,
   BookOpen,
   Building2,
-  ChevronRight,
   FolderTree,
   Landmark,
   Send,
@@ -59,7 +57,7 @@ const CrossBranchCharts = lazy(
   () => import('@/features/dashboard/components/CrossBranchCharts'),
 );
 
-interface HubCard {
+export interface HubCard {
   key:
     | 'sucursales'
     | 'catalogos'
@@ -71,11 +69,22 @@ interface HubCard {
     | 'auditoria';
   path: string;
   icon: LucideIcon;
-  titleKey: string;
+  labelKey: string;
   descriptionKey: string;
-  /** Test id for the rail row. The 8 rail items keep the
-   *  `home-hub-card-*` testids for backward compat with the old
-   *  2×4 grid layout (and with `App.test.tsx`'s assertions). */
+  /** Permission gate mirroring the convention in `lib/admin-sections.ts`:
+   *  `null` = any admin; string = required permission in `permisos[]`.
+   *  `AppSidebar` filters by this when rendering.
+   *
+   *  Notas de auditoría (las 4 que NO están en admin-sections.ts son
+   *  inferidas del comportamiento actual del backend; cualquier
+   *  cambio server-side que agregue `require_permission(...)` a
+   *  estas rutas debe reflejarse acá):
+   *  - `empresa`:    no permission dep en `api/v1/empresa*` -> null.
+   *  - `arqueos`:    no permission dep en `api/v1/arqueo*` -> null.
+   *  - `alertas`:    no permission dep en `api/v1/workflows/alerta*` -> null.
+   *  - `dian`:       no permission dep en `api/v1/envio-dian*` -> null.
+   */
+  permission: string | null;
   testId: string;
 }
 
@@ -84,64 +93,72 @@ export const HUB_CARDS: readonly HubCard[] = [
     key: 'sucursales',
     path: '/seleccionar-sucursal',
     icon: Building2,
-    titleKey: 'homeHub.sucursales.label',
+    labelKey: 'homeHub.sucursales.label',
     descriptionKey: 'homeHub.sucursales.description',
+    permission: null,
     testId: 'home-hub-card-sucursales',
   },
   {
     key: 'catalogos',
     path: '/catalogos',
     icon: FolderTree,
-    titleKey: 'homeHub.catalogos.label',
+    labelKey: 'homeHub.catalogos.label',
     descriptionKey: 'homeHub.catalogos.description',
+    permission: 'config_catalogo',
     testId: 'home-hub-card-catalogos',
   },
   {
     key: 'empresa',
     path: '/empresa',
     icon: Landmark,
-    titleKey: 'homeHub.empresa.label',
+    labelKey: 'homeHub.empresa.label',
     descriptionKey: 'homeHub.empresa.description',
+    permission: null,
     testId: 'home-hub-card-empresa',
   },
   {
     key: 'usuarios',
     path: '/usuarios',
     icon: Users,
-    titleKey: 'homeHub.usuarios.label',
+    labelKey: 'homeHub.usuarios.label',
     descriptionKey: 'homeHub.usuarios.description',
+    permission: null,
     testId: 'home-hub-card-usuarios',
   },
   {
     key: 'arqueos',
     path: '/arqueos',
     icon: Banknote,
-    titleKey: 'homeHub.arqueos.label',
+    labelKey: 'homeHub.arqueos.label',
     descriptionKey: 'homeHub.arqueos.description',
+    permission: null,
     testId: 'home-hub-card-arqueos',
   },
   {
     key: 'alertas',
     path: '/alertas',
     icon: Bell,
-    titleKey: 'homeHub.alertas.label',
+    labelKey: 'homeHub.alertas.label',
     descriptionKey: 'homeHub.alertas.description',
+    permission: null,
     testId: 'home-hub-card-alertas',
   },
   {
     key: 'dian',
     path: '/dian',
     icon: Send,
-    titleKey: 'homeHub.dian.label',
+    labelKey: 'homeHub.dian.label',
     descriptionKey: 'homeHub.dian.description',
+    permission: null,
     testId: 'home-hub-card-dian',
   },
   {
     key: 'auditoria',
     path: '/auditoria/log',
     icon: BookOpen,
-    titleKey: 'homeHub.auditoria.label',
+    labelKey: 'homeHub.auditoria.label',
     descriptionKey: 'homeHub.auditoria.description',
+    permission: 'audit_read',
     testId: 'home-hub-card-auditoria',
   },
 ] as const;
@@ -194,165 +211,112 @@ export default function GlobalHQ(): JSX.Element {
         </p>
       </header>
 
-      {/* 2-column layout (≥lg): main column on the left (KPIs + charts),
-          right rail on the right (8 access rows). Below `lg` the rail
-          stacks on top so the page is still readable on smaller
-          viewports (the 1080p desktop case is the design target). */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_260px]">
-        <main className="flex min-w-0 flex-col gap-6">
-          {/* 6 cross-branch KPIs. The BranchSelector is intentionally
-              absent on this surface — `/` lives outside
-              `RequireSucursal`, and the whole point of these cards is
-              the aggregate across every permitted branch. */}
-          <section
-            className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
-            aria-label="métricas ejecutivas multi-sucursal"
-            data-testid="global-hq-kpi-grid"
-          >
-            <KpiCard
-              label={t('dashboard.ocupacionAgregada', 'Ocupación agregada')}
-              loading={resumen.ocupacion.loading}
-              error={resumen.ocupacion.error}
-              render={() => (
-                <p className="text-2xl font-semibold tabular-nums">
-                  {resumen.ocupacion.value?.porcentaje === null ||
-                  resumen.ocupacion.value?.porcentaje === undefined
-                    ? '—'
-                    : `${resumen.ocupacion.value.porcentaje.toFixed(0)}%`}
-                  <span className="ml-2 text-sm font-normal text-muted-foreground">
-                    {resumen.ocupacion.value?.ocupados ?? 0}/{resumen.ocupacion.value?.capacidad ?? 0}
-                  </span>
-                </p>
-              )}
-            />
-            <KpiCard
-              label={t('dashboard.suscripcionesActivas', 'Suscripciones activas')}
-              value={resumen.suscripciones.value}
-              loading={resumen.suscripciones.loading}
-              error={resumen.suscripciones.error}
-            />
-            <KpiCard
-              label={t('dashboard.mediosPagoDia', 'Medios de pago (hoy)')}
-              loading={resumen.mediosPago.loading}
-              error={resumen.mediosPago.error}
-              render={() => (
-                <p className="text-2xl font-semibold tabular-nums">
-                  ${mediosPagoTotal.toLocaleString('es-CO')}
-                  <span className="ml-2 text-sm font-normal text-muted-foreground">
-                    {(resumen.mediosPago.value ?? []).length} medios
-                  </span>
-                </p>
-              )}
-            />
-
-            <KpiCard
-              label={t('dashboard.topSucursal', 'Top sucursal (30 días)')}
-              loading={resumen.topSucursales.loading}
-              error={resumen.topSucursales.error}
-              render={() => (
-                <p className="text-lg font-semibold">
-                  {topSucursal
-                    ? `${topSucursal.nombre ?? topSucursal.uuid_sucursal.slice(0, 8)} — $${topSucursal.monto_total.toLocaleString('es-CO')}`
-                    : 'Sin datos'}
-                </p>
-              )}
-            />
-            <KpiCard
-              label={t('dashboard.syncAgregado', 'Estado de sincronización')}
-              loading={resumen.sync.loading}
-              error={resumen.sync.error}
-              render={() => (
-                <p className="text-2xl font-semibold tabular-nums">
-                  {resumen.sync.value?.sucursales_ok ?? 0}
-                  <span className="text-muted-foreground">/{permitidas.length}</span>
-                  <span className="ml-2 text-sm font-normal text-muted-foreground">al día</span>
-                </p>
-              )}
-            />
-            <KpiCard
-              label={t('dashboard.alertasSeveridad', 'Alertas abiertas')}
-              loading={resumen.alertas.loading}
-              error={resumen.alertas.error}
-              render={() => (
-                <p className="text-2xl font-semibold tabular-nums">
-                  {totalAlertas}
-                  {alertasCriticas > 0 && (
-                    <span className="ml-2 text-sm font-normal text-destructive">
-                      {alertasCriticas} críticas
-                    </span>
-                  )}
-                </p>
-              )}
-            />
-          </section>
-
-          <section
-            aria-label="gráficas ejecutivas"
-            data-testid="global-hq-charts"
-          >
-            <Suspense
-              fallback={
-                <div
-                  className="grid grid-cols-1 gap-4 lg:grid-cols-3"
-                  data-testid="global-hq-charts-loading"
-                >
-                  <Skeleton className="h-48" />
-                  <Skeleton className="h-48" />
-                  <Skeleton className="h-48" />
-                </div>
-              }
-            >
-              <CrossBranchCharts resumen={resumen.resumen} />
-            </Suspense>
-          </section>
-        </main>
-
-        {/* Right rail. The 8 access links stay permanently visible
-            (sticky on desktop) regardless of scroll. Each row is a
-            single `<a>`: icon + label + chevron, hover/focus state via
-            `hover:bg-accent`. The KPI "Alertas" already surfaces the
-            count prominently, so no badge decoration in the rail
-            (keeps the pattern minimal and avoids nested-anchor issues
-            the old grid had to dance around with `pointer-events`). */}
-        <aside
-          className="lg:sticky lg:top-4 lg:self-start"
-          aria-label="accesos rápidos"
-          data-testid="global-hq-quick-links"
+      {/* Single-column main content. The persistent left nav lives in
+          `<AppSidebar>` (mounted by `App.tsx`); the cross-branch KPIs
+          and charts fill the main column to the right of it. */}
+      <main className="flex min-w-0 flex-col gap-6">
+        <section
+          className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
+          aria-label="métricas ejecutivas multi-sucursal"
+          data-testid="global-hq-kpi-grid"
         >
-          <h2 className="mb-2 px-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            {t('globalHq.accessTitle', 'Accesos rápidos')}
-          </h2>
-          <nav>
-            <ul className="flex flex-col gap-0.5">
-              {HUB_CARDS.map((card) => {
-                const Icon = card.icon;
-                return (
-                  <li key={card.key}>
-                    <Link
-                      to={card.path}
-                      data-testid={card.testId}
-                      aria-label={t(card.titleKey)}
-                      className="group focus-ring flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium text-foreground transition-colors duration-base ease-macos hover:bg-accent hover:text-accent-foreground"
-                    >
-                      <Icon
-                        aria-hidden="true"
-                        className="text-muted-foreground group-hover:text-foreground size-4 shrink-0"
-                      />
-                      <span className="min-w-0 flex-1 truncate">
-                        {t(card.titleKey)}
-                      </span>
-                      <ChevronRight
-                        aria-hidden="true"
-                        className="text-muted-foreground group-hover:text-foreground size-4 shrink-0 transition-transform duration-base ease-macos group-hover:translate-x-0.5"
-                      />
-                    </Link>
-                  </li>
-                );
-              })}
-            </ul>
-          </nav>
-        </aside>
-      </div>
+          <KpiCard
+            label={t('dashboard.ocupacionAgregada', 'Ocupación agregada')}
+            loading={resumen.ocupacion.loading}
+            error={resumen.ocupacion.error}
+            render={() => (
+              <p className="text-2xl font-semibold tabular-nums">
+                {resumen.ocupacion.value?.porcentaje === null ||
+                resumen.ocupacion.value?.porcentaje === undefined
+                  ? '—'
+                  : `${resumen.ocupacion.value.porcentaje.toFixed(0)}%`}
+                <span className="ml-2 text-sm font-normal text-muted-foreground">
+                  {resumen.ocupacion.value?.ocupados ?? 0}/{resumen.ocupacion.value?.capacidad ?? 0}
+                </span>
+              </p>
+            )}
+          />
+          <KpiCard
+            label={t('dashboard.suscripcionesActivas', 'Suscripciones activas')}
+            value={resumen.suscripciones.value}
+            loading={resumen.suscripciones.loading}
+            error={resumen.suscripciones.error}
+          />
+          <KpiCard
+            label={t('dashboard.mediosPagoDia', 'Medios de pago (hoy)')}
+            loading={resumen.mediosPago.loading}
+            error={resumen.mediosPago.error}
+            render={() => (
+              <p className="text-2xl font-semibold tabular-nums">
+                ${mediosPagoTotal.toLocaleString('es-CO')}
+                <span className="ml-2 text-sm font-normal text-muted-foreground">
+                  {(resumen.mediosPago.value ?? []).length} medios
+                </span>
+              </p>
+            )}
+          />
+
+          <KpiCard
+            label={t('dashboard.topSucursal', 'Top sucursal (30 días)')}
+            loading={resumen.topSucursales.loading}
+            error={resumen.topSucursales.error}
+            render={() => (
+              <p className="text-lg font-semibold">
+                {topSucursal
+                  ? `${topSucursal.nombre ?? topSucursal.uuid_sucursal.slice(0, 8)} — $${topSucursal.monto_total.toLocaleString('es-CO')}`
+                  : 'Sin datos'}
+              </p>
+            )}
+          />
+          <KpiCard
+            label={t('dashboard.syncAgregado', 'Estado de sincronización')}
+            loading={resumen.sync.loading}
+            error={resumen.sync.error}
+            render={() => (
+              <p className="text-2xl font-semibold tabular-nums">
+                {resumen.sync.value?.sucursales_ok ?? 0}
+                <span className="text-muted-foreground">/{permitidas.length}</span>
+                <span className="ml-2 text-sm font-normal text-muted-foreground">al día</span>
+              </p>
+            )}
+          />
+          <KpiCard
+            label={t('dashboard.alertasSeveridad', 'Alertas abiertas')}
+            loading={resumen.alertas.loading}
+            error={resumen.alertas.error}
+            render={() => (
+              <p className="text-2xl font-semibold tabular-nums">
+                {totalAlertas}
+                {alertasCriticas > 0 && (
+                  <span className="ml-2 text-sm font-normal text-destructive">
+                    {alertasCriticas} críticas
+                  </span>
+                )}
+              </p>
+            )}
+          />
+        </section>
+
+        <section
+          aria-label="gráficas ejecutivas"
+          data-testid="global-hq-charts"
+        >
+          <Suspense
+            fallback={
+              <div
+                className="grid grid-cols-1 gap-4 lg:grid-cols-3"
+                data-testid="global-hq-charts-loading"
+              >
+                <Skeleton className="h-48" />
+                <Skeleton className="h-48" />
+                <Skeleton className="h-48" />
+              </div>
+            }
+          >
+            <CrossBranchCharts resumen={resumen.resumen} />
+          </Suspense>
+        </section>
+      </main>
     </div>
   );
 }
