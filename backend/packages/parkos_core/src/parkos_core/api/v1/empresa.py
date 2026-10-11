@@ -1008,9 +1008,16 @@ async def create_tarifa_batch_pr_c(
 
     Rejections:
 
-    1. **422 ``tarifa_batch_modalidades_incompletas``** — the items list
-       does not cover the 4 canonical modalidades exactly once each.
-       Modality catalog drift is a refactor signal, not a runtime case.
+    1. **422 ``tarifa_batch_modalidades_invalidas``** — the items list
+       is not 1..4 unique entries from the canonical modality set. The
+       FE submits one item per modalidad the operator filled in; a
+       cell with a single "hora" rate (e.g. a plaza that only charges
+       per hour, not per fraction or full day) is a valid use case and
+       MUST NOT be rejected. ``min_length=1`` in
+       ``TarifasSucursalBatchCreate.items`` enforces "at least one
+       modalidad" at the Pydantic layer; this cross-field check
+       enforces the canonical-set + no-duplicates + min/max count
+       beyond the Pydantic range.
     2. **422 per-item Pydantic** — ``valor <= 0``, ``valor_plena < 0``,
        duplicate ``uuid_tipo_tarifa`` in the same batch (Pydantic
        ``field_validator``). Standard FastAPI 422.
@@ -1021,14 +1028,18 @@ async def create_tarifa_batch_pr_c(
        ``VersioningConflictError`` on flush, mapped to 409. Whole batch
        rolls back.
 
-    The operator experience target: a 4-input form submits exactly one
-    HTTP call. No partial rows, no silent fallback to ``valor='0'``, no
-    raw Zod JSON in the alert.
+    The operator experience target: an N-input form (N from 1 to 4)
+    submits exactly one HTTP call. No partial rows, no silent fallback
+    to ``valor='0'``, no raw Zod JSON in the alert.
     """
     payload_vigente_desde = _to_naive_utc(payload.vigente_desde)
     nueva_desde = payload_vigente_desde or datetime.now(UTC).replace(tzinfo=None)
 
-    # 1. Cross-field: items must cover the 4 canonical modalidades exactly.
+    # 1. Cross-field: items must be 1..4 unique entries from the
+    # canonical modalidad set. Empty payloads (``items_count=0``) and
+    # over-large ones (``items_count>4``) are blocked by the Pydantic
+    # ``min_length=1, max_length=4`` constraint; this check covers the
+    # remaining cases (unknown modalidad, duplicate in same batch).
     seen_modalidades: set[uuid_lib.UUID] = set()
     duplicates: list[uuid_lib.UUID] = []
     for item in payload.items:
@@ -1036,14 +1047,13 @@ async def create_tarifa_batch_pr_c(
             duplicates.append(item.uuid_tipo_tarifa)
         seen_modalidades.add(item.uuid_tipo_tarifa)
     if (
-        seen_modalidades != _TARIFA_MODALIDADES_CANONICAL
-        or len(payload.items) != len(_TARIFA_MODALIDADES_CANONICAL)
+        not seen_modalidades.issubset(_TARIFA_MODALIDADES_CANONICAL)
         or duplicates
     ):
         raise HTTPException(
             status_code=422,
             detail={
-                "error": "tarifa_batch_modalidades_incompletas",
+                "error": "tarifa_batch_modalidades_invalidas",
                 "expected": sorted(str(u) for u in _TARIFA_MODALIDADES_CANONICAL),
                 "got": sorted(str(u) for u in seen_modalidades),
                 "duplicates": sorted(str(u) for u in duplicates),

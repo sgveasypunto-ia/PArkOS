@@ -335,12 +335,26 @@ async def test_batch_create_rejects_zero_valor_with_422(
 
 
 @pytest.mark.parametrize("app", ["admin"], indirect=True)
-async def test_batch_create_rejects_wrong_modality_count(
+async def test_batch_create_rejects_unknown_modalidad_and_duplicate(
     client: AsyncClient, pg_engine, alembic_upgrade, mint_admin_jwt
 ) -> None:
-    """The 4 canonical modalidades must appear exactly once each. A
-    batch with 3 items (missing nocturna) or 5 items (duplicated
-    hora) is rejected with 422 ``tarifa_batch_modalidades_incompletas``."""
+    """The batch must contain 1..4 unique entries from the canonical
+    modalidad set. Two distinct rejection cases are pinned here:
+
+    1. **Unknown modalidad UUID** (not in the canonical set) — the
+       handler's cross-field check fires with
+       ``tarifa_batch_modalidades_invalidas`` (the new error code,
+       renamed from ``_incompletas`` after PR-tarifas-N-modalidades
+       relaxed the count from "exactly 4" to "1-4 from the set").
+
+    2. **Duplicate modalidad in same batch** (e.g. two items both
+       carrying ``hora``) — same error code, ``duplicates`` lists the
+       repeated UUID.
+
+    Note: the 0-item (min_length=1) and 5-item (max_length=4) cases
+    are blocked at the Pydantic layer; they have their own tests
+    below.
+    """
     branch_uuid = uuid_lib.uuid4()
     tipo_vehiculo_uuid = uuid_lib.uuid4()
     await _setup_branch_tipos(
@@ -351,27 +365,28 @@ async def test_batch_create_rejects_wrong_modality_count(
     await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_tarifas")
     await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
     token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
+    headers = _auth_headers(token=token, branch_uuid=branch_uuid)
 
-    # 3 items, missing nocturna.
-    three_items = _build_batch_items()[:3]
+    # Case 1: unknown modalidad UUID (not in the canonical 4).
+    unknown_uuid = uuid_lib.uuid4()
+    unknown_items = [{"uuid_tipo_tarifa": str(unknown_uuid), "valor": "1500"}]
     resp = await client.post(
         "/api/v1/empresa/tarifas-sucursal/batch",
         json={
             "uuid_sucursal": str(branch_uuid),
             "uuid_tipo_vehiculo": str(tipo_vehiculo_uuid),
-            "items": three_items,
+            "items": unknown_items,
         },
-        headers=_auth_headers(token=token, branch_uuid=branch_uuid),
+        headers=headers,
     )
     assert resp.status_code == 422, f"got {resp.status_code}: {resp.text}"
     detail = resp.json()["detail"]
-    assert detail["error"] == "tarifa_batch_modalidades_incompletas"
-    assert detail["items_count"] == 3
+    assert detail["error"] == "tarifa_batch_modalidades_invalidas"
+    assert detail["items_count"] == 1
+    assert str(unknown_uuid) in detail["got"]
+    assert str(unknown_uuid) not in detail["expected"]
 
-    # 5 items, hora duplicated. Pydantic's min_length=4 cap won't catch
-    # this -- the handler does. But ``max_length=4`` will reject the 5
-    # before we even reach the handler's cross-field check, so we
-    # exercise the duplicate path with 4 items where one is duplicated.
+    # Case 2: duplicate modalidad in same batch.
     duplicate_items = _build_batch_items()
     duplicate_items[1]["uuid_tipo_tarifa"] = str(MODALIDAD_HORA)  # fraccion -> hora dup
     resp = await client.post(
@@ -381,12 +396,190 @@ async def test_batch_create_rejects_wrong_modality_count(
             "uuid_tipo_vehiculo": str(tipo_vehiculo_uuid),
             "items": duplicate_items,
         },
-        headers=_auth_headers(token=token, branch_uuid=branch_uuid),
+        headers=headers,
     )
     assert resp.status_code == 422, f"got {resp.status_code}: {resp.text}"
     detail = resp.json()["detail"]
-    assert detail["error"] == "tarifa_batch_modalidades_incompletas"
+    assert detail["error"] == "tarifa_batch_modalidades_invalidas"
     assert str(MODALIDAD_HORA) in detail["duplicates"]
+
+
+@pytest.mark.parametrize("app", ["admin"], indirect=True)
+async def test_batch_create_ok_with_1_modalidad_creates_1_row(
+    client: AsyncClient, pg_engine, alembic_upgrade, mint_admin_jwt
+) -> None:
+    """HU-tarifas-N-modalidades (operator feedback 2026-10-11): a cell
+    with a single ``hora`` rate is a valid use case (a plaza that
+    only charges per hour, no per-fraction / per-day / per-night).
+    The handler must accept 1 item and create exactly 1 row.
+    """
+    from parkos_core.models.V.tarifas_sucursal import TarifasSucursal
+
+    branch_uuid = uuid_lib.uuid4()
+    tipo_vehiculo_uuid = uuid_lib.uuid4()
+    await _setup_branch_tipos(
+        pg_engine, branch_uuid=branch_uuid, tipo_vehiculo_uuid=tipo_vehiculo_uuid
+    )
+
+    actor_uuid = uuid_lib.uuid4()
+    await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_tarifas")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
+    token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
+    headers = _auth_headers(token=token, branch_uuid=branch_uuid)
+
+    one_item = [{"uuid_tipo_tarifa": str(MODALIDAD_HORA), "valor": "2000"}]
+    resp = await client.post(
+        "/api/v1/empresa/tarifas-sucursal/batch",
+        json={
+            "uuid_sucursal": str(branch_uuid),
+            "uuid_tipo_vehiculo": str(tipo_vehiculo_uuid),
+            "items": one_item,
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 201, f"got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert len(body["items"]) == 1
+    assert body["items"][0]["uuid_tipo_tarifa"] == str(MODALIDAD_HORA)
+    assert body["items"][0]["valor"] == "2000.0000"
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        rows = (
+            await session.execute(
+                select(TarifasSucursal).where(
+                    TarifasSucursal.uuid_sucursal == branch_uuid,
+                    TarifasSucursal.vigente_hasta.is_(None),
+                )
+            )
+        ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].uuid_tipo_tarifa == MODALIDAD_HORA
+
+
+@pytest.mark.parametrize("app", ["admin"], indirect=True)
+async def test_batch_create_ok_with_2_modalidades_creates_2_rows(
+    client: AsyncClient, pg_engine, alembic_upgrade, mint_admin_jwt
+) -> None:
+    """HU-tarifas-N-modalidades: a cell with 2 rates (e.g. hora +
+    fraccion, no plena / nocturna) is valid. 2 items -> 2 rows, atomic.
+    """
+    from parkos_core.models.V.tarifas_sucursal import TarifasSucursal
+
+    branch_uuid = uuid_lib.uuid4()
+    tipo_vehiculo_uuid = uuid_lib.uuid4()
+    await _setup_branch_tipos(
+        pg_engine, branch_uuid=branch_uuid, tipo_vehiculo_uuid=tipo_vehiculo_uuid
+    )
+
+    actor_uuid = uuid_lib.uuid4()
+    await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_tarifas")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
+    token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
+    headers = _auth_headers(token=token, branch_uuid=branch_uuid)
+
+    two_items = [
+        {"uuid_tipo_tarifa": str(MODALIDAD_HORA), "valor": "1500"},
+        {"uuid_tipo_tarifa": str(MODALIDAD_FRACCION), "valor": "800"},
+    ]
+    resp = await client.post(
+        "/api/v1/empresa/tarifas-sucursal/batch",
+        json={
+            "uuid_sucursal": str(branch_uuid),
+            "uuid_tipo_vehiculo": str(tipo_vehiculo_uuid),
+            "items": two_items,
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 201, f"got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert len(body["items"]) == 2
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as session:
+        rows = (
+            await session.execute(
+                select(TarifasSucursal).where(
+                    TarifasSucursal.uuid_sucursal == branch_uuid,
+                    TarifasSucursal.vigente_hasta.is_(None),
+                )
+            )
+        ).scalars().all()
+    assert len(rows) == 2
+    modalidades = {r.uuid_tipo_tarifa for r in rows}
+    assert modalidades == {MODALIDAD_HORA, MODALIDAD_FRACCION}
+
+
+@pytest.mark.parametrize("app", ["admin"], indirect=True)
+async def test_batch_create_rejects_zero_items_with_422(
+    client: AsyncClient, pg_engine, alembic_upgrade, mint_admin_jwt
+) -> None:
+    """An empty ``items`` list is rejected by the Pydantic
+    ``min_length=1`` constraint on the batch schema. This is the
+    defense-in-depth floor: even if the FE's al-menos-1 refine is
+    bypassed, the backend never creates a no-op batch.
+    """
+    branch_uuid = uuid_lib.uuid4()
+    tipo_vehiculo_uuid = uuid_lib.uuid4()
+    await _setup_branch_tipos(
+        pg_engine, branch_uuid=branch_uuid, tipo_vehiculo_uuid=tipo_vehiculo_uuid
+    )
+
+    actor_uuid = uuid_lib.uuid4()
+    await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_tarifas")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
+    token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
+    headers = _auth_headers(token=token, branch_uuid=branch_uuid)
+
+    resp = await client.post(
+        "/api/v1/empresa/tarifas-sucursal/batch",
+        json={
+            "uuid_sucursal": str(branch_uuid),
+            "uuid_tipo_vehiculo": str(tipo_vehiculo_uuid),
+            "items": [],
+        },
+        headers=headers,
+    )
+    # Standard FastAPI 422 for Pydantic constraint violations.
+    assert resp.status_code == 422, f"got {resp.status_code}: {resp.text}"
+
+
+@pytest.mark.parametrize("app", ["admin"], indirect=True)
+async def test_batch_create_rejects_5_items_with_422(
+    client: AsyncClient, pg_engine, alembic_upgrade, mint_admin_jwt
+) -> None:
+    """A batch with more than 4 items is rejected by the Pydantic
+    ``max_length=4`` constraint. Even though the canonical set has
+    exactly 4 modalidades, a duplicate would push the count to 5 --
+    the Pydantic layer is the cheapest place to reject.
+    """
+    branch_uuid = uuid_lib.uuid4()
+    tipo_vehiculo_uuid = uuid_lib.uuid4()
+    await _setup_branch_tipos(
+        pg_engine, branch_uuid=branch_uuid, tipo_vehiculo_uuid=tipo_vehiculo_uuid
+    )
+
+    actor_uuid = uuid_lib.uuid4()
+    await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_tarifas")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
+    token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
+    headers = _auth_headers(token=token, branch_uuid=branch_uuid)
+
+    # 5 items: 4 canonical + 1 with an unknown UUID. The unknown
+    # UUID won't be reached because ``max_length=4`` fires first.
+    five_items = _build_batch_items() + [
+        {"uuid_tipo_tarifa": str(uuid_lib.uuid4()), "valor": "1500"},
+    ]
+    resp = await client.post(
+        "/api/v1/empresa/tarifas-sucursal/batch",
+        json={
+            "uuid_sucursal": str(branch_uuid),
+            "uuid_tipo_vehiculo": str(tipo_vehiculo_uuid),
+            "items": five_items,
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 422, f"got {resp.status_code}: {resp.text}"
 
 
 # ---------------------------------------------------------------------------
