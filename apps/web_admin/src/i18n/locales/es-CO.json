@@ -401,10 +401,12 @@
       "tipoHelp": "El seed canónico usa lowercase (carro, moto, bicicleta, patineta). 1..64 caracteres."
     },
     "form": {
-      "editingNotice": "Estás editando un tipo existente. El cambio publica una nueva versión; la anterior se cierra automáticamente.",
+      "editingNotice": "Estás editando una versión existente. El cambio publica una nueva versión; la anterior se cierra automáticamente.",
       "submitting": "Guardando…",
       "create": "Crear",
-      "update": "Actualizar"
+      "update": "Actualizar",
+      "previewTitle": "Resultado",
+      "previewEmpty": "Ingresá al menos un valor para ver el resultado."
     },
     "action": {
       "edit": "Editar"

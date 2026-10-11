@@ -39,11 +39,15 @@ export interface TarifaAgrupada {
 
 /** UUIDs for the 4 canonical modalidades (HARDCODED mirror of
  * ``prod.tipo_tarifa`` from the backend — see ``Tarifas.tsx::onSubmit``
- * for the same constants). Used to lookup the per-modalidad row. */
-const TIPO_TARIFA_HORA = '12e3886a-7059-47ee-bdb2-aa5fb1272bea';
-const TIPO_TARIFA_FRACCION = 'c41b6602-f7b2-437d-bcfc-0462cd385eda';
-const TIPO_TARIFA_PLENA = 'd83ebff8-9546-43b3-91b1-bedffa57717f';
-const TIPO_TARIFA_NOCTURNA = '9f8ba4a9-6fd9-4da7-8ddb-97ce323a8600';
+ * for the same constants). Used to lookup the per-modalidad row.
+ *
+ * Exported so the FE can build per-modalidad UI metadata without
+ * duplicating the UUIDs (HU-tarifas-popup-redesign,
+ * ``modalidadMeta.ts``). */
+export const TIPO_TARIFA_HORA = '12e3886a-7059-47ee-bdb2-aa5fb1272bea';
+export const TIPO_TARIFA_FRACCION = 'c41b6602-f7b2-437d-bcfc-0462cd385eda';
+export const TIPO_TARIFA_PLENA = 'd83ebff8-9546-43b3-91b1-bedffa57717f';
+export const TIPO_TARIFA_NOCTURNA = '9f8ba4a9-6fd9-4da7-8ddb-97ce323a8600';
 
 /**
  * Group the 4 ``tarifas_sucursal`` rows into one ``TarifaAgrupada``
