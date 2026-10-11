@@ -17,36 +17,58 @@
  * ``cantidad`` is an integer column; we validate as ``z.number().int()``
  * with a server-side bound of 0 (the canonical "disable this tipo"
  * option in lieu of a DELETE).
+ *
+ * Datetime wire contract: post-Commit-3 the backend emits ISO 8601
+ * with the ``Z`` suffix (or any ``±HH:MM`` offset for already-aware
+ * columns). The read schemas use :func:`utcDateTime` to defensively
+ * accept the legacy naive shape (``"2026-10-09T22:24:00"``) during
+ * the rollout window and normalize it to ``...Z`` so downstream code
+ * (the form, the boundary check, ``isAtOrBefore``) sees a single
+ * shape. The transformation is invisible to the operator — the
+ * form's ``parseApiUtc`` would do the same thing in JavaScript.
  */
 import { z } from 'zod';
 
 const nullableUuid = z.string().uuid().nullable();
+
+/**
+ * Accepts a Zod datetime string and normalizes the legacy naive form
+ * (no offset) to the canonical ``Z`` suffix. Post-Commit-3 every
+ * datetime the backend emits already has a suffix, so the normalize
+ * step is a no-op — but during the rollout window, when the front
+ * is deployed before the backend, we still parse the legacy payload
+ * correctly instead of failing the read.
+ */
+const utcDateTime = z
+  .string()
+  .transform((value) =>
+    /[zZ]|[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value}Z`,
+  )
+  .pipe(z.string().datetime({ offset: true }));
 
 export const cupoCreateSchema = z.object({
   uuid_sucursal: nullableUuid,
   uuid_tipo_vehiculo: nullableUuid,
   cantidad: z
     .union([z.number().int().min(0, 'La cantidad debe ser >= 0'), z.null()]),
-  vigente_desde: z
-    .string()
-    .datetime({ offset: true }),
+  vigente_desde: utcDateTime,
 });
 
 export type CupoCreateInput = z.infer<typeof cupoCreateSchema>;
 
 export const cupoUpdateSchema = cupoCreateSchema;
 
-export type CupoUpdateInput = z.infer<typeof cupoUpdateSchema>;
+export type CupoUpdateInput = z.infer<typeof cupoCreateSchema>;
 
 export const cupoReadSchema = z.object({
   uuid: z.string().uuid(),
   uuid_sucursal: z.string().uuid().nullable(),
   uuid_tipo_vehiculo: z.string().uuid().nullable(),
   cantidad: z.number().int().nullable(),
-  vigente_desde: z.string(),
-  vigente_hasta: z.string().nullable(),
+  vigente_desde: utcDateTime,
+  vigente_hasta: utcDateTime.nullable(),
   estado: z.string(),
-  created_at: z.string(),
+  created_at: utcDateTime,
   created_by: z.string().uuid().nullable(),
   sync_status: z.string().nullable(),
 });

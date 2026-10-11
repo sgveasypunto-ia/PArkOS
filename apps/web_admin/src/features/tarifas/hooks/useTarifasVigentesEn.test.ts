@@ -34,10 +34,10 @@ const SAMPLE = {
   uuid_tipo_tarifa: null,
   valor: '1500.0000',
   valor_plena: '2000.0000',
-  vigente_desde: '2026-09-01T00:00:00',
+  vigente_desde: '2026-09-01T00:00:00Z',
   vigente_hasta: null,
   estado: 'activo',
-  created_at: '2026-09-01T00:00:00',
+  created_at: '2026-09-01T00:00:00Z',
   created_by: null,
   sync_status: 'sincronizado',
 };

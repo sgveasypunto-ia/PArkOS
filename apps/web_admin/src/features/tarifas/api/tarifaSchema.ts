@@ -19,6 +19,15 @@ import { z } from 'zod';
 
 const nullableUuid = z.string().uuid().nullable();
 
+/** Same defensive normalize as the cupos schema — accept naive or
+ *  tz-aware, output tz-aware (``Z`` appended if needed). */
+const utcDateTime = z
+  .string()
+  .transform((value) =>
+    /[zZ]|[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value}Z`,
+  )
+  .pipe(z.string().datetime({ offset: true }));
+
 const decimalString = z
   .union([z.string(), z.number()])
   .transform((v) => (typeof v === 'number' ? v.toString() : v))
@@ -60,9 +69,7 @@ export const tarifaCreateSchema = z.object({
     .refine((v) => v === null || Number(v) > 0, {
       message: 'El valor nocturna debe ser mayor a 0',
     }),
-  vigente_desde: z
-    .string()
-    .datetime({ offset: true }),
+  vigente_desde: utcDateTime,
 });
 
 export type TarifaCreateInput = z.infer<typeof tarifaCreateSchema>;
@@ -88,9 +95,7 @@ export const tarifaBackendCreateSchema = z.object({
     .refine((v) => v === null || Number(v) >= 0, {
       message: 'El valor plena debe ser >= 0',
     }),
-  vigente_desde: z
-    .string()
-    .datetime({ offset: true }),
+  vigente_desde: utcDateTime,
 });
 
 export type TarifaBackendCreateInput = z.infer<typeof tarifaBackendCreateSchema>;
@@ -106,10 +111,10 @@ export const tarifaReadSchema = z.object({
   uuid_tipo_tarifa: z.string().uuid().nullable(),
   valor: z.string().nullable(),
   valor_plena: z.string().nullable(),
-  vigente_desde: z.string(),
-  vigente_hasta: z.string().nullable(),
+  vigente_desde: utcDateTime,
+  vigente_hasta: utcDateTime.nullable(),
   estado: z.string(),
-  created_at: z.string(),
+  created_at: utcDateTime,
   created_by: z.string().uuid().nullable(),
   sync_status: z.string().nullable(),
 });
@@ -132,8 +137,8 @@ export const tarifaOverlapErrorSchema = z.object({
   detail: z.object({
     error: z.literal('tarifa_overlap'),
     conflicting_uuid: z.string().uuid(),
-    conflicting_vigente_desde: z.string().nullable(),
-    conflicting_vigente_hasta: z.string().nullable(),
+    conflicting_vigente_desde: utcDateTime.nullable(),
+    conflicting_vigente_hasta: utcDateTime.nullable(),
   }),
 });
 
