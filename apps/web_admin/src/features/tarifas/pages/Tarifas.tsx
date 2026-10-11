@@ -40,9 +40,12 @@ import { useSucursal } from '@/lib/sucursal-context';
 
 import {
   createTarifa,
+  createTarifaBatch,
   updateTarifa,
+  TarifaConflictError,
   TarifaOverlapError,
   TarifaSucursalInmutableError,
+  TarifaValidationError,
   type Tarifa,
   type TarifaCreateInput,
 } from '../api/tarifasApi';
@@ -56,9 +59,48 @@ import { useTarifasList } from '../hooks/useTarifasList';
 import { formatTarifaValor } from '../lib/formatTarifaValor';
 import { TarifaFormHarness } from '../components/TarifaForm';
 
-type ErrorState = { kind: 'overlap' | 'inmutable' | 'network'; message: string } | null;
+type ErrorState =
+  | { kind: 'overlap'; message: string }
+  | { kind: 'inmutable'; message: string }
+  | { kind: 'validation'; message: string; fieldErrors: ReadonlyArray<{ path: string; message: string }> }
+  | { kind: 'network'; message: string }
+  | null;
 
 function mapError(err: unknown): ErrorState {
+  // TarifaValidationError -- the local Zod schema rejected the payload
+  // BEFORE the HTTP call. Surface a translated message and expose the
+  // structured ``issues`` array so the form can mark individual fields
+  // (currently the alert shows the message; per-field RHF ``setError``
+  // wiring is the natural follow-up if the modal layout demands it).
+  if (err instanceof TarifaValidationError) {
+    const fieldList = err.issues
+      .map((i) => `${i.path}: ${i.message}`)
+      .join(' / ');
+    return {
+      kind: 'validation',
+      message: `Revisá los campos del formulario (${fieldList}).`,
+      fieldErrors: err.issues,
+    };
+  }
+  // TarifaConflictError -- 409 from the backend (DB-level race that
+  // slipped past ``assert_no_overlap``). Distinguished from the
+  // pre-check overlap via the ``constraint`` field. We keep the
+  // ``overlap`` slot for compatibility with the existing alert UI.
+  if (err instanceof TarifaConflictError) {
+    return {
+      kind: 'overlap',
+      message: err.constraint
+        ? `Conflicto con una tarifa existente (constraint: ${err.constraint}). Elegí otro instante o actualizá la existente.`
+        : 'Conflicto con una tarifa existente. Elegí otro instante o actualizá la existente.',
+    };
+  }
+  // TarifaOverlapError -- the typed error class kept for the FE
+  // pre-flight error (the 409 path the FE used to map). The PR1
+  // backend now uses the same shape (tarifa_overlap) for both the
+  // pre-check and the DB-race path; we map both into the same
+  // ``TarifaConflictError`` shape (above) at the API layer. The
+  // legacy class is kept here so older callers (or third-party
+  // consumers of this file) still parse.
   if (err instanceof TarifaOverlapError) {
     return {
       kind: 'overlap',
@@ -470,26 +512,44 @@ export default function Tarifas(): JSX.Element {
           });
         }
       } else {
-        // CREATE: 4 POSTs (one per modalidad).
-        const base = {
+        // CREATE: ONE atomic POST /batch. The form's RHF refine
+        // (HU-tarifas-batch) guarantees every ``valor_*`` is a valid
+        // decimal string at submit time -- no more ``?? '0'`` fallback
+        // that used to silently produce a partial cell. The batch
+        // endpoint validates the 4 canonical modalidades and rolls
+        // back atomically on any failure (no partial row, no orphan).
+        //
+        // We map each input to its corresponding modalidad via
+        // ``TIPO_TARIFA_UUIDS`` (the same canonical set the backend
+        // enforces in ``_TARIFA_MODALIDADES_CANONICAL``).
+        const valorPorModalidad: Record<string, string | null> = {
+          [TIPO_TARIFA_UUIDS.hora]: values.valor_hora ?? null,
+          [TIPO_TARIFA_UUIDS.fraccion]: values.valor_fraccion ?? null,
+          [TIPO_TARIFA_UUIDS.plena]: values.valor_plena ?? null,
+          [TIPO_TARIFA_UUIDS.nocturna]: values.valor_nocturna ?? null,
+        };
+        const items: Array<{ uuid_tipo_tarifa: string; valor: string; valor_plena: string | null }> = (
+          Object.keys(valorPorModalidad) as string[]
+        )
+          .map((uuidTipoTarifa) => {
+            const valor = valorPorModalidad[uuidTipoTarifa];
+            if (valor === null) return null;
+            return {
+              uuid_tipo_tarifa: uuidTipoTarifa,
+              valor,
+              valor_plena: uuidTipoTarifa === TIPO_TARIFA_UUIDS.plena ? valor : null,
+            };
+          })
+          .filter(
+            (it): it is { uuid_tipo_tarifa: string; valor: string; valor_plena: string | null } =>
+              it !== null,
+          );
+        await createTarifaBatch({
           uuid_sucursal: selectedSucursal,
           uuid_tipo_vehiculo: values.uuid_tipo_vehiculo,
           vigente_desde: values.vigente_desde,
-        };
-        const items: Array<{ uuid_tipo_tarifa: string; valor: string; valor_plena: string | null }> = [
-          { uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.hora, valor: values.valor_hora ?? '0', valor_plena: null },
-          { uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.fraccion, valor: values.valor_fraccion ?? '0', valor_plena: null },
-          { uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.plena, valor: values.valor_plena ?? '0', valor_plena: null },
-          { uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.nocturna, valor: values.valor_nocturna ?? '0', valor_plena: null },
-        ];
-        for (const it of items) {
-          await createTarifa({
-            ...base,
-            uuid_tipo_tarifa: it.uuid_tipo_tarifa,
-            valor: it.valor,
-            valor_plena: it.valor_plena,
-          });
-        }
+          items,
+        });
       }
       closeModal();
       // ``refresh()`` only invalidates the 'tarifas-list' key; the

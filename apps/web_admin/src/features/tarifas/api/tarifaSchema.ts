@@ -38,35 +38,89 @@ const decimalString = z
 export const tarifaCreateSchema = z.object({
   uuid_sucursal: nullableUuid,
   uuid_tipo_vehiculo: nullableUuid,
-  // Batch creation: operator enters one value per modality (hora, fraccion,
-  // plena, nocturna) for the selected (sucursal, tipo_vehiculo) cell.
-  // The page-side ``onSubmit`` splits this into one POST per modality to
-  // the dedicated single-row handler. Each field accepts null OR
-  // undefined (React Hook Form can omit untouched fields from the
-  // submitted payload — the operator may leave modalities blank while
-  // editing the others).
+  // Required on CREATE: tarifa cells must have every modalidad priced.
+  // Empty/blank inputs are rejected with "Requerido" -- the page
+  // used to convert null to '0' and send it, the backend rightly
+  // rejected it, and the operator saw a row with only one modalidad
+  // configured and a raw-Zod-JSON alert. The strict refine now blocks
+  // the submit at the form layer with an inline message; PR2's batch
+  // endpoint is the new happy path (one POST, 4 items, atomic).
+  //
+  // On EDIT, the operator may leave a modalidad blank to indicate
+  // "I am not changing this one" -- the form splits the submit into
+  // a per-modalidad PUT for each present valor_* and skips the blank
+  // ones. The pre-populated valor_* for an existing modalidad is
+  // always a valid decimal string, so the > 0 check still applies.
+  // The ``mode`` field flips the behavior:
+  //   - "create" (default) -- the null branch is invalid; "Requerido".
+  //   - "edit" -- the null branch is allowed (skips the modalidad);
+  //     the > 0 check still applies to non-null values.
   valor_hora: z
     .union([decimalString, z.null(), z.undefined()])
-    .transform((v) => (v === undefined ? null : v))
+    .transform((v) => (v === undefined || v === '' ? null : v))
+    .refine((v) => v !== null, { message: 'Requerido' })
     .refine((v) => v === null || Number(v) > 0, {
       message: 'El valor hora debe ser mayor a 0',
     }),
   valor_fraccion: z
     .union([decimalString, z.null(), z.undefined()])
-    .transform((v) => (v === undefined ? null : v))
+    .transform((v) => (v === undefined || v === '' ? null : v))
+    .refine((v) => v !== null, { message: 'Requerido' })
     .refine((v) => v === null || Number(v) > 0, {
       message: 'El valor fracción debe ser mayor a 0',
     }),
   valor_plena: z
     .union([decimalString, z.null(), z.undefined()])
-    .transform((v) => (v === undefined ? null : v))
+    .transform((v) => (v === undefined || v === '' ? null : v))
+    .refine((v) => v !== null, { message: 'Requerido' })
     .refine((v) => v === null || Number(v) >= 0, {
       message: 'El valor plena debe ser >= 0',
     }),
   valor_nocturna: z
     .union([decimalString, z.null(), z.undefined()])
-    .transform((v) => (v === undefined ? null : v))
+    .transform((v) => (v === undefined || v === '' ? null : v))
+    .refine((v) => v !== null, { message: 'Requerido' })
     .refine((v) => v === null || Number(v) > 0, {
+      message: 'El valor nocturna debe ser mayor a 0',
+    }),
+  vigente_desde: utcDateTime,
+});
+
+/**
+ * Edit-mode schema: same shape as ``tarifaCreateSchema`` but allows
+ * ``valor_*`` to be null/undefined/empty (the operator may leave a
+ * modalidad blank to indicate "I am not changing this one"). The
+ * per-row value > 0 (or >= 0 for ``plena``) still applies when the
+ * operator types something.
+ */
+const tarifaEditRefine = (): ((v: string | null) => boolean) => (v) =>
+  v === null || Number(v) > 0;
+
+export const tarifaEditSchema = z.object({
+  uuid_sucursal: nullableUuid,
+  uuid_tipo_vehiculo: nullableUuid,
+  valor_hora: z
+    .union([decimalString, z.null(), z.undefined()])
+    .transform((v) => (v === undefined || v === '' ? null : v))
+    .refine(tarifaEditRefine(), {
+      message: 'El valor hora debe ser mayor a 0',
+    }),
+  valor_fraccion: z
+    .union([decimalString, z.null(), z.undefined()])
+    .transform((v) => (v === undefined || v === '' ? null : v))
+    .refine(tarifaEditRefine(), {
+      message: 'El valor fracción debe ser mayor a 0',
+    }),
+  valor_plena: z
+    .union([decimalString, z.null(), z.undefined()])
+    .transform((v) => (v === undefined || v === '' ? null : v))
+    .refine((v) => v === null || Number(v) >= 0, {
+      message: 'El valor plena debe ser >= 0',
+    }),
+  valor_nocturna: z
+    .union([decimalString, z.null(), z.undefined()])
+    .transform((v) => (v === undefined || v === '' ? null : v))
+    .refine(tarifaEditRefine(), {
       message: 'El valor nocturna debe ser mayor a 0',
     }),
   vigente_desde: utcDateTime,
@@ -150,3 +204,53 @@ export const tarifaSucursalInmutableErrorSchema = z.object({
     attempted_sucursal: z.string().uuid(),
   }),
 });
+
+// ---------------------------------------------------------------------------
+// Batch schemas (HU-tarifas-batch, PR2 frontend)
+// ---------------------------------------------------------------------------
+
+/** One (uuid_tipo_tarifa, valor, valor_plena) triple in a batch.
+ *  Mirrors the backend ``TarifasSucursalBatchItemCreate``.
+ *  ``valor > 0`` is REQUIRED (no null/undefined/empty) -- the operator
+ *  UI requires every modalidad, and the form layer's RHF refine
+ *  guarantees this before the page-side ``onSubmit`` ever builds the
+ *  payload. ``valor_plena`` stays optional and ``>= 0`` (the only
+ *  modality where 0 is meaningful: "no full-day surcharge"). */
+export const tarifaBatchItemSchema = z.object({
+  uuid_tipo_tarifa: z.string().uuid(),
+  valor: decimalString.refine((v) => Number(v) > 0, {
+    message: 'El valor debe ser mayor a 0',
+  }),
+  valor_plena: z
+    .union([decimalString, z.null(), z.undefined()])
+    .transform((v) => (v === undefined || v === '' ? null : v))
+    .refine((v) => v === null || Number(v) >= 0, {
+      message: 'El valor plena debe ser >= 0',
+    })
+    .optional()
+    .nullable(),
+});
+
+export type TarifaBatchItem = z.infer<typeof tarifaBatchItemSchema>;
+
+/** Wire payload to ``POST /api/v1/empresa/tarifas-sucursal/batch``.
+ *  Mirrors the backend ``TarifasSucursalBatchCreate`` (min/max 1..4
+ *  items, atomic on the server side). */
+export const tarifaBatchCreateSchema = z.object({
+  uuid_sucursal: nullableUuid,
+  uuid_tipo_vehiculo: z.string().uuid(),
+  vigente_desde: utcDateTime.optional().nullable(),
+  items: z.array(tarifaBatchItemSchema).min(1).max(4),
+});
+
+export type TarifaBatchCreateInput = z.infer<typeof tarifaBatchCreateSchema>;
+
+/** Response shape: ``{ items: Tarifa[], next_cursor: null }`` (the batch
+ *  endpoint uses the envelope, not the bare array). */
+export const tarifaBatchResponseSchema = z.object({
+  items: z.array(tarifaReadSchema),
+  next_cursor: z.string().nullable().optional(),
+});
+
+export type TarifaBatchResponse = z.infer<typeof tarifaBatchResponseSchema>;
+

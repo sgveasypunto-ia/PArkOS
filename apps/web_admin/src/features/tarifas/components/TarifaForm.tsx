@@ -56,12 +56,12 @@ import { Input } from '@/components/ui/input';
 import {
   datetimeLocalToIso,
   isoToDatetimeLocal,
-  localNowAsDatetimeLocal,
   utcNowPlusMinutesAsIso,
 } from '@/lib/datetimeTz';
 
 import {
   tarifaCreateSchema,
+  tarifaEditSchema,
   type TarifaCreateInput,
 } from '../api/tarifaSchema';
 import type { TarifaAgrupada } from '../api/tarifaAgrupada';
@@ -113,6 +113,14 @@ export function TarifaForm({
   tiposVehiculoEnUsoEnSucursal,
 }: TarifaFormProps) {
   const { t } = useTranslation();
+  // The submit button is disabled while the form is invalid (RHF
+  // schema requires every ``valor_*`` > 0 and ``vigente_desde``
+  // present). The operator's only escape hatch is Cancel -- the
+  // chrome-devtools 2026-10-10 bug shipped a partial cell because
+  // the button accepted an empty form and the page silently
+  // converted nulls to ``'0'``. This is the first line of defense;
+  // the schema refine + ``createTarifaBatch`` is the second.
+  const { isValid } = form.formState;
 
   return (
     <Form {...form}>
@@ -182,6 +190,10 @@ export function TarifaForm({
                           data-testid="tarifa-field-tipo-vehiculo"
                           readOnly
                           aria-readonly="true"
+                          aria-label={t(
+                            'tarifas.field.tipoVehiculoAriaLabel',
+                            'Tipo de vehículo (no editable)',
+                          )}
                           className="block w-full rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
                           value={tipoActualLabel ?? ''}
                         />
@@ -238,6 +250,8 @@ export function TarifaForm({
                     step="0.0001"
                     min="0"
                     placeholder="1500"
+                    required
+                    aria-required="true"
                     {...field}
                     value={field.value ?? ''}
                     onChange={(e) =>
@@ -246,7 +260,7 @@ export function TarifaForm({
                   />
                 </FormControl>
                 <FormDescription>
-                  {t('tarifas.field.valorHoraHelp', 'Debe ser > 0. Cuatro decimales.')}
+                  {t('tarifas.field.valorHoraHelp', 'Debe ser > 0. Cuatro decimales. Obligatorio.')}
                 </FormDescription>
                 <FormMessage />
               </FormItem>
@@ -269,6 +283,8 @@ export function TarifaForm({
                     step="0.0001"
                     min="0"
                     placeholder="800"
+                    required
+                    aria-required="true"
                     {...field}
                     value={field.value ?? ''}
                     onChange={(e) =>
@@ -277,7 +293,7 @@ export function TarifaForm({
                   />
                 </FormControl>
                 <FormDescription>
-                  {t('tarifas.field.valorFraccionHelp', 'Debe ser > 0. Cuatro decimales.')}
+                  {t('tarifas.field.valorFraccionHelp', 'Debe ser > 0. Cuatro decimales. Obligatorio.')}
                 </FormDescription>
                 <FormMessage />
               </FormItem>
@@ -302,6 +318,8 @@ export function TarifaForm({
                     step="0.0001"
                     min="0"
                     placeholder="2000"
+                    required
+                    aria-required="true"
                     {...field}
                     value={field.value ?? ''}
                     onChange={(e) =>
@@ -310,7 +328,7 @@ export function TarifaForm({
                   />
                 </FormControl>
                 <FormDescription>
-                  {t('tarifas.field.valorPlenaHelp', 'Debe ser >= 0. Cuatro decimales.')}
+                  {t('tarifas.field.valorPlenaHelp', 'Debe ser >= 0. Cuatro decimales. Obligatorio.')}
                 </FormDescription>
                 <FormMessage />
               </FormItem>
@@ -333,6 +351,8 @@ export function TarifaForm({
                     step="0.0001"
                     min="0"
                     placeholder="1000"
+                    required
+                    aria-required="true"
                     {...field}
                     value={field.value ?? ''}
                     onChange={(e) =>
@@ -341,7 +361,7 @@ export function TarifaForm({
                   />
                 </FormControl>
                 <FormDescription>
-                  {t('tarifas.field.valorNocturnaHelp', 'Debe ser > 0. Cuatro decimales.')}
+                  {t('tarifas.field.valorNocturnaHelp', 'Debe ser > 0. Cuatro decimales. Obligatorio.')}
                 </FormDescription>
                 <FormMessage />
               </FormItem>
@@ -357,24 +377,26 @@ export function TarifaForm({
               <FormLabel htmlFor="vigente_desde">
                 {t('tarifas.field.vigenteDesde', 'Vigente desde')}
               </FormLabel>
-              <FormControl>
-                <Input
-                  id="vigente_desde"
-                  data-testid="tarifa-field-vigente-desde"
-                  type="datetime-local"
-                  {...field}
-                  value={isoToDatetimeLocal(field.value)}
-                  onChange={(e) => {
-                    // The field is required (see Zod schema
-                    // ``tarifaCreateSchema`` in ``api/tarifaSchema.ts``).
-                    // Clearing is intentionally a no-op — the operator
-                    // must pick a valid datetime.
-                    const raw = e.target.value;
-                    if (raw === '') return;
-                    field.onChange(datetimeLocalToIso(raw));
-                  }}
-                />
-              </FormControl>
+                <FormControl>
+                  <Input
+                    id="vigente_desde"
+                    data-testid="tarifa-field-vigente-desde"
+                    type="datetime-local"
+                    required
+                    aria-required="true"
+                    {...field}
+                    value={isoToDatetimeLocal(field.value)}
+                    onChange={(e) => {
+                      // The field is required (see Zod schema
+                      // ``tarifaCreateSchema`` in ``api/tarifaSchema.ts``).
+                      // Clearing is intentionally a no-op — the operator
+                      // must pick a valid datetime.
+                      const raw = e.target.value;
+                      if (raw === '') return;
+                      field.onChange(datetimeLocalToIso(raw));
+                    }}
+                  />
+                </FormControl>
               <FormDescription>
                 {t(
                   'tarifas.field.vigenteDesdeHelp',
@@ -410,7 +432,7 @@ export function TarifaForm({
           </Button>
           <Button
             type="submit"
-            disabled={isSubmitting}
+            disabled={isSubmitting || !isValid}
             data-testid="tarifa-submit"
           >
             {isSubmitting
@@ -446,13 +468,24 @@ export function TarifaFormHarness(
     initial === null
       ? utcNowPlusMinutesAsIso(0)
       : utcNowPlusMinutesAsIso(1);
-  const { sucursalActivaUuid, ...formProps } = props;
+  const { sucursalActivaUuid, isUpdate = false, ...formProps } = props;
   const tiposVehiculoEnUsoEnSucursal = formProps.tiposVehiculoEnUsoEnSucursal;
   // Pre-fill the 4 valor_* inputs from the grouped row's per-modalidad
   // entries in EDIT. In CREATE they're null and the operator types
   // them. The page splits the single submit into 4 POSTs/PUTs.
+  //
+  // Schema switch: CREATE uses the strict ``tarifaCreateSchema``
+  // (every valor_* required + > 0). EDIT uses the lenient
+  // ``tarifaEditSchema`` (valor_* optional; > 0 still applies when
+  // present). The strictness is the chrome-devtools 2026-10-10 fix --
+  // CREATE can't ship a partial cell -- but EDIT must keep accepting
+  // "operator didn't touch this modalidad" (the form pre-populates
+  // existing values, leaves the rest blank, and submits per-row PUTs
+  // only for the present ones).
   const form = useForm<TarifaCreateInput>({
-    resolver: zodResolver(tarifaCreateSchema) as never,
+    resolver: zodResolver(
+      isUpdate ? tarifaEditSchema : tarifaCreateSchema,
+    ) as never,
     defaultValues: {
       uuid_sucursal: sucursalActivaUuid ?? initial?.uuid_sucursal ?? null,
       uuid_tipo_vehiculo: initial?.uuid_tipo_vehiculo ?? null,
