@@ -12,7 +12,9 @@ Verifies, against the live test DB:
      ``vigente_hasta = NULL``, ``estado = 'activo'``. Both rows coexist
      (history is reconstructable).
   3. UK violation path — re-inserting the same ``(cedula, vigente_desde)``
-     raises ``IntegrityError`` (the UK on ``usuarios_uk01``).
+     raises ``VersioningConflictError`` (the UK on ``usuarios_uk01``,
+     mapped from the underlying ``IntegrityError`` by the helper --
+     HU-tarifas-batch).
 
 The helper writes a co-transactional ``log_transaccional`` row in the
 same TX. That is the ONLY [A] write the helper performs (per design §4.1)
@@ -24,7 +26,6 @@ from __future__ import annotations
 import uuid as uuid_lib
 
 import pytest
-from sqlalchemy.exc import IntegrityError
 
 
 async def test_close_and_insert_new_row(pg_engine, alembic_upgrade) -> None:
@@ -132,7 +133,17 @@ async def test_close_and_insert_closes_old_row(pg_engine, alembic_upgrade) -> No
 
 
 async def test_close_and_insert_uk_violation(pg_engine, alembic_upgrade) -> None:
-    """Inserting two rows with the same ``(cedula, vigente_desde)`` raises IntegrityError.
+    """Inserting two rows with the same ``(cedula, vigente_desde)`` raises
+    ``VersioningConflictError`` (the typed exception introduced by
+    HU-tarifas-batch; previously this raised the raw ``IntegrityError``).
+
+    The mapping ``IntegrityError → VersioningConflictError`` lives in
+    ``repo.versioned.close_and_insert`` (see
+    ``tests/unit/test_close_and_insert_conflict.py`` for the unit-level
+    pinning of the same mapping across drivers). The end-to-end
+    consequence for callers: an HTTP handler catching
+    ``VersioningConflictError`` translates it to 409 with the constraint
+    name attached, instead of letting a bare 500 leak to the FE.
 
     ``close_and_insert`` computes ``vigente_desde`` from ``datetime.now()``
     INTERNALLY on every call — two separate calls a moment apart therefore
@@ -147,7 +158,7 @@ async def test_close_and_insert_uk_violation(pg_engine, alembic_upgrade) -> None
     from datetime import UTC, datetime
 
     from parkos_core.models.V.usuarios import Usuarios
-    from parkos_core.repo.versioned import close_and_insert
+    from parkos_core.repo.versioned import VersioningConflictError, close_and_insert
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     actor = uuid_lib.uuid4()
@@ -192,8 +203,12 @@ async def test_close_and_insert_uk_violation(pg_engine, alembic_upgrade) -> None
             )
             await session.commit()
 
-        with pytest.raises(IntegrityError):
+        with pytest.raises(VersioningConflictError) as exc_info:
             await _attempt_duplicate()
+        # The constraint name is extracted from the asyncpg diag struct
+        # on the live Postgres path (this is an integration test using
+        # testcontainers, so asyncpg is the driver).
+        assert exc_info.value.constraint_name == "usuarios_uk01"
         await session.rollback()
 
 
