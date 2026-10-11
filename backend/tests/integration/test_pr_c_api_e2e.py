@@ -1294,3 +1294,105 @@ async def test_c12_put_cantidad_uk01_simulado_devuelve_409_no_500(
     assert detail["conflicting_uuid"] == cupos_uuid
     assert detail["conflicting_vigente_hasta"] is None
     assert detail["conflicting_vigente_desde"] == semilla.isoformat()
+
+
+# ---------------------------------------------------------------------------
+# C13 — ``GET /cantidad-vehiculos-sucursal`` returns the LATEST active row
+# per cell, even when its ``vigente_desde`` is in the future
+# ("in transition" gap fix).
+#
+# Operator-reported bug 2026-10-11: editar bicicleta creaba una
+# nueva fila con ``vigente_desde = now + 1min``; el list endpoint
+# filtraba por ``vigente_desde <= v_utc`` y excluía la nueva fila
+# durante el gap, mostrando la célula como vacía hasta que NOW
+# alcanzara la nueva ``vigente_desde``. El fix: la lista devuelve
+# la fila con el max(vigente_desde) por célula (entre las de
+# ``estado='activo'``), independientemente de si su ``vigente_desde``
+# ya está vigente. La nueva fila aparece inmediatamente como un
+# "cambio programado" con ``vigente_desde`` en el futuro.
+# ---------------------------------------------------------------------------
+
+
+@_HTTP_PYTESTMARK
+async def test_c13_list_cantidad_muestra_ultima_version_incluso_en_el_gap_in_transition(
+    pg_engine, alembic_upgrade, mint_admin_jwt, client, pg_dsn
+) -> None:
+    """El list endpoint devuelve la última versión activa por célula
+    incluso cuando ``vigente_desde`` está en el futuro (cambio
+    programado). El operador edita, ve la fila actualizada al
+    instante, no después de 1 minuto."""
+    await _truncate_cantidad(pg_dsn)
+    branch_uuid = uuid_lib.uuid4()
+    actor_uuid = uuid_lib.uuid4()
+    await _seed_sucursal(pg_engine, branch_uuid)
+    await _grant_permission(pg_engine, actor_uuid=actor_uuid, perm_code="config_cupos")
+    await grant_admin_scope(pg_engine, actor_uuid, [branch_uuid])
+    token = mint_admin_jwt(actor_uuid=actor_uuid, sucursales_permitidas=[branch_uuid])
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Sucursal-Context": str(branch_uuid),
+    }
+
+    # Seed: create a cupo with ``vigente_desde`` in the past so the
+    # operator can see it in the list right away.
+    seed_vd = _now_naive() - timedelta(minutes=5)
+    seed = await client.post(
+        "/api/v1/empresa/cantidad-vehiculos-sucursal",
+        json=_cantidad_payload(
+            uuid_sucursal=branch_uuid,
+            cantidad=10,
+            vigente_desde=seed_vd,
+        ),
+        headers=headers,
+    )
+    assert seed.status_code == 201, seed.text
+    cupos_uuid = seed.json()["uuid"]
+
+    # Pre-edit: the list shows the seed with cantidad=10.
+    pre = await client.get(
+        "/api/v1/empresa/cantidad-vehiculos-sucursal?limit=50",
+        headers=headers,
+    )
+    assert pre.status_code == 200
+    pre_items = [i for i in pre.json()["items"] if i["uuid"] in (cupos_uuid,)]
+    assert len(pre_items) == 1
+    assert pre_items[0]["cantidad"] == 10
+
+    # Edit: PUT with ``vigente_desde = now + 60s`` (the form's
+    # default pre-fill: ``utcNowPlusMinutesAsIso(1)``). This is the
+    # exact operator-reported scenario.
+    new_vd = _now_naive() + timedelta(seconds=60)
+    put = await client.put(
+        f"/api/v1/empresa/cantidad-vehiculos-sucursal/{cupos_uuid}",
+        json=_cantidad_payload(
+            uuid_sucursal=branch_uuid,
+            cantidad=12,
+            vigente_desde=new_vd,
+        ),
+        headers=headers,
+    )
+    assert put.status_code == 200, put.text
+    new_uuid = put.json()["uuid"]
+    assert new_uuid != cupos_uuid
+
+    # Post-edit: the list MUST still show this cell — the new row
+    # is the latest, even though its ``vigente_desde`` is in the
+    # future. Pre-fix this would return zero items for the cell.
+    post = await client.get(
+        "/api/v1/empresa/cantidad-vehiculos-sucursal?limit=50",
+        headers=headers,
+    )
+    assert post.status_code == 200
+    post_items = [i for i in post.json()["items"] if i["uuid"] in (cupos_uuid, new_uuid)]
+    # Exactly one row for this cell, and it must be the NEW row.
+    assert len(post_items) == 1, (
+        f"expected 1 row per cell, got {len(post_items)}: {post_items}"
+    )
+    assert post_items[0]["uuid"] == new_uuid
+    assert post_items[0]["cantidad"] == 12
+    # The new row's ``vigente_desde`` is in the future (the
+    # "programado" state the operator will see in the UI as a
+    # badge / different color).
+    assert post_items[0]["vigente_desde"] == new_vd.isoformat()
+    assert post_items[0]["vigente_hasta"] is None
+    assert post_items[0]["estado"] == "activo"

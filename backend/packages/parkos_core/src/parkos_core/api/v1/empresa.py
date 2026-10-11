@@ -31,7 +31,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1300,25 +1300,44 @@ async def list_cantidad_vehiculos_sucursal_vigente_en(
         description=(
             "Punto en el tiempo para el predicado de vigencia (HU-F15.1 BR4). "
             "Acepta ISO-8601 con o sin tz (naive = UTC). "
-            "Default: datetime.now(UTC)."
+            "Default: datetime.now(UTC). "
+            "DEPRECATED en la respuesta actual — la lista ahora devuelve la "
+            "última versión por célula (la del max(vigente_desde) con "
+            "estado=activo), independientemente de si esa versión ya está "
+            "vigente o es un cambio programado al futuro. El parámetro se "
+            "conserva por compatibilidad con clientes existentes pero ya "
+            "no filtra; mantenlo en el query string si tu integración lo "
+            "envía para no forzar un cambio de contrato."
         ),
     ),
     session: AsyncSession = Depends(get_session),
     _ctx: TenantContext = Depends(requires_sucursal),
     _claims: None = Depends(_cantidad_pr_c_issuer_dep),
 ) -> CantidadVehiculosSucursalReadList:
-    """HU-F15.1 BR4 — bi-temporal ``GET /empresa/cantidad-vehiculos-sucursal``.
+    """Listar cupos: la última versión activa por célula.
 
-    Same response shape as the factory's list endpoint. ``requires_sucursal``
-    (not the lenient ``get_tenant_ctx``) is deliberate: ``cantidad_vehiculos_
-    sucursal`` carries ``uuid_sucursal`` and is auto-filtered by the ambient
-    tenant listener (``db.tenancy.do_orm_execute``) only when a branch
-    context was actually resolved -- an absent header would otherwise return
-    every branch's rows combined. Mirrors
-    ``list_tarifas_sucursal_vigente_en`` exactly.
+    Devuelve **una fila por (sucursal, uuid_tipo_vehiculo)**: la fila con
+    el mayor ``vigente_desde`` cuyo ``estado='activo'``. Eso incluye
+    tanto la versión vigente al instante de la consulta como un cambio
+    programado al futuro (close+insert con ``vigente_desde`` por delante
+    de NOW) — el operador siempre ve la cadena más reciente de su
+    edición, en vez de un gap de 1 minuto donde la célula queda
+    invisible mientras la versión nueva espera su ``vigente_desde``.
+
+    Antes esta handler filtraba por
+    ``bitemporal_vigente_predicate(model, v_utc)``
+    (``vigente_desde <= v_utc AND (vigente_hasta IS NULL OR vigente_hasta > v_utc) AND estado='activo'``),
+    que excluía la versión recién-editada durante el intervalo de
+    transición. Reportado por el operador el 2026-10-11 en
+    ``/cupos``: editar bicicleta, esperar 1 minuto para que reaparezca.
+    El predicado original sigue siendo correcto para
+    ``GET /by-key/{uuid}/history`` (que necesita el gap visible) y para
+    reportes; aquí lo cambiamos al equivalente "latest per partition"
+    via una subquery ``max(vigente_desde)``.
     """
-    v = vigente_en if vigente_en is not None else datetime.now(UTC)
-    v_utc = _to_naive_utc(v) or datetime.now(UTC).replace(tzinfo=None)
+    # ``vigente_en`` se conserva en la firma para no romper clientes que
+    # lo mandan; el nuevo query ya no lo usa.
+    del vigente_en
 
     from ...repo.pagination import Cursor as _Cursor
     from ...repo.pagination import InvalidCursorError as _InvalidCursorError
@@ -1333,11 +1352,40 @@ async def list_cantidad_vehiculos_sucursal_vigente_en(
             detail={"error": "invalid_cursor", "detail": str(e)},
         ) from e
 
-    order_col, cursor_field = _order_key(CantidadVehiculosSucursal)
-    stmt = select(CantidadVehiculosSucursal).where(
-        bitemporal_vigente_predicate(CantidadVehiculosSucursal, v_utc)
+    # Subquery: por (sucursal, tipo_vehiculo), el max(vigente_desde) entre
+    # las filas ``estado='activo'``. El ``is_not_distinct_from`` en el
+    # JOIN preserva la semántica NULL-aware del ``uuid_tipo_vehiculo``
+    # (la célula "Cualquiera" tiene el FK en NULL y debe matchear la
+    # contraparte NULL en la subquery, no quedar huérfana).
+    max_vd_subq = (
+        select(
+            CantidadVehiculosSucursal.uuid_sucursal.label("suc"),
+            CantidadVehiculosSucursal.uuid_tipo_vehiculo.label("tipo"),
+            func.max(CantidadVehiculosSucursal.vigente_desde).label("max_vd"),
+        )
+        .where(CantidadVehiculosSucursal.estado == "activo")
+        .group_by(
+            CantidadVehiculosSucursal.uuid_sucursal,
+            CantidadVehiculosSucursal.uuid_tipo_vehiculo,
+        )
+        .subquery()
     )
-    stmt = stmt.order_by(order_col, CantidadVehiculosSucursal.uuid.asc())
+
+    order_col, cursor_field = _order_key(CantidadVehiculosSucursal)
+    stmt = (
+        select(CantidadVehiculosSucursal)
+        .join(
+            max_vd_subq,
+            and_(
+                CantidadVehiculosSucursal.uuid_sucursal == max_vd_subq.c.suc,
+                CantidadVehiculosSucursal.uuid_tipo_vehiculo.is_not_distinct_from(
+                    max_vd_subq.c.tipo
+                ),
+                CantidadVehiculosSucursal.vigente_desde == max_vd_subq.c.max_vd,
+            ),
+        )
+        .order_by(order_col, CantidadVehiculosSucursal.uuid.asc())
+    )
     if decoded is not None:
         cursor_ts = _parse_cursor_timestamp(getattr(decoded, cursor_field))
         stmt = stmt.where(

@@ -677,4 +677,62 @@ describe('Cupos page', () => {
       editingRow,
     ]);
   });
+
+  it('CP17: a row with vigente_desde in the future (close+insert boundary) shows a "Programado" badge', async () => {
+    // Operator-reported bug 2026-10-11: edit a cupo, the new row
+    // has ``vigente_desde = now + 1min``, the list filter excluded
+    // it during the "in transition" gap. After the list query fix
+    // (latest per cell), the row is always shown; the badge
+    // surfaces the scheduled state so the operator knows the
+    // change is not vigente yet.
+    //
+    // We anchor the row's ``vigente_desde`` 1 hour in the future of
+    // ``new Date()`` at test time so the assertion is robust against
+    // clock drift between the CI host and the test run. ``useFakeTimers``
+    // was tried first and broke the SWR revalidation in unrelated
+    // tests; the relative-time approach is the simpler fix.
+    const futureIso = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const scheduledRow = {
+      ...SAMPLE_CUPO,
+      uuid_sucursal: SUCURSAL_1,
+      uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000001', // carro
+      cantidad: 12,
+      vigente_desde: futureIso,
+      vigente_hasta: null,
+      estado: 'activo',
+    };
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListCupos.mockResolvedValue([scheduledRow]);
+    render(<Cupos />, { wrapper: fullWrapper });
+    await waitFor(() => {
+      expect(screen.getByTestId(`cupo-row-${scheduledRow.uuid}`)).toBeInTheDocument();
+    });
+    // The "Programado" badge is rendered.
+    const badge = screen.getByTestId(`cupo-scheduled-${scheduledRow.uuid}`);
+    expect(badge).toBeInTheDocument();
+    expect(badge.textContent).toMatch(/programado/i);
+  });
+
+  it('CP18: a row with vigente_desde in the past does NOT show a "Programado" badge', async () => {
+    const pastIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const vigenteRow = {
+      ...SAMPLE_CUPO,
+      uuid_sucursal: SUCURSAL_1,
+      uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000001',
+      cantidad: 12,
+      vigente_desde: pastIso,
+      vigente_hasta: null,
+      estado: 'activo',
+    };
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListCupos.mockResolvedValue([vigenteRow]);
+    render(<Cupos />, { wrapper: fullWrapper });
+    await waitFor(() => {
+      expect(screen.getByTestId(`cupo-row-${vigenteRow.uuid}`)).toBeInTheDocument();
+    });
+    // No "Programado" badge — the row is vigente.
+    expect(
+      screen.queryByTestId(`cupo-scheduled-${vigenteRow.uuid}`),
+    ).not.toBeInTheDocument();
+  });
 });

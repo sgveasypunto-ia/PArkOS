@@ -18,6 +18,8 @@ import { useSWRConfig } from 'swr';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { parseApiUtc } from '@/lib/datetimeTz';
 
 import { FormModal } from '@/features/configuracion/components/FormModal';
 import {
@@ -98,6 +100,19 @@ function toHistoryItem(c: Cupo): VersionHistoryItem {
     vigente_hasta: c.vigente_hasta,
     estado: c.estado,
   };
+}
+
+/** True if the row's ``vigente_desde`` is in the future (a "cambio
+ *  programado" — close+insert with the new boundary ahead of NOW).
+ *  Goes through :func:`parseApiUtc` so the comparison is TZ-safe; the
+ *  pre-fix list endpoint excluded these rows entirely (the "in
+ *  transition" gap), but with the new "latest per cell" list query
+ *  the row IS shown, so we surface its scheduled state with a
+ *  badge so the operator knows it isn't vigente yet. */
+function isCupoScheduled(c: Cupo): boolean {
+  const vd = parseApiUtc(c.vigente_desde);
+  if (vd === null) return false;
+  return vd.getTime() > Date.now();
 }
 
 interface ListContentProps {
@@ -189,7 +204,19 @@ function ListContent({
                       {tipoVehiculoNombre}
                     </td>
                     <td className="px-3 py-2 text-right font-mono">
-                      {cupo.cantidad ?? '—'}
+                      <div className="flex flex-col items-end gap-1">
+                        <span>{cupo.cantidad ?? '—'}</span>
+                        {isCupoScheduled(cupo) && (
+                          <Badge
+                            variant="secondary"
+                            className="bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30"
+                            data-testid={`cupo-scheduled-${cupo.uuid}`}
+                            title={cupo.vigente_desde}
+                          >
+                            {t('cupos.badge.scheduled', 'Programado')}
+                          </Badge>
+                        )}
+                      </div>
                     </td>
                     <td className="px-3 py-2 text-right">
                       <div className="flex justify-end gap-2">
