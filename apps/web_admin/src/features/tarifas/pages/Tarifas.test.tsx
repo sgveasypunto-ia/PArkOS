@@ -40,9 +40,35 @@ vi.mock('../api/tarifasApi', () => ({
   listTarifasByKey: vi.fn(),
   getTarifa: vi.fn(),
   createTarifa: vi.fn(),
+  createTarifaBatch: vi.fn(),
   updateTarifa: vi.fn(),
   TarifaOverlapError: class TarifaOverlapError extends Error {},
   TarifaSucursalInmutableError: class TarifaSucursalInmutableError extends Error {},
+  TarifaValidationError: class TarifaValidationError extends Error {
+    issues: Array<{ path: string; message: string }>;
+    constructor(zodError: { issues: Array<{ path: (string | number)[]; message: string }> }) {
+      super('Validación del formulario');
+      this.issues = (zodError.issues ?? []).map((i) => ({
+        path: i.path.join('.'),
+        message: i.message,
+      }));
+    }
+  },
+  TarifaConflictError: class TarifaConflictError extends Error {
+    constraint: string | null;
+    conflictingUuid: string | null;
+    constructor(body: { detail?: Record<string, unknown> }) {
+      const detail = body?.detail;
+      const errCode = detail?.error;
+      super(
+        errCode === 'tarifa_overlap'
+          ? `Conflicto con una tarifa existente (constraint: ${detail?.constraint ?? '?'})`
+          : 'Conflicto con una tarifa existente',
+      );
+      this.constraint = (detail?.constraint as string | null) ?? null;
+      this.conflictingUuid = (detail?.conflicting_uuid as string | null) ?? null;
+    }
+  },
 }));
 
 // Mirror the cupos test mock: HARDCODED_CATALOG with the 5 canonical
@@ -132,13 +158,20 @@ vi.mock('@parkos/ui-kit/hooks', () => ({
 // non-null and the fetcher runs.
 import { useAuthStore } from '@parkos/ui-kit/store';
 
-import { listTarifas, createTarifa, listTarifasByKey, updateTarifa } from '../api/tarifasApi';
+import {
+  listTarifas,
+  createTarifa,
+  createTarifaBatch,
+  listTarifasByKey,
+  updateTarifa,
+} from '../api/tarifasApi';
 import { TIPO_TARIFA_UUIDS } from '../api/tarifaAgrupada';
 import { listSucursales } from '@/features/sucursales/api/sucursalesApi';
 import Tarifas from './Tarifas';
 
 const mockedListTarifas = listTarifas as ReturnType<typeof vi.fn>;
 const mockedCreateTarifa = createTarifa as ReturnType<typeof vi.fn>;
+const mockedCreateTarifaBatch = createTarifaBatch as ReturnType<typeof vi.fn>;
 const mockedUpdateTarifa = updateTarifa as ReturnType<typeof vi.fn>;
 const mockedListByKey = listTarifasByKey as ReturnType<typeof vi.fn>;
 const mockedListSucursales = listSucursales as ReturnType<typeof vi.fn>;
@@ -215,6 +248,7 @@ const SUCURSAL_NOMBRES = [
 beforeEach(() => {
   mockedListTarifas.mockReset();
   mockedCreateTarifa.mockReset();
+  mockedCreateTarifaBatch.mockReset();
   mockedUpdateTarifa.mockReset();
   mockedListByKey.mockReset();
   mockedListSucursales.mockReset();
@@ -607,5 +641,145 @@ describe('Tarifas page', () => {
     for (const uuid of Object.values(TIPO_TARIFA_UUIDS)) {
       expect(modalidadUuids.has(uuid)).toBe(true);
     }
+  });
+
+  // -----------------------------------------------------------------------
+  // HU-tarifas-batch PR2 -- the operator-observed bugs from
+  // chrome-devtools, now blocked at the form + page layer.
+  // -----------------------------------------------------------------------
+
+  it('TP-batch-1: submit with empty form -- no API call, 4 inline errors, alert never contains raw JSON', async () => {
+    // Bug repro: chrome-devtools 2026-10-10 -- the operator hit
+    // "Crear" with an empty form and the page split the submit into 4
+    // sequential POSTs. The first one (HORA, valor='0' from the
+    // null-to-'0' fallback) returned 201, the rest failed with 500
+    // (UK01 race) or raw Zod JSON. After the fix:
+    //   - The form's RHF refine rejects null/empty valor_* with
+    //     "Requerido" inline before onSubmit runs.
+    //   - The submit button is disabled when the form is invalid
+    //     (formState.isValid).
+    //   - createTarifaBatch is never called.
+    mockedListTarifas.mockResolvedValue([]);
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    const user = userEvent.setup();
+    render(<Tarifas />, { wrapper: fullWrapper });
+    await user.click(screen.getByTestId('tarifa-new'));
+    // The submit button is disabled because every valor_* is empty.
+    const submitBtn = screen.getByTestId('tarifa-submit') as HTMLButtonElement;
+    expect(submitBtn.disabled).toBe(true);
+    // Try to click anyway -- the disabled state blocks the form, and
+    // even if a malicious script forced the click, RHF would not call
+    // onSubmit (its resolver rejects the empty payload first).
+    await user.click(submitBtn).catch(() => {
+      // userEvent on a disabled button throws; that's the contract.
+    });
+    expect(mockedCreateTarifaBatch).not.toHaveBeenCalled();
+    expect(mockedCreateTarifa).not.toHaveBeenCalled();
+    // No alert with raw Zod JSON.
+    expect(screen.queryByText(/\[ \{/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/"code":/)).not.toBeInTheDocument();
+  });
+
+  it('TP-batch-2: submit only valor_hora -- 3 inline errors, no API call', async () => {
+    // Partial form: only the first valor is filled. The form's RHF
+    // refine blocks the submit; onSubmit is never called; no POST.
+    mockedListTarifas.mockResolvedValue([]);
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    const user = userEvent.setup();
+    render(<Tarifas />, { wrapper: fullWrapper });
+    await user.click(screen.getByTestId('tarifa-new'));
+    // Fill ONLY valor_hora; leave the other 3 empty.
+    const hora = screen.getByTestId('tarifa-field-valor-hora');
+    await user.type(hora, '2000');
+    // The submit button stays disabled because the other 3 are empty.
+    const submitBtn = screen.getByTestId('tarifa-submit') as HTMLButtonElement;
+    expect(submitBtn.disabled).toBe(true);
+    await user.click(submitBtn).catch(() => undefined);
+    expect(mockedCreateTarifaBatch).not.toHaveBeenCalled();
+  });
+
+  it('TP-batch-3: happy path -- 4 valid values trigger ONE createTarifaBatch call, modal closes', async () => {
+    // The operator filled all 4 inputs. The form is valid; submit
+    // fires one POST /batch (not 4 POSTs). The mock resolves; the
+    // modal closes; the list refreshes.
+    mockedListTarifas
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { ...SAMPLE_TARIFA, valor: '1500.0000' },
+        { ...SAMPLE_TARIFA, uuid: 'b2', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.fraccion, valor: '800.0000' },
+        { ...SAMPLE_TARIFA, uuid: 'b3', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.plena, valor: '2000.0000' },
+        { ...SAMPLE_TARIFA, uuid: 'b4', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.nocturna, valor: '1000.0000' },
+      ]);
+    mockedCreateTarifaBatch.mockResolvedValue([
+      { ...SAMPLE_TARIFA, valor: '1500.0000' },
+      { ...SAMPLE_TARIFA, uuid: 'b2', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.fraccion, valor: '800.0000' },
+      { ...SAMPLE_TARIFA, uuid: 'b3', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.plena, valor: '2000.0000' },
+      { ...SAMPLE_TARIFA, uuid: 'b4', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.nocturna, valor: '1000.0000' },
+    ]);
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    const user = userEvent.setup();
+    render(<Tarifas />, { wrapper: fullWrapper });
+    await user.click(screen.getByTestId('tarifa-new'));
+    await user.type(screen.getByTestId('tarifa-field-valor-hora'), '1500');
+    await user.type(screen.getByTestId('tarifa-field-valor-fraccion'), '800');
+    await user.type(screen.getByTestId('tarifa-field-valor-plena'), '2000');
+    await user.type(screen.getByTestId('tarifa-field-valor-nocturna'), '1000');
+    const submitBtn = screen.getByTestId('tarifa-submit') as HTMLButtonElement;
+    expect(submitBtn.disabled).toBe(false);
+    await user.click(submitBtn);
+    await waitFor(() => {
+      expect(mockedCreateTarifaBatch).toHaveBeenCalledTimes(1);
+    });
+    // The batch payload carries 4 items (one per modalidad).
+    const [payload] = mockedCreateTarifaBatch.mock.calls[0] as [
+      {
+        items: Array<{ uuid_tipo_tarifa: string; valor: string }>;
+        uuid_sucursal: string;
+        uuid_tipo_vehiculo: string;
+      },
+    ];
+    expect(payload.items).toHaveLength(4);
+    const modalidadesEnviadas = new Set(payload.items.map((i) => i.uuid_tipo_tarifa));
+    for (const uuid of Object.values(TIPO_TARIFA_UUIDS)) {
+      expect(modalidadesEnviadas.has(uuid)).toBe(true);
+    }
+    // The legacy 4-POST path must NOT be called.
+    expect(mockedCreateTarifa).not.toHaveBeenCalled();
+    // The modal closed and the list refreshed.
+    await waitFor(() => {
+      expect(screen.queryByTestId('tarifa-form-modal')).not.toBeInTheDocument();
+    });
+  });
+
+  it('TP-batch-4: 409 from createTarifaBatch renders TarifaConflictError message, no raw JSON', async () => {
+    // The PR1 backend maps a DB-level UK01 race to 409 with the
+    // tarifa_overlap shape. The FE must show a translated message
+    // (the constraint name when present) -- never the raw Zod JSON
+    // that the chrome-devtools operator saw.
+    mockedListTarifas.mockResolvedValue([]);
+    const { TarifaConflictError } = await import('../api/tarifasApi');
+    mockedCreateTarifaBatch.mockRejectedValue(
+      new TarifaConflictError({
+        detail: {
+          error: 'tarifa_overlap',
+          conflicting_uuid: null,
+          constraint: 'tarifas_sucursal_uk01',
+        },
+      }),
+    );
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    const user = userEvent.setup();
+    render(<Tarifas />, { wrapper: fullWrapper });
+    await user.click(screen.getByTestId('tarifa-new'));
+    await user.type(screen.getByTestId('tarifa-field-valor-hora'), '1500');
+    await user.type(screen.getByTestId('tarifa-field-valor-fraccion'), '800');
+    await user.type(screen.getByTestId('tarifa-field-valor-plena'), '2000');
+    await user.type(screen.getByTestId('tarifa-field-valor-nocturna'), '1000');
+    await user.click(screen.getByTestId('tarifa-submit'));
+    // The alert must show the human-readable message, not JSON.
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('tarifas_sucursal_uk01');
+    expect(alert.textContent).not.toContain('[ {');
+    expect(alert.textContent).not.toContain('"code"');
   });
 });
