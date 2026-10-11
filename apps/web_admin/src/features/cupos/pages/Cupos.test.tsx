@@ -133,7 +133,7 @@ vi.mock('@parkos/ui-kit/hooks', () => ({
   }),
 }));
 
-import { listCupos, createCupo, updateCupo } from '../api/cuposApi';
+import { listCupos, createCupo, updateCupo, listCuposByKey } from '../api/cuposApi';
 import { listSucursales } from '@/features/sucursales/api/sucursalesApi';
 import { useAuthStore } from '@parkos/ui-kit/store';
 import Cupos from './Cupos';
@@ -141,6 +141,7 @@ import Cupos from './Cupos';
 const mockedListCupos = listCupos as ReturnType<typeof vi.fn>;
 const mockedCreateCupo = createCupo as ReturnType<typeof vi.fn>;
 const mockedUpdateCupo = updateCupo as ReturnType<typeof vi.fn>;
+const mockedListByKey = listCuposByKey as ReturnType<typeof vi.fn>;
 const mockedListSucursales = listSucursales as ReturnType<typeof vi.fn>;
 
 function wrapper({ children }: { children: ReactNode }): JSX.Element {
@@ -185,6 +186,8 @@ const SAMPLE_CUPO: {
 beforeEach(() => {
   mockedListCupos.mockReset();
   mockedCreateCupo.mockReset();
+  mockedUpdateCupo.mockReset();
+  mockedListByKey.mockReset();
   mockedListSucursales.mockReset();
   mockedListSucursales.mockResolvedValue([
     { uuid: SUCURSAL_1, nombre: 'Sucursal Centro' },
@@ -614,5 +617,64 @@ describe('Cupos page', () => {
     // can correlate with the row in the table.
     expect(specificMessage.textContent).toContain(editingUuid);
     __mockTipos = SAMPLE_TIPOS.slice(0, 2);
+  });
+
+  it('CP16: a successful EDIT invalidates the by-key SWR cache so the "Ver histórico" panel picks up the new version without F5', async () => {
+    // Operator-reported bug: after editing a cupo and reopening the
+    // "Ver histórico" panel on the same (sucursal, tipo_vehiculo) cell,
+    // the panel kept showing the pre-edit chain — the operator had to
+    // F5 to see the new version. Root cause: the page only invalidated
+    // the ``'cupos-list'`` cache (``useCantidadList::refresh``) and
+    // not the by-key cache used by ``useCantidadByKey``; the SWR
+    // ``dedupingInterval: 5min`` returned the stale chain.
+    //
+    // The fix (``Cupos.tsx::invalidateByKey``) explicitly calls
+    // ``useSWRConfig().mutate(byKeyKey)`` after every successful write.
+    // The regression test asserts the by-key mock is called TWICE:
+    // once when the panel first opens, and once after the edit
+    // invalidates the cache — without the fix, only the first call
+    // would happen.
+    const editingUuid = '1a231f57-cb96-4284-b4b0-f3e7c594f632';
+    const tipoUuid = '00000000-0000-0000-0000-000000000003'; // bicicleta
+    const editingRow = {
+      ...SAMPLE_CUPO,
+      uuid: editingUuid,
+      uuid_sucursal: SUCURSAL_1,
+      uuid_tipo_vehiculo: tipoUuid,
+      cantidad: 5,
+      vigente_desde: '2026-10-09T22:35:00',
+    };
+    const newRow = { ...editingRow, uuid: '2b342f68-dea7-5395-c5c1-0408d6a5f743', cantidad: 7 };
+    // First call: pre-edit chain. Second call: post-edit chain (with the new version).
+    mockedListByKey
+      .mockResolvedValueOnce([editingRow])
+      .mockResolvedValueOnce([newRow, editingRow]);
+    mockedListCupos
+      .mockResolvedValueOnce([editingRow])
+      .mockResolvedValueOnce([newRow]);
+    mockedUpdateCupo.mockResolvedValue(newRow);
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    const user = userEvent.setup();
+    render(<Cupos />, { wrapper: fullWrapper });
+    await waitFor(() =>
+      expect(screen.getByTestId(`cupo-row-${editingUuid}`)).toBeInTheDocument(),
+    );
+    // 1) Open "Ver histórico" on the row → first by-key call.
+    await user.click(screen.getByTestId(`cupo-history-${editingUuid}`));
+    await waitFor(() =>
+      expect(mockedListByKey).toHaveBeenCalledTimes(1),
+    );
+    // 2) Edit and submit → invalidates the by-key cache, second call.
+    await user.click(screen.getByTestId(`cupo-edit-${editingUuid}`));
+    await user.click(screen.getByTestId('cupo-submit'));
+    await waitFor(() =>
+      expect(mockedListByKey).toHaveBeenCalledTimes(2),
+    );
+    // The second call's response (the new chain) is what the panel
+    // shows on the next render — verify the mock is wired to return it.
+    await expect(mockedListByKey.mock.results[1]?.value).resolves.toEqual([
+      newRow,
+      editingRow,
+    ]);
   });
 });

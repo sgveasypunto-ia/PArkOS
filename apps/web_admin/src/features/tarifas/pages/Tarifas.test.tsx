@@ -132,13 +132,14 @@ vi.mock('@parkos/ui-kit/hooks', () => ({
 // non-null and the fetcher runs.
 import { useAuthStore } from '@parkos/ui-kit/store';
 
-import { listTarifas, createTarifa, listTarifasByKey } from '../api/tarifasApi';
+import { listTarifas, createTarifa, listTarifasByKey, updateTarifa } from '../api/tarifasApi';
 import { TIPO_TARIFA_UUIDS } from '../api/tarifaAgrupada';
 import { listSucursales } from '@/features/sucursales/api/sucursalesApi';
 import Tarifas from './Tarifas';
 
 const mockedListTarifas = listTarifas as ReturnType<typeof vi.fn>;
 const mockedCreateTarifa = createTarifa as ReturnType<typeof vi.fn>;
+const mockedUpdateTarifa = updateTarifa as ReturnType<typeof vi.fn>;
 const mockedListByKey = listTarifasByKey as ReturnType<typeof vi.fn>;
 const mockedListSucursales = listSucursales as ReturnType<typeof vi.fn>;
 
@@ -214,6 +215,7 @@ const SUCURSAL_NOMBRES = [
 beforeEach(() => {
   mockedListTarifas.mockReset();
   mockedCreateTarifa.mockReset();
+  mockedUpdateTarifa.mockReset();
   mockedListByKey.mockReset();
   mockedListSucursales.mockReset();
   mockedListSucursales.mockResolvedValue(SUCURSAL_NOMBRES);
@@ -533,5 +535,77 @@ describe('Tarifas page', () => {
     expect(celdas.slice(1, 5)).toEqual(['10.000', '2.500', '1.000.000', '999']);
     // The raw wire string must NOT leak into the table.
     expect(row.textContent).not.toMatch(/\d+\.0000/);
+  });
+
+  it('TP14: a successful EDIT invalidates ALL 4 by-key SWR caches (one per modalidad) so the "Ver histórico" panel picks up the new version without F5', async () => {
+    // Operator-reported bug (mirror of the cupos fix in
+    // ``Cupos.test.tsx::CP16``): after editing a tarifa and
+    // reopening the "Ver histórico" panel, the panel kept showing
+    // the pre-edit chain. Root cause: ``useTarifasList::refresh``
+    // only invalidates the 'tarifas-list' key, not the 4-way
+    // by-key fan-out (one cache per ``TIPO_TARIFA_UUIDS``). The
+    // fix (``Tarifas.tsx::invalidateByKey``) explicitly mutates
+    // all 4 by-key keys after a successful write.
+    //
+    // Regression test: each ``Ver histórico`` open fires 4 by-key
+    // calls (one per modalidad). After the EDIT submits, those 4
+    // must be re-fetched again — total 8 calls. Without the fix,
+    // the post-edit panel would reuse the cached 4 and stay stale.
+    const editingUuid = 'aaaaaaaa-1111-1111-1111-111111111111';
+    const tipoVehiculoUuid = SAMPLE_TARIFA.uuid_tipo_vehiculo as string;
+    const editingRow = {
+      ...SAMPLE_TARIFA,
+      uuid: editingUuid,
+      uuid_sucursal: SUCURSAL_1,
+      uuid_tipo_vehiculo: tipoVehiculoUuid,
+      uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.hora,
+      valor: '70.0000',
+      valor_plena: '80.0000',
+    };
+    const newRow = { ...editingRow, uuid: 'dddddddd-1111-1111-1111-111111111111' };
+    // The page opens 4 parallel by-key queries on each panel open.
+    // Pre-edit: each one returns the existing tarifa row. Post-edit:
+    // the 'hora' one returns [newRow, editingRow], the other 3 stay
+    // the same (no edit on those modalidades in this test).
+    mockedListByKey.mockImplementation(
+      async (opts: { tipo_tarifa?: string | null }) => {
+        if (opts.tipo_tarifa === TIPO_TARIFA_UUIDS.hora) return [newRow, editingRow];
+        return [editingRow];
+      },
+    );
+    mockedListTarifas
+      .mockResolvedValueOnce([editingRow])
+      .mockResolvedValueOnce([newRow]);
+    mockedUpdateTarifa.mockResolvedValue(newRow);
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    const user = userEvent.setup();
+    render(<Tarifas />, { wrapper: fullWrapper });
+    const grupoKey = grupoKeyFor(SUCURSAL_1, tipoVehiculoUuid, SAMPLE_TARIFA.vigente_desde);
+    await waitFor(() =>
+      expect(screen.getByTestId(`tarifa-row-${grupoKey}`)).toBeInTheDocument(),
+    );
+    // 1) Open "Ver histórico" on the grouped row → 4 by-key calls.
+    await user.click(screen.getByTestId(`tarifa-history-${grupoKey}`));
+    await waitFor(() => expect(mockedListByKey).toHaveBeenCalledTimes(4));
+    // 2) Edit and submit → invalidate the 4 by-key caches, 4 more calls.
+    await user.click(screen.getByTestId(`tarifa-edit-${grupoKey}`));
+    await user.click(screen.getByTestId('tarifa-submit'));
+    await waitFor(() => expect(mockedListByKey).toHaveBeenCalledTimes(8));
+    // Sanity: every post-edit call carries the right business key
+    // (sucursal, tipo_vehiculo, tipo_tarifa). The implementation
+    // fans out over TIPO_TARIFA_UUIDS, so the per-call assertions
+    // guard against a regression where only one modalidad gets
+    // invalidated (e.g. the operator only edited 'hora' but the
+    // panel merges all 4 — leaving fraccion/plena/nocturna stale).
+    const postEditCalls = mockedListByKey.mock.calls.slice(4);
+    const modalidadUuids = new Set(
+      postEditCalls.map(
+        ([opts]) =>
+          (opts as { tipo_tarifa?: string | null }).tipo_tarifa,
+      ),
+    );
+    for (const uuid of Object.values(TIPO_TARIFA_UUIDS)) {
+      expect(modalidadUuids.has(uuid)).toBe(true);
+    }
   });
 });

@@ -11,8 +11,9 @@
  * selector. Cross-branch views are out of scope for this screen —
  * the multi-branch admin view lives in a separate dashboard surface.
  */
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useSWRConfig } from 'swr';
 
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
@@ -245,6 +246,7 @@ export default function Cupos(): JSX.Element {
 
   const { cupos, refresh, isLoading, error } = useCantidadList();
   const { tipos: tiposVehiculo, refresh: refreshTipos } = useTiposVehiculo();
+  const { mutate: globalMutate } = useSWRConfig();
   const [editing, setEditing] = useState<Cupo | null>(null);
   const [creating, setCreating] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -253,6 +255,27 @@ export default function Cupos(): JSX.Element {
   const [historyOpenFor, setHistoryOpenFor] = useState<
     { sucursal: string; tipoVehiculo: string | null } | null
   >(null);
+
+  // Best-effort revalidation of the by-key cache for a given cell. The
+  // SWR key for ``useCantidadByKey`` is the business key
+  // ``(sucursal, uuid_tipo_vehiculo)`` — UNCHANGED by the PUT/POST
+  // (the new version is a different UUID, same business key), so
+  // ``useCantidadList::refresh`` (which only invalidates
+  // ``'cupos-list'``) leaves the by-key cache stale and the
+  // "Ver histórico" panel keeps showing the pre-edit chain until F5.
+  // We ``await`` it so the page UI only closes the modal after the
+  // history is ready, matching the operator's mental model of "the
+  // edit landed AND I can see it in the history".
+  const invalidateByKey = useCallback(
+    async (sucursal: string, tipoVehiculo: string | null): Promise<void> => {
+      await globalMutate([
+        '/api/v1/empresa/cantidad-vehiculos-sucursal/by-key',
+        sucursal,
+        tipoVehiculo,
+      ]);
+    },
+    [globalMutate],
+  );
 
   const activeFiltered = useMemo(() => {
     if (!selectedSucursal) return cupos;
@@ -308,7 +331,18 @@ export default function Cupos(): JSX.Element {
         await createCupo(payload);
       }
       closeModal();
-      await refresh();
+      // ``refresh()`` only invalidates the 'cupos-list' key; the by-key
+      // cache for the edited cell must be invalidated explicitly so the
+      // "Ver histórico" panel picks up the new version without F5.
+      // The cell's ``uuid_tipo_vehiculo`` is the canonical one for the
+      // touched row (locked on EDIT, freshly-picked on CREATE) — using
+      // ``payload.uuid_tipo_vehiculo`` instead of the editing row's
+      // value keeps the CREATE path working when the operator opens
+      // a brand-new cell.
+      await Promise.all([
+        refresh(),
+        invalidateByKey(selectedSucursal ?? '', payload.uuid_tipo_vehiculo ?? null),
+      ]);
     } catch (err) {
       setErrorState(mapError(err, editing?.uuid ?? null));
     } finally {

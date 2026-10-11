@@ -30,7 +30,7 @@
  * knows about the lower-level Zod validation.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { useForm, type UseFormReturn } from 'react-hook-form';
+import { useForm, useWatch, type UseFormReturn } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useTranslation } from 'react-i18next';
 
@@ -100,6 +100,31 @@ export function CupoForm({
   const [showNuevoTipo, setShowNuevoTipo] = useState(false);
   const [nuevoTipo, setNuevoTipo] = useState('');
   const [nuevoTipoError, setNuevoTipoError] = useState<string | null>(null);
+
+  // Boundary-equality guard for the EDIT modal: if the operator types a
+  // ``vigente_desde`` that is at or before the row's current
+  // ``vigente_desde``, the backend's `<=` pre-check at
+  // ``empresa.py:1143`` returns 409 ``cantidad_overlap`` (with
+  // ``conflictingUuid`` == the row being edited and
+  // ``conflictingVigenteHasta: null``). We surface the warning BEFORE
+  // the submit and disable the button so the operator doesn't get
+  // surprised by a 409 when they intended to update the existing
+  // version. CREATE has no current row to compare against, so the
+  // guard is a no-op there.
+  //
+  // Both values are tz-aware UTC ISO strings (the form's
+  // ``datetimeLocalToIso`` always appends ``+00:00``), so comparing
+  // epoch milliseconds is independent of the host's local tz.
+  const vigenteDesdeValue = useWatch({ control: form.control, name: 'vigente_desde' });
+  const isBoundaryEdit = useMemo(() => {
+    if (initialCupo === null) return false;
+    if (typeof vigenteDesdeValue !== 'string' || vigenteDesdeValue.length === 0) {
+      return false;
+    }
+    const current = initialCupo.vigente_desde;
+    if (typeof current !== 'string' || current.length === 0) return false;
+    return new Date(vigenteDesdeValue).getTime() <= new Date(current).getTime();
+  }, [vigenteDesdeValue, initialCupo]);
 
   // CREATE: filter tipos already in use by an open cupo on this
   // branch. CREATE no longer offers the "Cualquiera" cell
@@ -415,6 +440,19 @@ export function CupoForm({
                 )}
               </FormDescription>
               <FormMessage />
+              {isBoundaryEdit && (
+                <p
+                  role="alert"
+                  aria-live="polite"
+                  className="rounded-md border border-amber-500/50 bg-amber-50 px-3 py-2 text-xs text-amber-700"
+                  data-testid="cupo-field-vigente-desde-boundary-warning"
+                >
+                  {t(
+                    'cupos.field.vigenteDesdeBoundaryWarning',
+                    'Esta fecha es anterior o igual a la versión activa. La nueva versión no se publicará; usá una fecha posterior para abrir un nuevo período.',
+                  )}
+                </p>
+              )}
             </FormItem>
           )}
         />
@@ -443,7 +481,7 @@ export function CupoForm({
           </Button>
           <Button
             type="submit"
-            disabled={isSubmitting}
+            disabled={isSubmitting || isBoundaryEdit}
             data-testid="cupo-submit"
           >
             {isSubmitting

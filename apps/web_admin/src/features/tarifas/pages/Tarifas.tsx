@@ -21,8 +21,9 @@
  * Container/presentational split: this file owns state, SWR mutations,
  * and error mapping. TarifaForm and VersionHistoryPanel are presentational.
  */
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useSWRConfig } from 'swr';
 
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
@@ -248,6 +249,7 @@ export default function Tarifas(): JSX.Element {
 
   const { tarifas, refresh, isLoading, error } = useTarifasList(null);
   const { tipos: tiposVehiculo } = useTiposVehiculo();
+  const { mutate: globalMutate } = useSWRConfig();
   const [editingGrupo, setEditingGrupo] = useState<TarifaAgrupada | null>(null);
   const [creating, setCreating] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -255,6 +257,32 @@ export default function Tarifas(): JSX.Element {
   const [historyOpenFor, setHistoryOpenFor] = useState<
     { sucursal: string; tipoVehiculo: string | null } | null
   >(null);
+
+  // Best-effort revalidation of the by-key cache. ``useTarifasByKey`` is
+  // a 4-way fan-out — one cache per ``TIPO_TARIFA_UUIDS`` modalidad
+  // (hora/fraccion/plena/nocturna) for the same business key
+  // ``(sucursal, uuid_tipo_vehiculo)``. The PUT/POST only changes the
+  // rows for the modalidades the operator touched, but invalidating
+  // all four is the cheap and correct call: the by-key list panel
+  // merges the four caches for the open panel, and any stale entry
+  // would silently mask the new version until F5. Mirrors the cupos
+  // fix (see ``Cupos.tsx::invalidateByKey``) — same bug class, same
+  // resolution.
+  const invalidateByKey = useCallback(
+    async (sucursal: string, tipoVehiculo: string | null): Promise<void> => {
+      await Promise.all(
+        (Object.values(TIPO_TARIFA_UUIDS) as string[]).map((uuidTipoTarifa) =>
+          globalMutate([
+            '/api/v1/empresa/tarifas-sucursal/by-key',
+            sucursal,
+            tipoVehiculo,
+            uuidTipoTarifa,
+          ]),
+        ),
+      );
+    },
+    [globalMutate],
+  );
 
   const allFiltered = useMemo(() => {
     if (!selectedSucursal) return [];
@@ -464,7 +492,15 @@ export default function Tarifas(): JSX.Element {
         }
       }
       closeModal();
-      await refresh();
+      // ``refresh()`` only invalidates the 'tarifas-list' key; the
+      // by-key cache for the edited cell must be invalidated
+      // explicitly so the "Ver histórico" panel picks up the new
+      // version without F5 (see Cupos.tsx::onSubmit for the matching
+      // fix — same bug class).
+      await Promise.all([
+        refresh(),
+        invalidateByKey(selectedSucursal, values.uuid_tipo_vehiculo),
+      ]);
     } catch (err) {
       setErrorState(mapError(err));
     } finally {
