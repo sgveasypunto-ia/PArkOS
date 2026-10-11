@@ -51,6 +51,7 @@ import {
 } from '../api/tarifasApi';
 import {
   agruparTarifas,
+  getModalidadLabel,
   TIPO_TARIFA_UUIDS,
   type TarifaAgrupada,
 } from '../api/tarifaAgrupada';
@@ -276,7 +277,18 @@ function ListContent({
 function toHistoryItem(t: Tarifa): VersionHistoryItem {
   return {
     uuid: t.uuid,
-    display: t.valor ?? '—',
+    // Display the wire value without 4 decimals (the wire always
+    // carries ``"3000.0000"`` because the DB column is NUMERIC(18,4)).
+    // The page-side grouped list already uses ``formatTarifaValor``;
+    // the history panel used to render the raw string, which read
+    // as a fractional amount. Operator feedback 2026-10-11.
+    display: formatTarifaValor(t.valor),
+    // Per-row modalidad so the operator can see which of the 4
+    // canonical dimensiones (Hora / Fracción / Plena / Nocturna)
+    // changed at each version. Empty string falls back to ``—`` in
+    // the panel; the column itself is hidden when no item in the
+    // array sets this field (cupos backward-compat).
+    displayLabel: getModalidadLabel(t.uuid_tipo_tarifa),
     vigente_desde: t.vigente_desde,
     vigente_hasta: t.vigente_hasta,
     estado: t.estado,

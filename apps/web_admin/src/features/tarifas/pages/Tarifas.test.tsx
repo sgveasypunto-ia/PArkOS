@@ -700,8 +700,12 @@ describe('Tarifas page', () => {
     // Fill ONLY valor_hora; leave the other 3 empty.
     await user.type(screen.getByTestId('tarifa-field-valor-hora'), '2000');
     // The submit button is ENABLED -- 1 valor is the new minimum.
-    const submitBtn = screen.getByTestId('tarifa-submit') as HTMLButtonElement;
-    expect(submitBtn.disabled).toBe(false);
+    // ``waitFor`` because the form re-renders asynchronously after
+    // the input change (RHF + useWatch on the 4 valor_* keys).
+    const submitBtn = await waitFor(
+      () => screen.getByTestId('tarifa-submit') as HTMLButtonElement,
+    );
+    await waitFor(() => expect(submitBtn.disabled).toBe(false));
     await user.click(submitBtn);
     await waitFor(() => {
       expect(mockedCreateTarifaBatch).toHaveBeenCalledTimes(1);
@@ -731,8 +735,13 @@ describe('Tarifas page', () => {
     render(<Tarifas />, { wrapper: fullWrapper });
     await user.click(screen.getByTestId('tarifa-new'));
     await user.type(screen.getByTestId('tarifa-field-valor-hora'), '1500');
-    const submitBtn = screen.getByTestId('tarifa-submit') as HTMLButtonElement;
-    expect(submitBtn.disabled).toBe(false);
+    // The submit button is ENABLED after the only non-null valor
+    // satisfies the al-menos-1 superRefine. ``waitFor`` because the
+    // form re-renders asynchronously after the input change.
+    const submitBtn = await waitFor(
+      () => screen.getByTestId('tarifa-submit') as HTMLButtonElement,
+    );
+    await waitFor(() => expect(submitBtn.disabled).toBe(false));
     await user.click(submitBtn);
     await waitFor(() => {
       expect(mockedCreateTarifaBatch).toHaveBeenCalledTimes(1);
@@ -898,5 +907,232 @@ describe('Tarifas page', () => {
     // (the new one). If the future-date bug regressed, it would
     // have returned 0 rows for that cell.
     expect(mockedListTarifas).toHaveBeenCalledTimes(2);
+  });
+
+  // -----------------------------------------------------------------------
+  // HU-hist-modalidad -- "Ver histórico" must show the per-row
+  // modalidad (Hora/Fracción/Plena/Nocturna) AND format the value
+  // without 4 wire decimals. Operator feedback 2026-10-11.
+  // -----------------------------------------------------------------------
+
+  it('TP-hist-1: el panel histórico muestra la modalidad (Hora/Fracción/Plena/Nocturna) por cada version', async () => {
+    // The page merges 4 SWR queries (one per modalidad) into a single
+    // DESC-sorted list. Each row must carry its own modalidad so the
+    // operator can tell at a glance which dimension changed at each
+    // version. The "Modalidad" column is added by the panel when at
+    // least one item has a non-empty ``displayLabel``.
+    //
+    // We mock the main ``listTarifas`` call too (with 1 grouped row's
+    // worth of vigentes) so the page doesn't render the empty state
+    // and the ``Ver histórico`` button is reachable.
+    const sharedBase = {
+      uuid_sucursal: SUCURSAL_1,
+      uuid_tipo_vehiculo: SAMPLE_TARIFA.uuid_tipo_vehiculo!,
+      vigente_desde: SAMPLE_TARIFA.vigente_desde,
+      vigente_hasta: null,
+      estado: 'activo',
+      created_at: SAMPLE_TARIFA.created_at,
+      created_by: null,
+      sync_status: 'sincronizado',
+    };
+    mockedListTarifas.mockResolvedValue([
+      { ...sharedBase, uuid: 'aaaaaaaa-1111-1111-1111-111111111111', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.hora, valor: '3000.0000', valor_plena: null },
+      { ...sharedBase, uuid: 'bbbbbbbb-2222-2222-2222-222222222222', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.fraccion, valor: '800.0000', valor_plena: null },
+      { ...sharedBase, uuid: 'cccccccc-3333-3333-3333-333333333333', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.plena, valor: '2000.0000', valor_plena: '2000.0000' },
+      { ...sharedBase, uuid: 'dddddddd-4444-4444-4444-444444444444', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.nocturna, valor: '1000.0000', valor_plena: null },
+    ]);
+    // 5 historical rows spanning the 4 modalidades. We use the canonical
+    // tarifa UUIDs so the label resolver produces "Hora"/"Fracción"/etc.
+    mockedListByKey.mockImplementation(
+      async (opts: { tipo_tarifa?: string | null }) => {
+        if (opts.tipo_tarifa === TIPO_TARIFA_UUIDS.hora) {
+          return [
+            {
+              ...SAMPLE_TARIFA,
+              uuid: '11111111-1111-1111-1111-111111111111',
+              uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.hora,
+              valor: '3000.0000',
+              vigente_desde: '2026-09-15T00:00:00',
+              vigente_hasta: null,
+            },
+            {
+              ...SAMPLE_TARIFA,
+              uuid: '11111111-1111-1111-1111-111111111112',
+              uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.hora,
+              valor: '2000.0000',
+              vigente_desde: '2026-01-01T00:00:00',
+              vigente_hasta: '2026-09-15T00:00:00',
+            },
+          ];
+        }
+        if (opts.tipo_tarifa === TIPO_TARIFA_UUIDS.fraccion) {
+          return [
+            {
+              ...SAMPLE_TARIFA,
+              uuid: '22222222-1111-1111-1111-111111111111',
+              uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.fraccion,
+              valor: '800.0000',
+              vigente_desde: '2026-01-01T00:00:00',
+            },
+          ];
+        }
+        if (opts.tipo_tarifa === TIPO_TARIFA_UUIDS.plena) {
+          return [
+            {
+              ...SAMPLE_TARIFA,
+              uuid: '33333333-1111-1111-1111-111111111111',
+              uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.plena,
+              valor: '2000.0000',
+              vigente_desde: '2026-01-01T00:00:00',
+            },
+          ];
+        }
+        return [
+          {
+            ...SAMPLE_TARIFA,
+            uuid: '44444444-1111-1111-1111-111111111111',
+            uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.nocturna,
+            valor: '1000.0000',
+            vigente_desde: '2026-01-01T00:00:00',
+          },
+        ];
+      },
+    );
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    const user = userEvent.setup();
+    render(<Tarifas />, { wrapper: fullWrapper });
+    const grupoKey = grupoKeyFor(
+      SUCURSAL_1,
+      SAMPLE_TARIFA.uuid_tipo_vehiculo!,
+      SAMPLE_TARIFA.vigente_desde,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId(`tarifa-row-${grupoKey}`)).toBeInTheDocument(),
+    );
+    await user.click(screen.getByTestId(`tarifa-history-${grupoKey}`));
+    // The "Modalidad" column header is present (5 items, all with labels).
+    await waitFor(() => {
+      expect(
+        screen.getByTestId('version-history-modalidad-header'),
+      ).toHaveTextContent('Modalidad');
+    });
+    // Each row has its own modalidad cell. The 5 rows are: Hora (current),
+    // Hora (closed), Fracción, Plena, Nocturna.
+    const modalidadCells = document.querySelectorAll(
+      '[data-testid^="version-history-modalidad-"]:not([data-testid$="-header"])',
+    );
+    const labels = Array.from(modalidadCells).map((c) => c.textContent);
+    expect(modalidadCells.length).toBe(5);
+    expect(labels).toEqual(
+      expect.arrayContaining(['Hora', 'Hora', 'Fracción', 'Plena', 'Nocturna']),
+    );
+  });
+
+  it('TP-hist-2: el panel histórico formatea el valor sin 4 decimales (3.000 no 3000.0000)', async () => {
+    // The wire always carries 4 decimals (NUMERIC(18,4)). The panel
+    // must re-format to es-CO with zero fraction digits so the
+    // operator doesn't see a fractional amount.
+    const sharedBase = {
+      uuid_sucursal: SUCURSAL_1,
+      uuid_tipo_vehiculo: SAMPLE_TARIFA.uuid_tipo_vehiculo!,
+      vigente_desde: SAMPLE_TARIFA.vigente_desde,
+      vigente_hasta: null,
+      estado: 'activo',
+      created_at: SAMPLE_TARIFA.created_at,
+      created_by: null,
+      sync_status: 'sincronizado',
+    };
+    mockedListTarifas.mockResolvedValue([
+      { ...sharedBase, uuid: 'aaaaaaaa-1111-1111-1111-111111111111', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.hora, valor: '3000.0000', valor_plena: null },
+    ]);
+    mockedListByKey.mockImplementation(
+      async (opts: { tipo_tarifa?: string | null }) => {
+        if (opts.tipo_tarifa === TIPO_TARIFA_UUIDS.hora) {
+          return [
+            {
+              ...SAMPLE_TARIFA,
+              uuid: '11111111-1111-1111-1111-111111111111',
+              uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.hora,
+              valor: '3000.0000',
+              vigente_desde: '2026-09-15T00:00:00',
+              vigente_hasta: null,
+            },
+          ];
+        }
+        return [];
+      },
+    );
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    const user = userEvent.setup();
+    render(<Tarifas />, { wrapper: fullWrapper });
+    const grupoKey = grupoKeyFor(
+      SUCURSAL_1,
+      SAMPLE_TARIFA.uuid_tipo_vehiculo!,
+      SAMPLE_TARIFA.vigente_desde,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId(`tarifa-row-${grupoKey}`)).toBeInTheDocument(),
+    );
+    await user.click(screen.getByTestId(`tarifa-history-${grupoKey}`));
+    // The row shows the formatted value (no wire decimals).
+    await waitFor(() => {
+      const row = screen.getByTestId('version-history-row-0');
+      expect(row.textContent).toContain('3.000');
+      // Defensively assert the wire form is NOT present.
+      expect(row.textContent).not.toContain('3000.0000');
+    });
+  });
+
+  it('TP-hist-3: el modal de edición muestra los valores pre-existentes sin 4 decimales', async () => {
+    // The form's defaultValues for valor_* now go through
+    // formatTarifaValor in EDIT mode, so the operator sees "3.000"
+    // instead of "3000.0000" when opening the edit modal on an
+    // existing tarifa. The wire format at submit time is whatever
+    // the form carries; the backend's Decimal parser normalises back
+    // to 4 decimals, so the value is preserved.
+    //
+    // We mock 4 rows (one per modalidad) so ``agruparTarifas`` can
+    // build a single TarifaAgrupada with all 4 cells populated --
+    // a single row wouldn't be enough (the others would stay
+    // null in the grouped entry).
+    const sharedBase = {
+      uuid_sucursal: SUCURSAL_1,
+      uuid_tipo_vehiculo: SAMPLE_TARIFA.uuid_tipo_vehiculo!,
+      vigente_desde: SAMPLE_TARIFA.vigente_desde,
+      vigente_hasta: null,
+      estado: 'activo',
+      created_at: SAMPLE_TARIFA.created_at,
+      created_by: null,
+      sync_status: 'sincronizado',
+    };
+    mockedListTarifas.mockResolvedValue([
+      { ...sharedBase, uuid: SAMPLE_TARIFA.uuid, uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.hora, valor: '3000.0000', valor_plena: null },
+      { ...sharedBase, uuid: '22222222-2222-2222-2222-222222222222', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.fraccion, valor: '800.0000', valor_plena: null },
+      { ...sharedBase, uuid: '33333333-3333-3333-3333-333333333333', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.plena, valor: '2000.0000', valor_plena: '2000.0000' },
+      { ...sharedBase, uuid: '44444444-4444-4444-4444-444444444444', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.nocturna, valor: '1000.0000', valor_plena: null },
+    ]);
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    const user = userEvent.setup();
+    render(<Tarifas />, { wrapper: fullWrapper });
+    const grupoKey = grupoKeyFor(
+      SUCURSAL_1,
+      SAMPLE_TARIFA.uuid_tipo_vehiculo!,
+      SAMPLE_TARIFA.vigente_desde,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId(`tarifa-row-${grupoKey}`)).toBeInTheDocument(),
+    );
+    await user.click(screen.getByTestId(`tarifa-edit-${grupoKey}`));
+    // The modal opens. The valor_hora input shows the formatted
+    // value, not the raw wire form.
+    const hora = (await screen.findByTestId(
+      'tarifa-field-valor-hora',
+    )) as HTMLInputElement;
+    expect(hora.value).toBe('3.000');
+    // The plena input also shows the formatted value.
+    const plena = (await screen.findByTestId(
+      'tarifa-field-valor-plena',
+    )) as HTMLInputElement;
+    expect(plena.value).toBe('2.000');
   });
 });

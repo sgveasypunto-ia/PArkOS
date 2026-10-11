@@ -116,3 +116,22 @@ export const TIPO_TARIFA_UUIDS = {
   plena: TIPO_TARIFA_PLENA,
   nocturna: TIPO_TARIFA_NOCTURNA,
 } as const;
+
+/** Reverse lookup: ``uuid_tipo_tarifa`` → human label. Used by
+ * ``VersionHistoryPanel`` to show the operator which modalidad
+ * changed at each version (Hora / Fracción / Plena / Nocturna).
+ *
+ * Returns ``""`` for ``null`` / ``undefined`` / unknown UUIDs so the
+ * panel can render ``—`` instead of crashing. The strings are
+ * hardcoded Spanish (es-CO) — they mirror the column headers the
+ * page-side grouped list already uses (``tarifas.col.valorHora``
+ * etc.); if a future i18n pass wants translated names, swap this
+ * for a ``t()`` call without touching the call sites.
+ */
+export function getModalidadLabel(uuid: string | null | undefined): string {
+  if (uuid === TIPO_TARIFA_HORA) return 'Hora';
+  if (uuid === TIPO_TARIFA_FRACCION) return 'Fracción';
+  if (uuid === TIPO_TARIFA_PLENA) return 'Plena';
+  if (uuid === TIPO_TARIFA_NOCTURNA) return 'Nocturna';
+  return '';
+}

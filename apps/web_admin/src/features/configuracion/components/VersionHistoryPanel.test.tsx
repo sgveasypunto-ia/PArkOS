@@ -74,4 +74,79 @@ describe('VersionHistoryPanel', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getAllByTestId(/^version-history-row-/)).toHaveLength(2);
   });
+
+  it('VP6: with displayLabel on every item -- the "Modalidad" column appears', () => {
+    // The tarifa path passes displayLabel on every item (Hora /
+    // Fracción / Plena / Nocturna). The panel must render the column
+    // so the operator can see which dimension changed at each version
+    // (operator feedback 2026-10-11).
+    const SAMPLE_WITH_LABEL: VersionHistoryItem[] = [
+      {
+        uuid: '11111111-1111-1111-1111-111111111111',
+        display: '3.000',
+        displayLabel: 'Hora',
+        vigente_desde: '2026-09-15T00:00:00',
+        vigente_hasta: null,
+        estado: 'activo',
+      },
+      {
+        uuid: '22222222-2222-2222-2222-222222222222',
+        display: '1.500',
+        displayLabel: 'Fracción',
+        vigente_desde: '2026-01-01T00:00:00',
+        vigente_hasta: '2026-09-15T00:00:00',
+        estado: 'inactivo',
+      },
+    ];
+    render(<VersionHistoryPanel versions={SAMPLE_WITH_LABEL} displayLabel="Valor" />);
+    // The header is present.
+    expect(screen.getByTestId('version-history-modalidad-header')).toHaveTextContent(
+      'Modalidad',
+    );
+    // Each row has its own modalidad cell with the per-row label.
+    expect(screen.getByTestId('version-history-modalidad-0')).toHaveTextContent('Hora');
+    expect(screen.getByTestId('version-history-modalidad-1')).toHaveTextContent(
+      'Fracción',
+    );
+    // The existing "Valor" column still works.
+    expect(screen.getByText('3.000')).toBeInTheDocument();
+  });
+
+  it('VP7: backward-compat without displayLabel (cupos) -- the "Modalidad" column is hidden', () => {
+    // Cupos' history items do not set displayLabel. The panel must keep
+    // the legacy 4-column layout (no "Modalidad" column) so the cupos
+    // page doesn't break.
+    render(<VersionHistoryPanel versions={SAMPLE} displayLabel="Cantidad" />);
+    expect(screen.queryByTestId('version-history-modalidad-header')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('version-history-modalidad-0')).not.toBeInTheDocument();
+  });
+
+  it('VP8: mixed array (some items with displayLabel, some without) -- column still appears, missing items show "—"', () => {
+    // Defensive: an item can carry displayLabel undefined while others
+    // carry it (e.g. tarifa row with modalidad null). The column
+    // appears because AT LEAST ONE item has it; the missing one
+    // shows "—" rather than crashing.
+    const MIXED: VersionHistoryItem[] = [
+      {
+        uuid: '33333333-3333-3333-3333-333333333333',
+        display: '3.000',
+        displayLabel: 'Hora',
+        vigente_desde: '2026-09-15T00:00:00',
+        vigente_hasta: null,
+        estado: 'activo',
+      },
+      {
+        uuid: '44444444-4444-4444-4444-444444444444',
+        display: '—',
+        vigente_desde: '2026-01-01T00:00:00',
+        vigente_hasta: '2026-09-15T00:00:00',
+        estado: 'inactivo',
+        // displayLabel intentionally omitted
+      },
+    ];
+    render(<VersionHistoryPanel versions={MIXED} displayLabel="Valor" />);
+    expect(screen.getByTestId('version-history-modalidad-header')).toBeInTheDocument();
+    expect(screen.getByTestId('version-history-modalidad-0')).toHaveTextContent('Hora');
+    expect(screen.getByTestId('version-history-modalidad-1')).toHaveTextContent('—');
+  });
 });

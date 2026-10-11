@@ -317,6 +317,7 @@
     "empty": "Aún no hay tarifas configuradas.",
     "withoutSucursal": "Sin sucursal",
     "historyLabel": "Valor",
+    "historyModalidadCol": "Modalidad",
     "tipoVehiculoAny": "Cualquiera",
     "tipoTarifaAny": "Cualquiera",
     "field": {

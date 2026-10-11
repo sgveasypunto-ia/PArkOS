@@ -48,7 +48,7 @@
  *     predicate with server-now) hid it for 60s.
  */
 import { useEffect } from 'react';
-import { useForm, type UseFormReturn } from 'react-hook-form';
+import { useForm, useWatch, type UseFormReturn } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useTranslation } from 'react-i18next';
 
@@ -68,6 +68,7 @@ import {
   isoToDatetimeLocal,
   utcNowPlusMinutesAsIso,
 } from '@/lib/datetimeTz';
+import { formatTarifaValor } from '../lib/formatTarifaValor';
 
 import {
   tarifaCreateSchema,
@@ -123,14 +124,37 @@ export function TarifaForm({
   tiposVehiculoEnUsoEnSucursal,
 }: TarifaFormProps) {
   const { t } = useTranslation();
-  // The submit button is disabled while the form is invalid (RHF
-  // schema requires every ``valor_*`` > 0 and ``vigente_desde``
-  // present). The operator's only escape hatch is Cancel -- the
-  // chrome-devtools 2026-10-10 bug shipped a partial cell because
-  // the button accepted an empty form and the page silently
-  // converted nulls to ``'0'``. This is the first line of defense;
-  // the schema refine + ``createTarifaBatch`` is the second.
-  const { isValid } = form.formState;
+  // The submit button is disabled while the form has zero non-null
+  // ``valor_*`` inputs. We compute this via ``useWatch`` (subscribed
+  // to the 4 valor_* fields) so the button reflects the typed-in
+  // value on the SAME render the input change commits -- no stale
+  // ``isValid=false`` from the initial mount, no async re-validation
+  // race. The schema-level superRefine (al menos 1 non-null) is the
+  // defense in depth: even if the operator bypasses this UI guard,
+  // the batch endpoint would 422.
+  const watchedValors = useWatch({
+    control: form.control,
+    name: [
+      'valor_hora',
+      'valor_fraccion',
+      'valor_plena',
+      'valor_nocturna',
+    ],
+  });
+  // ``useWatch`` returns a fresh array each render with the current
+  // value of each watched field. A field that has not been registered
+  // or has no value yet comes through as ``undefined`` -- the harness
+  // mounts before the form fields register, so on the first render
+  // the array is empty and ``hasAnyValor`` is correctly false. As
+  // soon as the operator types (or an EDIT pre-populates a value),
+  // the array carries the new string and the button enables.
+  const safeValors: ReadonlyArray<unknown> = Array.isArray(watchedValors)
+    ? watchedValors
+    : [];
+  const hasAnyValor = safeValors.some(
+    (v) => typeof v === 'string' && v.length > 0,
+  );
+  const isValid = hasAnyValor;
 
   return (
     <Form {...form}>
@@ -507,10 +531,40 @@ export function TarifaFormHarness(
     defaultValues: {
       uuid_sucursal: sucursalActivaUuid ?? initial?.uuid_sucursal ?? null,
       uuid_tipo_vehiculo: initial?.uuid_tipo_vehiculo ?? null,
-      valor_hora: initial?.hora.valor ?? null,
-      valor_fraccion: initial?.fraccion.valor ?? null,
-      valor_plena: initial?.plena.valor ?? null,
-      valor_nocturna: initial?.nocturna.valor ?? null,
+      // EDIT pre-populates the valor_* inputs with the wire values
+      // (``"3000.0000"`` etc.) but the operator perceives a
+      // fractional amount. Re-format to es-CO without decimals so
+      // the input shows ``"3.000"`` (operator feedback 2026-10-11).
+      // The backend accepts the formatted string the same way (the
+      // Zod ``decimalString`` refine matches ``^-?\d+(\.\d+)?$`` and
+      // the Pydantic ``Decimal`` parser rounds to 4 decimals on
+      // commit), so no information is lost. CREATE keeps the raw
+      // ``null`` defaults -- the operator types the fresh value.
+      //
+      // CRITICAL: the value is the formatted string when the cell has
+      // a valor, OR ``null`` when it does not. We do NOT pass
+      // ``formatTarifaValor(null)`` (= ``'—'``) as the default -- the
+      // ``'—'`` placeholder is a DISPLAY concern, not a form value, and
+      // sending it through the schema would fail the
+      // ``^-?\d+(\.\d+)?$`` regex. The display layer (``field.value
+      // ?? ''``) keeps rendering ``''`` for the empty inputs, which
+      // shows the placeholder text and is what the operator expects.
+      valor_hora:
+        initial?.hora.valor != null
+          ? formatTarifaValor(initial.hora.valor)
+          : null,
+      valor_fraccion:
+        initial?.fraccion.valor != null
+          ? formatTarifaValor(initial.fraccion.valor)
+          : null,
+      valor_plena:
+        initial?.plena.valor != null
+          ? formatTarifaValor(initial.plena.valor)
+          : null,
+      valor_nocturna:
+        initial?.nocturna.valor != null
+          ? formatTarifaValor(initial.nocturna.valor)
+          : null,
       vigente_desde: defaultVigenteDesde,
     },
   });

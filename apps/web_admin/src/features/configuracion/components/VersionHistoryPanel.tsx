@@ -25,6 +25,16 @@ export interface VersionHistoryItem {
   uuid: string;
   /** Display value: tarifa ``valor`` or cupos ``cantidad``. */
   display: string;
+  /**
+   * Optional per-row category label (e.g. "Hora", "Fracción", "Plena",
+   * "Nocturna" for tarifas). When ANY item in the ``versions`` array
+   * carries a non-empty ``displayLabel``, the panel renders a
+   * "Modalidad" column so the operator can see which dimension
+   * changed at each version. When all items omit it (cupos' default
+   * case), the column is hidden and the panel keeps the legacy
+   * 4-column layout -- backward-compatible.
+   */
+  displayLabel?: string;
   /** ISO-8601 string. */
   vigente_desde: string;
   /** ISO-8601 string or null (open-ended). */
@@ -71,6 +81,15 @@ export function VersionHistoryPanel({
 }: VersionHistoryPanelProps): JSX.Element {
   const [expanded, setExpanded] = React.useState(defaultExpanded);
 
+  // Render the "Modalidad" column only when at least one item carries
+  // a non-empty ``displayLabel`` (the tarifa path). Cupos' history
+  // items do not set this field, so the panel falls back to the
+  // legacy 4-column layout -- backward-compatible with the existing
+  // /cupos page that hasn't been touched.
+  const showModalidadColumn = versions.some(
+    (v) => typeof v.displayLabel === 'string' && v.displayLabel.length > 0,
+  );
+
   if (versions.length === 0) {
     return (
       <Card data-testid={contentProps?.['data-testid']}>
@@ -101,6 +120,14 @@ export function VersionHistoryPanel({
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b text-left">
+                {showModalidadColumn && (
+                  <th
+                    className="px-3 py-2"
+                    data-testid="version-history-modalidad-header"
+                  >
+                    Modalidad
+                  </th>
+                )}
                 <th className="px-3 py-2">{displayLabel}</th>
                 <th className="px-3 py-2">Vigente desde</th>
                 <th className="px-3 py-2">Vigente hasta</th>
@@ -116,6 +143,14 @@ export function VersionHistoryPanel({
                     data-testid={`version-history-row-${i}`}
                     className={cn('border-b last:border-b-0', isCurrent && 'bg-accent/40')}
                   >
+                    {showModalidadColumn && (
+                      <td
+                        className="px-3 py-2 text-sm"
+                        data-testid={`version-history-modalidad-${i}`}
+                      >
+                        {v.displayLabel ?? '—'}
+                      </td>
+                    )}
                     <td className="px-3 py-2 font-mono text-sm">{v.display}</td>
                     <td className="px-3 py-2 text-xs">{formatEsCo(v.vigente_desde)}</td>
                     <td className="px-3 py-2 text-xs">
