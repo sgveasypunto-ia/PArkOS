@@ -84,7 +84,12 @@ from ...repo.overlap import (
     assert_sucursal_inmutable,
 )
 from ...repo.tarifas_vigencia import bitemporal_vigente_predicate, list_tarifas_vigentes
-from ...repo.versioned import close_and_insert, close_only, current_version
+from ...repo.versioned import (
+    VersioningConflictError,
+    close_and_insert,
+    close_only,
+    current_version,
+)
 from ...schemas.empresa import (
     CantidadVehiculosSucursalCreate,
     CantidadVehiculosSucursalRead,
@@ -107,6 +112,7 @@ from ...schemas.empresa import (
     SucursalRead,
     SucursalReadList,
     SucursalUpdate,
+    TarifasSucursalBatchCreate,
     TarifasSucursalCreate,
     TarifasSucursalFilter,
     TarifasSucursalRead,
@@ -787,14 +793,36 @@ async def create_tarifa_pr_c(
     payload_dict = payload.model_dump(exclude_none=True)
     if payload_vigente_desde is not None:
         payload_dict["vigente_desde"] = payload_vigente_desde
-    new_row = await close_and_insert(
-        session,
-        TarifasSucursal,
-        current_uuid=None,
-        new_attrs=payload_dict,
-        actor_uuid=ctx.actor_uuid,
-        log_tx=True,
-    )
+    try:
+        new_row = await close_and_insert(
+            session,
+            TarifasSucursal,
+            current_uuid=None,
+            new_attrs=payload_dict,
+            actor_uuid=ctx.actor_uuid,
+            log_tx=True,
+        )
+    except VersioningConflictError as exc:
+        await session.rollback()
+        # Defense in depth (REQ-OPS canon): ``assert_no_overlap`` is the FIRST
+        # line and catches the standard "open row already exists" case. The
+        # ``close_and_insert`` IntegrityError → VersioningConflictError mapping
+        # is the SECOND and catches the UK01 race (two POSTs arriving with the
+        # same ``vigente_desde`` slip past the overlap check, the DB UK01
+        # catches the loser). Without this branch the loser surfaces as a bare
+        # 500 ``Internal Server Error`` and the FE shows raw JSON.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "tarifa_overlap",
+                "conflicting_uuid": None,
+                "conflicting_vigente_desde": (
+                    payload_vigente_desde.isoformat() if payload_vigente_desde else None
+                ),
+                "conflicting_vigente_hasta": None,
+                "constraint": exc.constraint_name,
+            },
+        ) from exc
     await session.commit()
     await session.refresh(new_row)
     return TarifasSucursalRead.model_validate(new_row)
@@ -909,17 +937,203 @@ async def update_tarifa_pr_c(
     payload_dict = payload.model_dump(exclude_none=True)
     if payload.vigente_desde is not None:
         payload_dict["vigente_desde"] = _to_naive_utc(payload.vigente_desde)
-    new_row = await close_and_insert(
-        session,
-        TarifasSucursal,
-        current_uuid=uuid,
-        new_attrs=payload_dict,
-        actor_uuid=ctx.actor_uuid,
-        log_tx=True,
-    )
+    try:
+        new_row = await close_and_insert(
+            session,
+            TarifasSucursal,
+            current_uuid=uuid,
+            new_attrs=payload_dict,
+            actor_uuid=ctx.actor_uuid,
+            log_tx=True,
+        )
+    except VersioningConflictError as exc:
+        await session.rollback()
+        # Same defense-in-depth as the POST path: an IntegrityError that
+        # slipped past the overlap check (UK01 race, FK violation) maps
+        # to 409 ``tarifa_overlap`` with the constraint name attached so
+        # the FE can branch on the cause (e.g. UK01 → "ya existe",
+        # FK → "tipo_vehiculo inválido") in a follow-up.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "tarifa_overlap",
+                "conflicting_uuid": str(uuid),
+                "conflicting_vigente_desde": current.vigente_desde.isoformat(),
+                "conflicting_vigente_hasta": None,
+                "constraint": exc.constraint_name,
+            },
+        ) from exc
     await session.commit()
     await session.refresh(new_row)
     return TarifasSucursalRead.model_validate(new_row)
+
+
+# ---------------------------------------------------------------------------
+# POST /tarifas-sucursal/batch — atomic batch create (HU-tarifas-batch)
+# ---------------------------------------------------------------------------
+
+# Canonical 4 modalities. The FE mirrors these UUIDs in
+# ``apps/web_admin/src/features/tarifas/api/tarifaAgrupada.ts:43-46`` and the
+# admin form pre-selects them by name. Centralized here so a backend refactor
+# (catalog reseed, modalidad rename) is a one-line change.
+_TARIFA_MODALIDADES_CANONICAL: frozenset[uuid_lib.UUID] = frozenset(
+    {
+        uuid_lib.UUID("12e3886a-7059-47ee-bdb2-aa5fb1272bea"),  # hora
+        uuid_lib.UUID("c41b6602-f7b2-437d-bcfc-0462cd385eda"),  # fraccion
+        uuid_lib.UUID("d83ebff8-9546-43b3-91b1-bedffa57717f"),  # plena
+        uuid_lib.UUID("9f8ba4a9-6fd9-4da7-8ddb-97ce323a8600"),  # nocturna
+    }
+)
+
+
+@_tarifas_pr_c_router.post(
+    "/batch",
+    response_model=TarifasSucursalReadList,
+    status_code=201,
+    dependencies=[Depends(_tarifas_pr_c_perm_dep)],
+)
+async def create_tarifa_batch_pr_c(
+    payload: TarifasSucursalBatchCreate,
+    session: AsyncSession = Depends(get_session),
+    ctx: TenantContext = Depends(requires_sucursal),
+    _claims: None = Depends(_tarifas_pr_c_issuer_dep),
+) -> TarifasSucursalReadList:
+    """Atomic batch create for one tarifa cell.
+
+    Creates 1..4 :class:`TarifasSucursal` rows in a SINGLE transaction
+    (one ``close_and_insert`` per item, all flushed+committed in the same
+    TX). The cell-key is the batch parent (``uuid_sucursal``,
+    ``uuid_tipo_vehiculo``, ``vigente_desde``); the items vary by
+    ``uuid_tipo_tarifa``.
+
+    Rejections:
+
+    1. **422 ``tarifa_batch_modalidades_incompletas``** — the items list
+       does not cover the 4 canonical modalidades exactly once each.
+       Modality catalog drift is a refactor signal, not a runtime case.
+    2. **422 per-item Pydantic** — ``valor <= 0``, ``valor_plena < 0``,
+       duplicate ``uuid_tipo_tarifa`` in the same batch (Pydantic
+       ``field_validator``). Standard FastAPI 422.
+    3. **409 ``tarifa_overlap``** — any item's ``assert_no_overlap`` fires
+       (an open row already exists for that key). Whole batch rolls back.
+    4. **409 ``tarifa_overlap``** (DB-layer) — UK01 race between two
+       batches on the same ``vigente_desde``. ``close_and_insert`` raises
+       ``VersioningConflictError`` on flush, mapped to 409. Whole batch
+       rolls back.
+
+    The operator experience target: a 4-input form submits exactly one
+    HTTP call. No partial rows, no silent fallback to ``valor='0'``, no
+    raw Zod JSON in the alert.
+    """
+    payload_vigente_desde = _to_naive_utc(payload.vigente_desde)
+    nueva_desde = payload_vigente_desde or datetime.now(UTC).replace(tzinfo=None)
+
+    # 1. Cross-field: items must cover the 4 canonical modalidades exactly.
+    seen_modalidades: set[uuid_lib.UUID] = set()
+    duplicates: list[uuid_lib.UUID] = []
+    for item in payload.items:
+        if item.uuid_tipo_tarifa in seen_modalidades:
+            duplicates.append(item.uuid_tipo_tarifa)
+        seen_modalidades.add(item.uuid_tipo_tarifa)
+    if (
+        seen_modalidades != _TARIFA_MODALIDADES_CANONICAL
+        or len(payload.items) != len(_TARIFA_MODALIDADES_CANONICAL)
+        or duplicates
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "tarifa_batch_modalidades_incompletas",
+                "expected": sorted(str(u) for u in _TARIFA_MODALIDADES_CANONICAL),
+                "got": sorted(str(u) for u in seen_modalidades),
+                "duplicates": sorted(str(u) for u in duplicates),
+                "items_count": len(payload.items),
+            },
+        )
+
+    # 2. Per-item overlap pre-check. The DB-level UK01 race is caught by
+    # the VersioningConflictError below; this is the first line of defense
+    # for the standard "open row already exists" case.
+    for item in payload.items:
+        try:
+            await assert_no_overlap(
+                session,
+                table="prod.tarifas_sucursal",
+                resource="tarifas-sucursal",
+                key=_Key(
+                    uuid_sucursal=payload.uuid_sucursal,
+                    uuid_tipo_vehiculo=payload.uuid_tipo_vehiculo,
+                    uuid_tipo_tarifa=item.uuid_tipo_tarifa,
+                ),
+                nueva_vigente_desde=nueva_desde,
+                nueva_vigente_hasta=nueva_desde,
+                exclude_uuid=None,
+            )
+        except OverlapError as exc:
+            await session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "tarifa_overlap",
+                    "conflicting_uuid": str(exc.conflicting_uuid),
+                    "conflicting_vigente_desde": (
+                        exc.conflicting_vigente_desde.isoformat()
+                        if exc.conflicting_vigente_desde is not None
+                        else None
+                    ),
+                    "conflicting_vigente_hasta": (
+                        exc.conflicting_vigente_hasta.isoformat()
+                        if exc.conflicting_vigente_hasta is not None
+                        else None
+                    ),
+                    "uuid_tipo_tarifa": str(item.uuid_tipo_tarifa),
+                },
+            ) from exc
+
+    # 3. Insert all items in one TX. Any IntegrityError on flush rolls back
+    # the whole batch (no partial cell, no orphan rows).
+    new_rows: list[TarifasSucursal] = []
+    try:
+        for item in payload.items:
+            new_attrs: dict[str, Any] = {
+                "uuid_sucursal": payload.uuid_sucursal,
+                "uuid_tipo_vehiculo": payload.uuid_tipo_vehiculo,
+                "uuid_tipo_tarifa": item.uuid_tipo_tarifa,
+                "valor": item.valor,
+                "valor_plena": item.valor_plena,
+                "vigente_desde": nueva_desde,
+            }
+            new_row = await close_and_insert(
+                session,
+                TarifasSucursal,
+                current_uuid=None,
+                new_attrs=new_attrs,
+                actor_uuid=ctx.actor_uuid,
+                log_tx=True,
+            )
+            new_rows.append(new_row)
+    except VersioningConflictError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "tarifa_overlap",
+                "conflicting_uuid": None,
+                "conflicting_vigente_desde": (
+                    payload_vigente_desde.isoformat() if payload_vigente_desde else None
+                ),
+                "conflicting_vigente_hasta": None,
+                "constraint": exc.constraint_name,
+            },
+        ) from exc
+
+    await session.commit()
+    for row in new_rows:
+        await session.refresh(row)
+    return TarifasSucursalReadList(
+        items=[TarifasSucursalRead.model_validate(r) for r in new_rows],
+        next_cursor=None,
+    )
 
 
 @_tarifas_pr_c_router.get(

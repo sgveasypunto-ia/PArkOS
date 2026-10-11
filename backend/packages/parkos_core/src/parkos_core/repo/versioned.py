@@ -47,6 +47,7 @@ from typing import Any, TypeVar
 
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.base import VersionedBase
@@ -60,12 +61,85 @@ _RESERVED_COLUMNS = frozenset(
 )
 
 
+def _extract_constraint_name(exc: IntegrityError) -> str | None:
+    """Best-effort constraint name extraction from a SQLAlchemy IntegrityError.
+
+    Driver-specific ``exc.orig`` shape varies across SQLAlchemy 2.0 +
+    asyncpg + psycopg2 + aiosqlite. We try the cheap structured paths
+    first, then fall back to a regex over the rendered error string --
+    the last resort, but it's the only path that works on the live
+    SQLAlchemy 2.0 + asyncpg stack used by the project's testcontainers
+    tests (where the chain is
+    ``asyncpg.UniqueViolationError`` → ``sqlalchemy.exc.IntegrityError``
+    → another ``sqlalchemy.exc.IntegrityError`` -- the inner orig is
+    NOT the asyncpg exception, so neither ``exc.orig.constraint_name``
+    nor ``exc.orig.diag.constraint_name`` is populated).
+
+    We never raise here -- the caller still gets the typed
+    ``VersioningConflictError`` even if extraction fails.
+    """
+    import re
+
+    orig = getattr(exc, "orig", None)
+    if orig is not None:
+        # 1) asyncpg / psycopg2: top-level attribute on the orig itself.
+        name = getattr(orig, "constraint_name", None)
+        if isinstance(name, str) and name:
+            return name
+        # 2) psycopg2 fallback: ``orig.diag.constraint_name`` (DBAPI DiagStruct).
+        diag = getattr(orig, "diag", None)
+        if diag is not None:
+            diag_name = getattr(diag, "constraint_name", None)
+            if isinstance(diag_name, str) and diag_name:
+                return diag_name
+    # 3) Last-resort regex over the rendered message. Postgres wires the
+    # constraint name into the SQLSTATE error string verbatim:
+    # ``duplicate key value violates unique constraint "usuarios_uk01"``
+    # or ``insert or update on table ... violates foreign key
+    # constraint "fk_tarifas_sucursal_uuid_tipo_vehiculo"``. Both carry
+    # the constraint name between double quotes -- the project does
+    # NOT use double-quoted identifiers in DDL, so the regex won't
+    # false-positive on user data.
+    match = re.search(r'(?:unique|foreign key|check|exclude) constraint "([^"]+)"', str(exc))
+    if match is not None:
+        return match.group(1)
+    return None
+
+
 class VersioningError(Exception):
     """Base class for versioned-table operation failures."""
 
 
 class RowNotFoundError(VersioningError):
     """Raised when ``current_uuid`` does not match any row."""
+
+
+class VersioningConflictError(VersioningError):
+    """Raised when the DB rejects the new version with an ``IntegrityError``.
+
+    The canonical case is a UK violation (e.g. two rows trying to share the
+    same business key + ``vigente_desde``). ``close_and_insert`` flushes
+    inside the same transaction the helper owns, so an upstream
+    ``assert_no_overlap`` check that misses the edge (e.g. two POSTs racing
+    on the same ``vigente_desde``) surfaces here as a typed exception
+    instead of leaking an opaque 500 from FastAPI.
+
+    Carries ``constraint_name`` when the underlying driver exposes it
+    (asyncpg's ``exc.orig.diag.constraint_name``); ``None`` on drivers
+    that don't (e.g. SQLite in unit tests, where the test mocks the
+    ``IntegrityError`` directly).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        constraint_name: str | None = None,
+        original: BaseException | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.constraint_name = constraint_name
+        self.original = original
 
 
 async def close_and_insert(
@@ -211,7 +285,26 @@ async def close_and_insert(
     # server-generated PK for every model in this codebase (observed with
     # ``Usuarios``, whose ``uuid`` column re-declaration leaves no
     # ORM-visible default; discovered while wiring PR6's genesis bootstrap).
-    await session.flush()
+    #
+    # Centralized ``IntegrityError`` → ``VersioningConflictError`` mapping
+    # (defense in depth, REQ-OPS canon). The upstream ``assert_no_overlap``
+    # check in tarifa / cupos handlers is the FIRST line of defense; this
+    # is the SECOND. Two POSTs racing on the same ``vigente_desde`` slip
+    # past ``assert_no_overlap`` because the open-row check happens before
+    # either INSERT, and the DB UK01 catches the loser. Without this
+    # mapping, the loser surfaces as a bare 500 from FastAPI (raw
+    # ``Internal Server Error`` body, no JSON). With it, the handler can
+    # translate the typed exception into a 409 with the canonical
+    # ``tarifa_overlap`` / ``cupo_overlap`` shape the FE already parses.
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        constraint_name = _extract_constraint_name(exc)
+        raise VersioningConflictError(
+            f"integrity error inserting new version into {model_cls.__tablename__}: {exc.orig}",
+            constraint_name=constraint_name,
+            original=exc,
+        ) from exc
 
     # FK propagation hook. The PK of every ``[V]`` table is single-column
     # ``uuid``; bi-temporal close+insert regenerates it, leaving the 48
@@ -372,6 +465,7 @@ async def current_version(
 __all__ = [
     "VersioningError",
     "RowNotFoundError",
+    "VersioningConflictError",
     "close_and_insert",
     "close_only",
     "current_version",

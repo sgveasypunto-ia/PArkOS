@@ -433,6 +433,66 @@ class TarifasSucursalReadList(ReadListBase[TarifasSucursalRead]):
     pass
 
 
+class TarifasSucursalBatchItemCreate(_Base):
+    """One ``(uuid_tipo_tarifa, valor, valor_plena)`` triple inside a batch.
+
+    Unlike :class:`TarifasSucursalCreate` (singleton POST, ``valor`` is
+    ``Optional`` because the admin may schedule a value-less placeholder),
+    the batch endpoint requires ``valor > 0`` on every item: a tarifa
+    cell with even a single modalidad at 0 defeats the purpose of the
+    rate table (the cell is no longer "configured" in any business
+    sense), and the operator UI pre-fills all 4 inputs explicitly so a
+    missing value is always a UI bug, not a domain case.
+
+    ``valor_plena`` stays ``Optional`` and ``>= 0`` — the only modality
+    where 0 is meaningful (no full-day surcharge).
+
+    ``extra='forbid'`` (inherited from :class:`_Base`) so a client cannot
+    smuggle a ``uuid_sucursal`` per item (the cell-key belongs at the
+    parent batch level).
+    """
+
+    uuid_tipo_tarifa: uuid_lib.UUID
+    valor: Decimal = Field(gt=Decimal(0))
+    valor_plena: Decimal | None = Field(default=None, ge=Decimal(0))
+
+
+class TarifasSucursalBatchCreate(_Base):
+    """Atomic batch create for one tarifa cell (HU-FX.X — PR-tarifas-batch).
+
+    Creates 1..4 :class:`TarifasSucursal` rows in a SINGLE transaction
+    (one ``close_and_insert`` per item, all flushed in the same TX). If
+    any item fails (UK01 overlap, FK violation, Pydantic constraint), the
+    whole batch rolls back and the operator gets a 409 ``tarifa_overlap``
+    or 422 with the failing item index — no partial cell, no orphan rows.
+
+    Why a dedicated batch endpoint vs. N sequential POSTs:
+
+    * **Atomicity**: a sequential loop commits each POST independently.
+      The first commit succeeds, the second hits a UK01 (someone else
+      raced us on the same ``vigente_desde``), the operator sees a row
+      with only the first modalidad configured and a generic 500. The
+      batch endpoint guarantees all-or-nothing.
+    * **Wire efficiency**: 1 HTTP round-trip, 1 idempotency-key, 1
+      ``log_transaccional`` extension instead of 4.
+    * **Operator UX**: the FE form has 4 valor inputs. Splitting into 4
+      POSTs also splits the error UX (4 alerts, 4 retries) and the empty
+      form used to be silently converted to ``valor='0'`` by the page,
+      which the backend rightly rejected one item at a time.
+
+    Modalities (UUIDs of ``prod.tipo_tarifa``) are NOT validated here —
+    the cell-key is the UUID, not the count. The handler enforces the
+    "exactly the 4 canonical modalidades" rule so the catalog stays a
+    reference catalog (the FE's ``TIPO_TARIFA_UUIDS`` mirrors the same
+    4 hardcoded UUIDs from ``apps/web_admin/.../tarifaAgrupada.ts:43-46``).
+    """
+
+    uuid_sucursal: uuid_lib.UUID | None = None
+    uuid_tipo_vehiculo: uuid_lib.UUID
+    vigente_desde: datetime | None = None
+    items: list[TarifasSucursalBatchItemCreate] = Field(min_length=1, max_length=4)
+
+
 # ---------------------------------------------------------------------------
 # CantidadVehiculosSucursal
 # ---------------------------------------------------------------------------
