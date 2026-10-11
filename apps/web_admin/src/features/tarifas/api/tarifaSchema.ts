@@ -35,56 +35,80 @@ const decimalString = z
     message: 'Debe ser un número decimal válido',
   });
 
-export const tarifaCreateSchema = z.object({
-  uuid_sucursal: nullableUuid,
-  uuid_tipo_vehiculo: nullableUuid,
-  // Required on CREATE: tarifa cells must have every modalidad priced.
-  // Empty/blank inputs are rejected with "Requerido" -- the page
-  // used to convert null to '0' and send it, the backend rightly
-  // rejected it, and the operator saw a row with only one modalidad
-  // configured and a raw-Zod-JSON alert. The strict refine now blocks
-  // the submit at the form layer with an inline message; PR2's batch
-  // endpoint is the new happy path (one POST, 4 items, atomic).
-  //
-  // On EDIT, the operator may leave a modalidad blank to indicate
-  // "I am not changing this one" -- the form splits the submit into
-  // a per-modalidad PUT for each present valor_* and skips the blank
-  // ones. The pre-populated valor_* for an existing modalidad is
-  // always a valid decimal string, so the > 0 check still applies.
-  // The ``mode`` field flips the behavior:
-  //   - "create" (default) -- the null branch is invalid; "Requerido".
-  //   - "edit" -- the null branch is allowed (skips the modalidad);
-  //     the > 0 check still applies to non-null values.
-  valor_hora: z
-    .union([decimalString, z.null(), z.undefined()])
-    .transform((v) => (v === undefined || v === '' ? null : v))
-    .refine((v) => v !== null, { message: 'Requerido' })
-    .refine((v) => v === null || Number(v) > 0, {
-      message: 'El valor hora debe ser mayor a 0',
-    }),
-  valor_fraccion: z
-    .union([decimalString, z.null(), z.undefined()])
-    .transform((v) => (v === undefined || v === '' ? null : v))
-    .refine((v) => v !== null, { message: 'Requerido' })
-    .refine((v) => v === null || Number(v) > 0, {
-      message: 'El valor fracción debe ser mayor a 0',
-    }),
-  valor_plena: z
-    .union([decimalString, z.null(), z.undefined()])
-    .transform((v) => (v === undefined || v === '' ? null : v))
-    .refine((v) => v !== null, { message: 'Requerido' })
-    .refine((v) => v === null || Number(v) >= 0, {
-      message: 'El valor plena debe ser >= 0',
-    }),
-  valor_nocturna: z
-    .union([decimalString, z.null(), z.undefined()])
-    .transform((v) => (v === undefined || v === '' ? null : v))
-    .refine((v) => v !== null, { message: 'Requerido' })
-    .refine((v) => v === null || Number(v) > 0, {
-      message: 'El valor nocturna debe ser mayor a 0',
-    }),
-  vigente_desde: utcDateTime,
-});
+export const tarifaCreateSchema = z
+  .object({
+    uuid_sucursal: nullableUuid,
+    uuid_tipo_vehiculo: nullableUuid,
+    // HU-tarifas-N-modalidades (operator feedback 2026-10-11): a
+    // cell with a single ``hora`` rate (e.g. a plaza that only
+    // charges per hour, not per fraction / per day / per night) is a
+    // valid use case. Empty/blank inputs are now accepted on each
+    // ``valor_*`` -- the per-field > 0 / >= 0 check still applies when
+    // the operator types something, and the schema-level ``superRefine``
+    // below enforces "at least one valor_X is non-null" so the
+    // operator can't ship a totally empty cell (a no-op batch would
+    // be useless and the backend's ``min_length=1`` on the items
+    // array would reject it anyway). The PR2 strict "all 4 required"
+    // check was over-defensive and is replaced by this "1..4 from the
+    // canonical set" rule -- the backend batch endpoint follows the
+    // same contract.
+    //
+    // The same per-field tolerance applies on EDIT (the operator may
+    // leave a modalidad blank to indicate "I am not changing this
+    // one" -- the page splits the submit into a per-modalidad PUT for
+    // each present valor_* and skips the blank ones). See
+    // ``tarifaEditSchema`` below for the EDIT-only schema.
+    valor_hora: z
+      .union([decimalString, z.null(), z.undefined()])
+      .transform((v) => (v === undefined || v === '' ? null : v))
+      .refine((v) => v === null || Number(v) > 0, {
+        message: 'El valor hora debe ser mayor a 0',
+      }),
+    valor_fraccion: z
+      .union([decimalString, z.null(), z.undefined()])
+      .transform((v) => (v === undefined || v === '' ? null : v))
+      .refine((v) => v === null || Number(v) > 0, {
+        message: 'El valor fracción debe ser mayor a 0',
+      }),
+    valor_plena: z
+      .union([decimalString, z.null(), z.undefined()])
+      .transform((v) => (v === undefined || v === '' ? null : v))
+      .refine((v) => v === null || Number(v) >= 0, {
+        message: 'El valor plena debe ser >= 0',
+      }),
+    valor_nocturna: z
+      .union([decimalString, z.null(), z.undefined()])
+      .transform((v) => (v === undefined || v === '' ? null : v))
+      .refine((v) => v === null || Number(v) > 0, {
+        message: 'El valor nocturna debe ser mayor a 0',
+      }),
+    vigente_desde: utcDateTime,
+  })
+  .superRefine((data, ctx) => {
+    // At least one of the four ``valor_*`` fields must be non-null. We
+    // anchor the error to the first empty field so RHF's
+    // ``setError`` (if the caller wires it) can mark the right input.
+    const empty: Array<{ path: (string | number)[]; key: string }> = [
+      { path: ['valor_hora'], key: 'valor_hora' },
+      { path: ['valor_fraccion'], key: 'valor_fraccion' },
+      { path: ['valor_plena'], key: 'valor_plena' },
+      { path: ['valor_nocturna'], key: 'valor_nocturna' },
+    ];
+    const anyFilled = empty.some(({ key }) => data[key] !== null);
+    if (!anyFilled) {
+      // Surface the error on every valor_X so the form shows a
+      // consistent message on each input (avoids the UX trap where
+      // one inline error and three blanks feels like "I missed a
+      // specific field" -- the operator actually missed all of them).
+      for (const { path } of empty) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path,
+          message: 'Ingresá al menos un valor',
+        });
+      }
+    }
+  });
 
 /**
  * Edit-mode schema: same shape as ``tarifaCreateSchema`` but allows

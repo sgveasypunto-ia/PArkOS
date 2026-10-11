@@ -654,8 +654,9 @@ describe('Tarifas page', () => {
     // sequential POSTs. The first one (HORA, valor='0' from the
     // null-to-'0' fallback) returned 201, the rest failed with 500
     // (UK01 race) or raw Zod JSON. After the fix:
-    //   - The form's RHF refine rejects null/empty valor_* with
-    //     "Requerido" inline before onSubmit runs.
+    //   - The form's RHF superRefine rejects the all-empty payload
+    //     with "Ingresá al menos un valor" on every valor_* input
+    //     before onSubmit runs.
     //   - The submit button is disabled when the form is invalid
     //     (formState.isValid).
     //   - createTarifaBatch is never called.
@@ -664,7 +665,8 @@ describe('Tarifas page', () => {
     const user = userEvent.setup();
     render(<Tarifas />, { wrapper: fullWrapper });
     await user.click(screen.getByTestId('tarifa-new'));
-    // The submit button is disabled because every valor_* is empty.
+    // The submit button is disabled because every valor_* is empty
+    // and the superRefine rejects with "at least 1 non-null".
     const submitBtn = screen.getByTestId('tarifa-submit') as HTMLButtonElement;
     expect(submitBtn.disabled).toBe(true);
     // Try to click anyway -- the disabled state blocks the form, and
@@ -680,57 +682,63 @@ describe('Tarifas page', () => {
     expect(screen.queryByText(/"code":/)).not.toBeInTheDocument();
   });
 
-  it('TP-batch-2: submit only valor_hora -- 3 inline errors, no API call', async () => {
-    // Partial form: only the first valor is filled. The form's RHF
-    // refine blocks the submit; onSubmit is never called; no POST.
+  it('TP-batch-2: submit only valor_hora -- submit ENABLED, 1 item in payload (HU-tarifas-N-modalidades)', async () => {
+    // HU-tarifas-N-modalidades (operator feedback 2026-10-11):
+    // 1-modalidad cells are valid. A cell with only "hora" priced
+    // (a plaza that only charges per hour, not per fraction or
+    // per day) is the new happy path. The form's superRefine allows
+    // any number of non-null valor_*; the submit button is enabled
+    // and the batch payload carries exactly 1 item.
     mockedListTarifas.mockResolvedValue([]);
-    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
-    const user = userEvent.setup();
-    render(<Tarifas />, { wrapper: fullWrapper });
-    await user.click(screen.getByTestId('tarifa-new'));
-    // Fill ONLY valor_hora; leave the other 3 empty.
-    const hora = screen.getByTestId('tarifa-field-valor-hora');
-    await user.type(hora, '2000');
-    // The submit button stays disabled because the other 3 are empty.
-    const submitBtn = screen.getByTestId('tarifa-submit') as HTMLButtonElement;
-    expect(submitBtn.disabled).toBe(true);
-    await user.click(submitBtn).catch(() => undefined);
-    expect(mockedCreateTarifaBatch).not.toHaveBeenCalled();
-  });
-
-  it('TP-batch-3: happy path -- 4 valid values trigger ONE createTarifaBatch call, modal closes', async () => {
-    // The operator filled all 4 inputs. The form is valid; submit
-    // fires one POST /batch (not 4 POSTs). The mock resolves; the
-    // modal closes; the list refreshes.
-    mockedListTarifas
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
-        { ...SAMPLE_TARIFA, valor: '1500.0000' },
-        { ...SAMPLE_TARIFA, uuid: 'b2', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.fraccion, valor: '800.0000' },
-        { ...SAMPLE_TARIFA, uuid: 'b3', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.plena, valor: '2000.0000' },
-        { ...SAMPLE_TARIFA, uuid: 'b4', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.nocturna, valor: '1000.0000' },
-      ]);
     mockedCreateTarifaBatch.mockResolvedValue([
-      { ...SAMPLE_TARIFA, valor: '1500.0000' },
-      { ...SAMPLE_TARIFA, uuid: 'b2', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.fraccion, valor: '800.0000' },
-      { ...SAMPLE_TARIFA, uuid: 'b3', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.plena, valor: '2000.0000' },
-      { ...SAMPLE_TARIFA, uuid: 'b4', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.nocturna, valor: '1000.0000' },
+      { ...SAMPLE_TARIFA, valor: '2000.0000' },
     ]);
     window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
     const user = userEvent.setup();
     render(<Tarifas />, { wrapper: fullWrapper });
     await user.click(screen.getByTestId('tarifa-new'));
-    await user.type(screen.getByTestId('tarifa-field-valor-hora'), '1500');
-    await user.type(screen.getByTestId('tarifa-field-valor-fraccion'), '800');
-    await user.type(screen.getByTestId('tarifa-field-valor-plena'), '2000');
-    await user.type(screen.getByTestId('tarifa-field-valor-nocturna'), '1000');
+    // Fill ONLY valor_hora; leave the other 3 empty.
+    await user.type(screen.getByTestId('tarifa-field-valor-hora'), '2000');
+    // The submit button is ENABLED -- 1 valor is the new minimum.
     const submitBtn = screen.getByTestId('tarifa-submit') as HTMLButtonElement;
     expect(submitBtn.disabled).toBe(false);
     await user.click(submitBtn);
     await waitFor(() => {
       expect(mockedCreateTarifaBatch).toHaveBeenCalledTimes(1);
     });
-    // The batch payload carries 4 items (one per modalidad).
+    const [payload] = mockedCreateTarifaBatch.mock.calls[0] as [
+      {
+        items: Array<{ uuid_tipo_tarifa: string; valor: string }>;
+      },
+    ];
+    // Exactly 1 item, and it's the HORA one.
+    expect(payload.items).toHaveLength(1);
+    expect(payload.items[0]?.uuid_tipo_tarifa).toBe(TIPO_TARIFA_UUIDS.hora);
+  });
+
+  it('TP-batch-3: happy path -- 1 valid value triggers ONE createTarifaBatch call (1..4 inputs)', async () => {
+    // The operator filled 1 input (HU-tarifas-N-modalidades). The form
+    // is valid; submit fires one POST /batch. The mock resolves; the
+    // modal closes; the list refreshes.
+    mockedListTarifas
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ ...SAMPLE_TARIFA, valor: '1500.0000' }]);
+    mockedCreateTarifaBatch.mockResolvedValue([
+      { ...SAMPLE_TARIFA, valor: '1500.0000' },
+    ]);
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    const user = userEvent.setup();
+    render(<Tarifas />, { wrapper: fullWrapper });
+    await user.click(screen.getByTestId('tarifa-new'));
+    await user.type(screen.getByTestId('tarifa-field-valor-hora'), '1500');
+    const submitBtn = screen.getByTestId('tarifa-submit') as HTMLButtonElement;
+    expect(submitBtn.disabled).toBe(false);
+    await user.click(submitBtn);
+    await waitFor(() => {
+      expect(mockedCreateTarifaBatch).toHaveBeenCalledTimes(1);
+    });
+    // The batch payload carries exactly 1 item (the one HORA the
+    // operator filled). The legacy 4-POST path must NOT be called.
     const [payload] = mockedCreateTarifaBatch.mock.calls[0] as [
       {
         items: Array<{ uuid_tipo_tarifa: string; valor: string }>;
@@ -738,12 +746,8 @@ describe('Tarifas page', () => {
         uuid_tipo_vehiculo: string;
       },
     ];
-    expect(payload.items).toHaveLength(4);
-    const modalidadesEnviadas = new Set(payload.items.map((i) => i.uuid_tipo_tarifa));
-    for (const uuid of Object.values(TIPO_TARIFA_UUIDS)) {
-      expect(modalidadesEnviadas.has(uuid)).toBe(true);
-    }
-    // The legacy 4-POST path must NOT be called.
+    expect(payload.items).toHaveLength(1);
+    expect(payload.items[0]?.uuid_tipo_tarifa).toBe(TIPO_TARIFA_UUIDS.hora);
     expect(mockedCreateTarifa).not.toHaveBeenCalled();
     // The modal closed and the list refreshed.
     await waitFor(() => {
@@ -772,14 +776,127 @@ describe('Tarifas page', () => {
     render(<Tarifas />, { wrapper: fullWrapper });
     await user.click(screen.getByTestId('tarifa-new'));
     await user.type(screen.getByTestId('tarifa-field-valor-hora'), '1500');
-    await user.type(screen.getByTestId('tarifa-field-valor-fraccion'), '800');
-    await user.type(screen.getByTestId('tarifa-field-valor-plena'), '2000');
-    await user.type(screen.getByTestId('tarifa-field-valor-nocturna'), '1000');
     await user.click(screen.getByTestId('tarifa-submit'));
     // The alert must show the human-readable message, not JSON.
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('tarifas_sucursal_uk01');
     expect(alert.textContent).not.toContain('[ {');
     expect(alert.textContent).not.toContain('"code"');
+  });
+
+  it('TP-batch-5: submit with 0 valores -- submit DISABLED (superRefine rejects all-empty payload)', async () => {
+    // Defense: the operator can always open the modal and type
+    // nothing. The submit button MUST stay disabled in that state
+    // (the superRefine on tarifaCreateSchema refuses the all-empty
+    // payload and formState.isValid is false). Without this guard,
+    // the page would send a 0-item batch, the backend's
+    // min_length=1 would 422, and the operator would see a raw 422
+    // instead of a clean disabled-button UX.
+    mockedListTarifas.mockResolvedValue([]);
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    const user = userEvent.setup();
+    render(<Tarifas />, { wrapper: fullWrapper });
+    await user.click(screen.getByTestId('tarifa-new'));
+    const submitBtn = screen.getByTestId('tarifa-submit') as HTMLButtonElement;
+    expect(submitBtn.disabled).toBe(true);
+    await user.click(submitBtn).catch(() => undefined);
+    expect(mockedCreateTarifaBatch).not.toHaveBeenCalled();
+  });
+
+  it('TP-batch-6: submit with 2 valores (HORA + FRACCION) -- 1 batch POST with 2 items', async () => {
+    // Mixed case: the operator priced 2 of the 4 modalidades
+    // (e.g. a plaza that charges per hour AND per fraction but
+    // has no per-day or per-night surcharge). The batch payload
+    // carries exactly 2 items, no duplicates, no full-set copy.
+    mockedListTarifas
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { ...SAMPLE_TARIFA, valor: '1500.0000' },
+        { ...SAMPLE_TARIFA, uuid: 'b2', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.fraccion, valor: '800.0000' },
+      ]);
+    mockedCreateTarifaBatch.mockResolvedValue([
+      { ...SAMPLE_TARIFA, valor: '1500.0000' },
+      { ...SAMPLE_TARIFA, uuid: 'b2', uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.fraccion, valor: '800.0000' },
+    ]);
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    const user = userEvent.setup();
+    render(<Tarifas />, { wrapper: fullWrapper });
+    await user.click(screen.getByTestId('tarifa-new'));
+    await user.type(screen.getByTestId('tarifa-field-valor-hora'), '1500');
+    await user.type(screen.getByTestId('tarifa-field-valor-fraccion'), '800');
+    await user.click(screen.getByTestId('tarifa-submit'));
+    await waitFor(() => {
+      expect(mockedCreateTarifaBatch).toHaveBeenCalledTimes(1);
+    });
+    const [payload] = mockedCreateTarifaBatch.mock.calls[0] as [
+      { items: Array<{ uuid_tipo_tarifa: string; valor: string }> },
+    ];
+    expect(payload.items).toHaveLength(2);
+    const modalidadesEnviadas = new Set(payload.items.map((i) => i.uuid_tipo_tarifa));
+    expect(modalidadesEnviadas).toEqual(
+      new Set([TIPO_TARIFA_UUIDS.hora, TIPO_TARIFA_UUIDS.fraccion]),
+    );
+  });
+
+  it('TP-fresh: post-EDIT the row does NOT disappear -- fix for the chrome-devtools "60s gap" bug', async () => {
+    // Operator feedback 2026-10-11 (bug 2): "If I edit a tarifa, the
+    // record disappears and only comes back when I refresh the app."
+    // Root cause: the form pre-populated ``vigente_desde = now+1min``
+    // and the new row landed in the future, invisible to the list
+    // endpoint (which evaluates the bi-temporal predicate with
+    // server-now) for ~60s. The fix unifies ``defaultVigenteDesde =
+    // utcNowPlusMinutesAsIso(0)`` for both CREATE and EDIT. This
+    // test pins the post-EDIT refresh: the row must remain in the
+    // list immediately after submit (no phantom "wait 60s" UX).
+    //
+    // We seed the cell with the moto group (HORA=2000), submit an
+    // EDIT that does NOT change any valor (only flips vigente_desde
+    // by re-submitting), and verify the row is still in the list
+    // after the refresh. If the future-date bug regressed, the new
+    // row's vigente_desde would be > now and the list query would
+    // exclude it; this test would fail because the list would
+    // return [] for that cell.
+    const editingUuid = 'aaaaaaaa-1111-1111-1111-111111111111';
+    const tipoVehiculoUuid = '00000000-0000-0000-0000-000000000001';
+    const editingRow = {
+      ...SAMPLE_TARIFA,
+      uuid: editingUuid,
+      uuid_sucursal: SUCURSAL_1,
+      uuid_tipo_vehiculo: tipoVehiculoUuid,
+      uuid_tipo_tarifa: TIPO_TARIFA_UUIDS.hora,
+      valor: '2000.0000',
+      valor_plena: null,
+    };
+    const newRow = { ...editingRow, uuid: 'bbbbbbbb-2222-2222-2222-222222222222' };
+    // The list BEFORE submit returns the editing row (vigente).
+    // The list AFTER submit returns the new row (same vigente_desde
+    // as the editing one because defaultVigenteDesde=now+0 and the
+    // form's submit preserves that boundary via close+insert).
+    mockedListTarifas
+      .mockResolvedValueOnce([editingRow])
+      .mockResolvedValueOnce([newRow]);
+    mockedUpdateTarifa.mockResolvedValue(newRow);
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    const user = userEvent.setup();
+    render(<Tarifas />, { wrapper: fullWrapper });
+    const grupoKey = grupoKeyFor(SUCURSAL_1, tipoVehiculoUuid, SAMPLE_TARIFA.vigente_desde);
+    await waitFor(() =>
+      expect(screen.getByTestId(`tarifa-row-${grupoKey}`)).toBeInTheDocument(),
+    );
+    // Open Edit, leave the valor_X fields untouched (the form
+    // pre-populates from initial; the operator just hits Actualizar).
+    await user.click(screen.getByTestId(`tarifa-edit-${grupoKey}`));
+    await user.click(screen.getByTestId('tarifa-submit'));
+    // The row is STILL visible after the refresh -- the new
+    // ``vigente_desde = now+0`` makes the new row vigente NOW
+    // (the predicate is ``vigente_desde <= :v AND (vigente_hasta
+    // IS NULL OR vigente_hasta > :v)``, and now >= now).
+    await waitFor(() => {
+      expect(screen.getByTestId(`tarifa-row-${grupoKey}`)).toBeInTheDocument();
+    });
+    // The second listTarifas call (the refresh) returned 1 row
+    // (the new one). If the future-date bug regressed, it would
+    // have returned 0 rows for that cell.
+    expect(mockedListTarifas).toHaveBeenCalledTimes(2);
   });
 });

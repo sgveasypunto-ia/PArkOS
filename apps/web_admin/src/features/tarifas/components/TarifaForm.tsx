@@ -27,15 +27,25 @@
  *     rule, sentinel ``TIPO_NULL_SENTINEL_TARIFA``.
  *   - `valor_hora`, `valor_fraccion`, `valor_plena`, `valor_nocturna`
  *     — four inputs for the 4 canonical modalidades. The page-side
- *     ``onSubmit`` splits this into one POST per modality to the
- *     dedicated single-row handler, producing 4 ``tarifas_sucursal``
- *     rows per (sucursal, tipo_vehiculo) cell. Each field is
- *     REQUIRED (no nulls) — a tarifa cell always has all four
- *     modalities priced. `valor_*` > 0; `valor_plena` >= 0.
+ *     ``onSubmit`` splits this into one POST per modalidad (only the
+ *     ones the operator filled in; 1..4 from the canonical set --
+ *     HU-tarifas-N-modalidades, 2026-10-11). At least one valor_X
+ *     must be non-null -- the form's RHF schema enforces this via a
+ *     ``superRefine`` (one row, four ``Ingresá al menos un valor``
+ *     issues so the operator sees the same message on every input).
+ *     When non-null, each ``valor_*`` > 0 (and ``valor_plena`` >= 0);
+ *     null means "I am not configuring this modalidad" (allowed on
+ *     both CREATE and EDIT; the page-side submit filter then skips
+ *     the modality). The 4-input UX is preserved for ergonomic
+ *     reasons (the operator can see all 4 at once) but the contract
+ *     is "fill 1 to 4".
  *   - `vigente_desde` (datetime-local, REQUIRED). The operator cannot
- *     clear it. CREATE defaults to "now" (current minute in the
- *     operator's local TZ); EDIT defaults to "now + 1 minute" per the
- *     canonical UX rule shipped 2026-09-29 for this screen.
+ *     clear it. Both CREATE and EDIT default to "now" (current
+ *     instant in the operator's local TZ) -- HU-tarifas-N-modalidades
+ *     unified the previous EDIT default of "now + 1 minute" to fix
+ *     the chrome-devtools bug where the new row landed in the future
+ *     and the list endpoint (which evaluates the bi-temporal
+ *     predicate with server-now) hid it for 60s.
  */
 import { useEffect } from 'react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
@@ -250,7 +260,7 @@ export function TarifaForm({
                     step="0.0001"
                     min="0"
                     placeholder="1500"
-                    required
+
                     aria-required="true"
                     {...field}
                     value={field.value ?? ''}
@@ -283,7 +293,7 @@ export function TarifaForm({
                     step="0.0001"
                     min="0"
                     placeholder="800"
-                    required
+
                     aria-required="true"
                     {...field}
                     value={field.value ?? ''}
@@ -318,7 +328,7 @@ export function TarifaForm({
                     step="0.0001"
                     min="0"
                     placeholder="2000"
-                    required
+
                     aria-required="true"
                     {...field}
                     value={field.value ?? ''}
@@ -351,7 +361,7 @@ export function TarifaForm({
                     step="0.0001"
                     min="0"
                     placeholder="1000"
-                    required
+
                     aria-required="true"
                     {...field}
                     value={field.value ?? ''}
@@ -382,7 +392,7 @@ export function TarifaForm({
                     id="vigente_desde"
                     data-testid="tarifa-field-vigente-desde"
                     type="datetime-local"
-                    required
+
                     aria-required="true"
                     {...field}
                     value={isoToDatetimeLocal(field.value)}
@@ -458,16 +468,24 @@ export function TarifaFormHarness(
   // strict-required rule never fires for a UI submit).
   const { tipos: tiposVehiculoCatalog } = useTiposVehiculo();
 
-  // ``vigente_desde`` defaults to "now" (real UTC) in CREATE and
-  // "now + 1 minute" in EDIT (the canonical UX rule for /tarifas,
-  // matching /cupos). Both go through ``@/lib/datetimeTz`` so the
-  // wire format is the canonical ``+00:00`` suffix — never local
-  // components mislabeled (the previous code did that for CREATE
-  // and broke the boundary check in any non-UTC host).
-  const defaultVigenteDesde =
-    initial === null
-      ? utcNowPlusMinutesAsIso(0)
-      : utcNowPlusMinutesAsIso(1);
+  // ``vigente_desde`` defaults to "now" (real UTC) for BOTH CREATE
+  // and EDIT (HU-tarifas-N-modalidades, operator feedback 2026-10-11).
+  // The previous EDIT default of "now + 1 minute" was intended as
+  // buffer against client/server clock skew, but it had a critical
+  // side-effect: the new row landed in the future, invisible to
+  // the list endpoint (which evaluates the bi-temporal predicate
+  // with ``datetime.now(UTC)`` server-side) until the wall clock
+  // crossed the +1min boundary. The user perceived this as "the
+  // record disappeared and only came back on refresh". The fix:
+  // unified ``now+0`` for both modes. The backend still has a
+  // monotonicity guard (``empresa.py:895-904`` rejects
+  // ``nueva_desde < current.vigente_desde`` with 409) and
+  // ``close_and_insert`` closes the old row with
+  // ``vigente_hasta = nueva_desde`` and opens the new one at the
+  // same instant -- no gap, no phantom future row. Both go through
+  // ``@/lib/datetimeTz`` so the wire format is the canonical
+  // ``+00:00`` suffix.
+  const defaultVigenteDesde = utcNowPlusMinutesAsIso(0);
   const { sucursalActivaUuid, isUpdate = false, ...formProps } = props;
   const tiposVehiculoEnUsoEnSucursal = formProps.tiposVehiculoEnUsoEnSucursal;
   // Pre-fill the 4 valor_* inputs from the grouped row's per-modalidad
