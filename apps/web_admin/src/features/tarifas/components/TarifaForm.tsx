@@ -53,6 +53,12 @@ import {
   FormMessage,
 } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
+import {
+  datetimeLocalToIso,
+  isoToDatetimeLocal,
+  localNowAsDatetimeLocal,
+  utcNowPlusMinutesAsIso,
+} from '@/lib/datetimeTz';
 
 import {
   tarifaCreateSchema,
@@ -93,51 +99,6 @@ interface TarifaFormHarnessExtraProps {
    *  default for ``uuid_sucursal``; the form never picks it (the
    *  parent page pins it again on submit as defense in depth). */
   sucursalActivaUuid: string | null;
-}
-
-function isoToDatetimeLocal(iso: string | null | undefined): string {
-  if (!iso) return '';
-  return iso.slice(0, 16);
-}
-
-function datetimeLocalToIso(local: string): string {
-  return `${local}:00+00:00`;
-}
-
-function localNowAsDatetimeLocal(): string {
-  /** Return the current local datetime as ``YYYY-MM-DDTHH:mm`` for the
-   * ``<input type="datetime-local">`` default. Naive local time so the
-   * operator sees "right now" in their own timezone when creating a new
-   * tarifa. The conversion back to UTC for the wire is the handler's
-   * job (``_to_naive_utc`` in backend). */
-  const now = new Date();
-  const pad = (n: number): string => String(n).padStart(2, '0');
-  return (
-    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
-    `T${pad(now.getHours())}:${pad(now.getMinutes())}`
-  );
-}
-
-function localNowPlusMinutesAsIso(minutes: number): string {
-  /** Return the current local datetime shifted by ``minutes`` minutes,
-   * formatted as ``YYYY-MM-DDTHH:mm:00+00:00`` (the wire format the
-   * form submits for ``vigente_desde``). Used by the EDIT modal as a
-   * default: when the operator opens an existing tarifa for editing, the
-   * boundary is pre-set to "now + 1 minute" so submitting without
-   * touching the field opens a new version one minute ahead of the
-   * current boundary — strictly forward in time, no overlap risk on
-   * the same exact instant.
-   *
-   * CREATE keeps its own default ("now", current minute) — see
-   * ``TarifaFormHarness``. Per the UX rule shipped 2026-09-29, CREATE
-   * and EDIT differ on this default. */
-  const now = new Date();
-  now.setMinutes(now.getMinutes() + minutes);
-  const pad = (n: number): string => String(n).padStart(2, '0');
-  return (
-    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
-    `T${pad(now.getHours())}:${pad(now.getMinutes())}:00+00:00`
-  );
 }
 
 export function TarifaForm({
@@ -475,12 +436,16 @@ export function TarifaFormHarness(
   // strict-required rule never fires for a UI submit).
   const { tipos: tiposVehiculoCatalog } = useTiposVehiculo();
 
-  // ``vigente_desde`` defaults to "now" in CREATE and "now + 1 minute"
-  // in EDIT (the canonical UX rule for /tarifas, matching /cupos).
+  // ``vigente_desde`` defaults to "now" (real UTC) in CREATE and
+  // "now + 1 minute" in EDIT (the canonical UX rule for /tarifas,
+  // matching /cupos). Both go through ``@/lib/datetimeTz`` so the
+  // wire format is the canonical ``+00:00`` suffix — never local
+  // components mislabeled (the previous code did that for CREATE
+  // and broke the boundary check in any non-UTC host).
   const defaultVigenteDesde =
     initial === null
-      ? localNowAsDatetimeLocal() + ':00+00:00'
-      : localNowPlusMinutesAsIso(1);
+      ? utcNowPlusMinutesAsIso(0)
+      : utcNowPlusMinutesAsIso(1);
   const { sucursalActivaUuid, ...formProps } = props;
   const tiposVehiculoEnUsoEnSucursal = formProps.tiposVehiculoEnUsoEnSucursal;
   // Pre-fill the 4 valor_* inputs from the grouped row's per-modalidad

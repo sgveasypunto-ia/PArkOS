@@ -45,6 +45,13 @@ import {
   FormMessage,
 } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
+import {
+  datetimeLocalToIso,
+  isAtOrBefore,
+  isoToDatetimeLocal,
+  localNowAsDatetimeLocal,
+  utcNowPlusMinutesAsIso,
+} from '@/lib/datetimeTz';
 
 import {
   cupoCreateSchema,
@@ -72,15 +79,6 @@ export interface CupoFormProps {
     nombre: string,
   ) => Promise<{ uuid: string } | void> | { uuid: string } | void;
   isCreatingTipo?: boolean;
-}
-
-function isoToDatetimeLocal(iso: string | null | undefined): string {
-  if (!iso) return '';
-  return iso.slice(0, 16);
-}
-
-function datetimeLocalToIso(local: string): string {
-  return `${local}:00+00:00`;
 }
 
 export function CupoForm({
@@ -112,18 +110,19 @@ export function CupoForm({
   // version. CREATE has no current row to compare against, so the
   // guard is a no-op there.
   //
-  // Both values are tz-aware UTC ISO strings (the form's
-  // ``datetimeLocalToIso`` always appends ``+00:00``), so comparing
-  // epoch milliseconds is independent of the host's local tz.
+  // The comparison goes through ``isAtOrBefore`` (lib/datetimeTz.ts)
+  // which defensively appends ``Z`` to naive ISO strings (the wire
+  // contract pre-Commit-3 emits naive; the new util works on both
+  // during the rollout). This is the SINGLE place where two
+  // timestamps are compared on the front — the backend's `<=` at
+  // ``empresa.py:1143`` is the source of truth and we mirror it.
   const vigenteDesdeValue = useWatch({ control: form.control, name: 'vigente_desde' });
   const isBoundaryEdit = useMemo(() => {
     if (initialCupo === null) return false;
     if (typeof vigenteDesdeValue !== 'string' || vigenteDesdeValue.length === 0) {
       return false;
     }
-    const current = initialCupo.vigente_desde;
-    if (typeof current !== 'string' || current.length === 0) return false;
-    return new Date(vigenteDesdeValue).getTime() <= new Date(current).getTime();
+    return isAtOrBefore(vigenteDesdeValue, initialCupo.vigente_desde);
   }, [vigenteDesdeValue, initialCupo]);
 
   // CREATE: filter tipos already in use by an open cupo on this
@@ -496,64 +495,33 @@ export function CupoForm({
   );
 }
 
-function localNowAsDatetimeLocal(): string {
-  /** Return the current local datetime as ``YYYY-MM-DDTHH:mm`` for the
-   * ``<input type="datetime-local">`` default. Naive local time so the
-   * operator sees "right now" in their own timezone when creating a new
-   * cupo. The conversion back to UTC for the wire is the handler's job
-   * (``_to_naive_utc`` in backend).
-   */
-  const now = new Date();
-  const pad = (n: number): string => String(n).padStart(2, '0');
-  return (
-    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
-    `T${pad(now.getHours())}:${pad(now.getMinutes())}`
-  );
-}
-
-
-function localNowPlusMinutesAsIso(minutes: number): string {
-  /** Return the current local datetime shifted by ``minutes`` minutes,
-   * formatted as ``YYYY-MM-DDTHH:mm:00+00:00`` (the wire format the
-   * form submits for ``vigente_desde``). Used by the EDIT modal as a
-   * default: when the operator opens an existing cupo for editing, the
-   * boundary is pre-set to "now + 1 minute" so submitting without
-   * touching the field opens a new version one minute ahead of the
-   * current boundary — strictly forward in time, no overlap risk on
-   * the same exact instant.
-   *
-   * CREATE keeps its own default ("now", current minute) — see
-   * ``CupoFormHarness``. Per the UX rule shipped 2026-09-29, CREATE
-   * and EDIT differ on this default.
-   */
-  const now = new Date();
-  now.setMinutes(now.getMinutes() + minutes);
-  const pad = (n: number): string => String(n).padStart(2, '0');
-  return (
-    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
-    `T${pad(now.getHours())}:${pad(now.getMinutes())}:00+00:00`
-  );
-}
-
 
 export function CupoFormHarness(props: Omit<CupoFormProps, 'form'>): JSX.Element {
   const initial = props.initialCupo;
-  // Per-mode default for ``vigente_desde``:
-  //   - CREATE (no initialCupo): "now" (current minute in the operator's
-  //     local TZ). The new cupo opens at the current instant if
-  //     submitted without changes.
-  //   - EDIT (initialCupo !== null): "now + 1 minute". The 1-minute shift
-  //     keeps the new boundary strictly forward of the prior version's
-  //     cierre (Carril B: ``close_and_insert`` closes the previous row
-  //     at the boundary the new one opens) and matches the canonical
-  //     UX rule shipped 2026-09-29.
+  // Per-mode default for ``vigente_desde`` (REAL UTC, with the
+  // canonical ``+00:00`` suffix — see ``@/lib/datetimeTz``):
+  //   - CREATE (no initialCupo): "now" (real UTC). The new cupo opens
+  //     at the current instant if submitted without changes. The
+  //     ``<input type="datetime-local">`` will display the local
+  //     equivalent so the operator sees "right now" in their TZ.
+  //   - EDIT (initialCupo !== null): "now + 1 minute". The 1-minute
+  //     shift keeps the new boundary strictly forward of the prior
+  //     version's cierre (Carril B: ``close_and_insert`` closes the
+  //     previous row at the boundary the new one opens) and matches
+  //     the canonical UX rule shipped 2026-09-29.
+  //
   // The field is required (see ``cupoCreateSchema`` — drop
   // ``.nullable().optional()``) so the form never ships ``null`` on
   // submit. Operators can still edit the value freely.
+  //
+  // The previous code did ``localNowAsDatetimeLocal() + ':00+00:00'``
+  // for CREATE — local components mislabeled as UTC, off by N hours
+  // for any non-UTC operator (regression introduced with the original
+  // boundary check; see git log for the fix).
   const defaultVigenteDesde =
     initial === null
-      ? localNowAsDatetimeLocal() + ':00+00:00'
-      : localNowPlusMinutesAsIso(1);
+      ? utcNowPlusMinutesAsIso(0)
+      : utcNowPlusMinutesAsIso(1);
   const form = useForm<CupoCreateInput>({
     resolver: zodResolver(cupoCreateSchema) as never,
     defaultValues: {

@@ -15,12 +15,28 @@
  * This test pins all three behaviors. CREATE has no current row, so
  * the guard must be a no-op there (regression).
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { CupoFormHarness } from './CupoForm';
 import type { Cupo } from '../api/cupoSchema';
+
+const ORIGINAL_TZ = process.env.TZ;
+
+// Pin the host TZ to UTC so the boundary-equality tests don't have to
+// reason about the operator's offset. The form correctly converts
+// LOCAL datetime-local input to real UTC under any TZ, but pinning
+// UTC keeps the slice (``.slice(0, 16)``) below a clean
+// "this is what the operator would type" value without re-deriving
+// the local equivalent on every assertion.
+beforeAll(() => {
+  process.env.TZ = 'UTC';
+});
+
+afterAll(() => {
+  process.env.TZ = ORIGINAL_TZ;
+});
 
 /**
  * Set the value of the ``<input type="datetime-local">`` field. The
