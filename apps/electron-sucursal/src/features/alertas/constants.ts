@@ -14,6 +14,8 @@
  * one-line change here — the hook filters via `Set.has(...)` so
  * there is no enumeration loop anywhere else.
  */
+import { severityToSeveridad, type Severidad } from '../../lib/alertas/severity';
+
 export const BUSINESS_ALERT_CODES: ReadonlySet<string> = new Set<string>([
   'descuadre_critico',
   'fe_error_toppoint',
@@ -41,51 +43,51 @@ export const BUSINESS_ALERT_CODES: ReadonlySet<string> = new Set<string>([
  * fallo_conexion_local, diferencia_datafono) se retiraron.
  */
 export const ALERT_CODE_FALLBACK: Readonly<
-  Record<string, { severidad: 'alta' | 'media' | 'baja'; etiqueta: string; descripcion: string }>
+  Record<string, { severidad: Severidad; etiqueta: string; descripcion: string }>
 > = {
   descuadre_critico: {
-    severidad: 'alta',
+    severidad: severityToSeveridad('critical'),
     etiqueta: 'Descuadre crítico',
     descripcion: 'El arqueo cerró con descuadre mayor al umbral autorizado.',
   },
   fe_error_toppoint: {
-    severidad: 'alta',
+    severidad: severityToSeveridad('critical'),
     etiqueta: 'Error de factura electrónica',
     descripcion: 'TopPoint rechazó el comprobante; revisar el motivo en la factura.',
   },
   numeracion_toppoint_agotada: {
-    severidad: 'alta',
+    severidad: severityToSeveridad('critical'),
     etiqueta: 'Numeración de facturación agotada',
     descripcion: 'La resolución de facturación está por agotarse; solicitar una nueva.',
   },
   cache_desactualizado: {
-    severidad: 'baja',
+    severidad: severityToSeveridad('info'),
     etiqueta: 'Caché desactualizado',
     descripcion: 'El caché local quedó desactualizado; reintentar la sincronización.',
   },
   capacidad_agotada_forzado: {
-    severidad: 'media',
+    severidad: severityToSeveridad('warning'),
     etiqueta: 'Ingreso forzado sin capacidad',
     descripcion: 'Se forzó el ingreso pese a capacidad agotada; revisar la operación.',
   },
   suscripcion_proxima_vencer: {
-    severidad: 'media',
+    severidad: severityToSeveridad('warning'),
     etiqueta: 'Suscripción próxima a vencer',
     descripcion: 'Una suscripción está próxima a vencer; contactar al cliente.',
   },
   fe_emision_fallida: {
-    severidad: 'media',
+    severidad: severityToSeveridad('warning'),
     etiqueta: 'Factura electrónica no emitida',
     descripcion:
       'No se pudo emitir una factura electrónica tras varios reintentos. El cobro quedó registrado; revisá la resolución de facturación o reintentá desde la factura.',
   },
   suscripcion_placa_agregada: {
-    severidad: 'baja',
+    severidad: severityToSeveridad('info'),
     etiqueta: 'Placa agregada a una suscripción',
     descripcion: 'Un supervisor agregó una placa a una suscripción.',
   },
   suscripcion_placa_quitada: {
-    severidad: 'baja',
+    severidad: severityToSeveridad('info'),
     etiqueta: 'Placa quitada de una suscripción',
     descripcion: 'Un supervisor quitó una placa de una suscripción.',
   },

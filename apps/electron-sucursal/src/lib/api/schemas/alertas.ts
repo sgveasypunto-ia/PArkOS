@@ -19,6 +19,8 @@
  */
 import { z } from 'zod';
 
+import { SEVERIDADES, type Severidad } from '../../alertas/severity';
+
 export const ALERTA_ESTADO = ['abierta', 'en_revision', 'resuelta'] as const;
 export type AlertaEstado = (typeof ALERTA_ESTADO)[number];
 
@@ -85,7 +87,7 @@ export function parseAlertasPayload(raw: unknown): AlertaRead[] {
 export const AlertTypeSchema = z
   .object({
     codigo: z.string(),
-    severidad: z.enum(['alta', 'media', 'baja']),
+    severidad: z.enum(SEVERIDADES),
     descripcion: z.string(),
     mensaje: z.string(),
   })
@@ -103,7 +105,7 @@ export const AlertTypeReadListSchema = z.array(AlertTypeSchema);
  * per ABIERTO-06).
  */
 export interface MergedAlerta extends AlertaRead {
-  severidad: 'alta' | 'media' | 'baja';
+  severidad: Severidad;
   descripcion: string;
   mensaje: string;
 }

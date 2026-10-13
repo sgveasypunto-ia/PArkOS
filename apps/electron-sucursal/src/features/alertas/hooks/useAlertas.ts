@@ -32,6 +32,7 @@ import {
   type MergedAlerta,
 } from '../../../lib/api/schemas/alertas';
 
+import { SEVERIDAD_NEUTRA } from '../../../lib/alertas/severity';
 import { ALERT_CODE_FALLBACK, BUSINESS_ALERT_CODES } from '../constants';
 
 const ALERTA_REFRESH_INTERVAL_MS = 30_000;
@@ -176,7 +177,7 @@ export function useAlertas(uuid_sucursal: string | null): UseAlertasResult {
               const fallback = ALERT_CODE_FALLBACK[code];
               return {
                 ...a,
-                severidad: fallback?.severidad ?? ('media' as const),
+                severidad: fallback?.severidad ?? SEVERIDAD_NEUTRA,
                 descripcion: fallback?.descripcion ?? code,
                 mensaje: fallback?.etiqueta ?? code,
               };
