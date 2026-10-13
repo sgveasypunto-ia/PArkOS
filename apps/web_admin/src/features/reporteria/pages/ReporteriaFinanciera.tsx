@@ -131,7 +131,6 @@ export default function ReporteriaFinanciera() {
   }, [branches.data, permitidas]);
 
   const facturasQuery = useMemo(() => {
-    if (!selected) return null;
     return {
       uuid_sucursal: selected,
       desde: range.fecha_desde,
@@ -142,7 +141,6 @@ export default function ReporteriaFinanciera() {
   const facturas = useReporteriaFacturas(facturasQuery);
 
   const pagosQuery = useMemo(() => {
-    if (!selected) return null;
     return { uuid_sucursal: selected, desde: range.fecha_desde, hasta: range.fecha_hasta };
   }, [selected, range]);
   const pagos = useReporteriaPagos(pagosQuery);
@@ -164,7 +162,7 @@ export default function ReporteriaFinanciera() {
       className="min-h-screen bg-background p-6"
       data-testid="page-reporteria-financiera"
     >
-      <div className="mx-auto flex max-w-5xl flex-col gap-6">
+      <div className="mx-auto flex w-full max-w-none flex-col gap-6">
         <header className="flex flex-col gap-4 border-b pb-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-3xl font-bold tracking-tight">
@@ -178,7 +176,7 @@ export default function ReporteriaFinanciera() {
                   )
                 : t(
                     'reporteriaFinanciera.subtitle.allBranches',
-                    'Facturación electrónica cross-branch y pagos agregados. Las facturas requieren una sucursal específica.',
+                    'Facturas, facturación electrónica y pagos agregados de todas las sucursales permitidas.',
                   )}
               {branchName ? (
                 <span
@@ -229,64 +227,59 @@ export default function ReporteriaFinanciera() {
           </TabsList>
 
           <TabsContent value="facturas">
-            {!selected ? (
-              <p
-                className="rounded-md border bg-muted/40 p-4 text-sm text-muted-foreground"
-                data-testid="reporteria-financiera-no-branch"
-              >
-                {t(
-                  'reporteriaFinanciera.noBranch',
-                  'Seleccioná una sucursal para ver las facturas.',
-                )}
-              </p>
-            ) : (
-              <div className="flex flex-col gap-3">
-                <DateRangePicker
-                  value={range}
-                  onChange={setRange}
-                  disabled={facturas.isLoading && !facturas.data}
-                />
-                {!rangeInvalid ? (
-                  <>
-                    <div className="flex justify-end">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() =>
-                          exportToCsv<ReporteFacturaItem>(
-                            `facturas-${range.fecha_desde}-a-${range.fecha_hasta}.csv`,
-                            [
-                              { header: 'Número', accessor: (r) => r.numero_completo ?? '' },
-                              { header: 'Fecha', accessor: (r) => r.created_at },
-                              { header: 'Subtotal', accessor: (r) => r.subtotal ?? '' },
-                              { header: 'Descuento', accessor: (r) => r.descuento ?? '' },
-                              { header: 'IVA', accessor: (r) => r.iva },
-                              { header: 'Total', accessor: (r) => r.total ?? '' },
-                              { header: 'Estado', accessor: (r) => r.estado },
-                            ],
-                            facturas.data?.items ?? [],
+            <div className="flex flex-col gap-3">
+              <DateRangePicker
+                value={range}
+                onChange={setRange}
+                disabled={facturas.isLoading && !facturas.data}
+              />
+              {!rangeInvalid ? (
+                <>
+                  <div className="flex justify-end">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        exportToCsv<ReporteFacturaItem>(
+                          `facturas-${range.fecha_desde}-a-${range.fecha_hasta}.csv`,
+                          [
+                            { header: 'Número', accessor: (r) => r.numero_completo ?? '' },
+                            { header: 'Fecha', accessor: (r) => r.created_at },
+                            { header: 'Subtotal', accessor: (r) => r.subtotal ?? '' },
+                            { header: 'Descuento', accessor: (r) => r.descuento ?? '' },
+                            { header: 'IVA', accessor: (r) => r.iva },
+                            { header: 'Total', accessor: (r) => r.total ?? '' },
+                            { header: 'Estado', accessor: (r) => r.estado },
+                          ],
+                          facturas.data?.items ?? [],
+                        )
+                      }
+                      disabled={(facturas.data?.items ?? []).length === 0}
+                      data-testid="reporteria-financiera-facturas-export-csv"
+                    >
+                      {t('reporteria.exportCsv', 'Exportar CSV')}
+                    </Button>
+                  </div>
+                  <FacturasTable
+                    items={facturas.data?.items ?? []}
+                    isLoading={facturas.isLoading}
+                    error={facturas.error}
+                    caption={
+                      selected
+                        ? t(
+                            'reporteriaFinanciera.facturas.caption',
+                            'Facturas de la sucursal',
                           )
-                        }
-                        disabled={(facturas.data?.items ?? []).length === 0}
-                        data-testid="reporteria-financiera-facturas-export-csv"
-                      >
-                        {t('reporteria.exportCsv', 'Exportar CSV')}
-                      </Button>
-                    </div>
-                    <FacturasTable
-                      items={facturas.data?.items ?? []}
-                      isLoading={facturas.isLoading}
-                      error={facturas.error}
-                      caption={t(
-                        'reporteriaFinanciera.facturas.caption',
-                        'Facturas de la sucursal',
-                      )}
-                    />
-                  </>
-                ) : null}
-              </div>
-            )}
+                        : t(
+                            'reporteriaFinanciera.facturas.captionAllBranches',
+                            'Facturas de todas las sucursales',
+                          )
+                    }
+                  />
+                </>
+              ) : null}
+            </div>
           </TabsContent>
 
           <TabsContent value="fe">
@@ -344,57 +337,49 @@ export default function ReporteriaFinanciera() {
           </TabsContent>
 
           <TabsContent value="pagos">
-            {!selected ? (
-              <p
-                className="rounded-md border bg-muted/40 p-4 text-sm text-muted-foreground"
-                data-testid="reporteria-financiera-no-branch"
-              >
-                {t(
-                  'reporteriaFinanciera.noBranch',
-                  'Seleccioná una sucursal para ver los pagos.',
-                )}
-              </p>
-            ) : (
-              <div className="flex flex-col gap-3">
-                <DateRangePicker
-                  value={range}
-                  onChange={setRange}
-                  disabled={pagos.isLoading && !pagos.data}
-                />
-                {!rangeInvalid ? (
-                  <>
-                    <div className="flex justify-end">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() =>
-                          exportToCsv<ReportePagoMedioItem>(
-                            `pagos-${range.fecha_desde}-a-${range.fecha_hasta}.csv`,
-                            [
-                              { header: 'Fecha', accessor: (r) => r.fecha },
-                              { header: 'Medio de pago', accessor: (r) => r.medio_pago },
-                              { header: 'Monto neto', accessor: (r) => r.monto_neto },
-                            ],
-                            pagos.data?.items ?? [],
-                          )
-                        }
-                        disabled={(pagos.data?.items ?? []).length === 0}
-                        data-testid="reporteria-financiera-pagos-export-csv"
-                      >
-                        {t('reporteria.exportCsv', 'Exportar CSV')}
-                      </Button>
-                    </div>
-                    <PagosTable
-                      items={pagos.data?.items ?? []}
-                      isLoading={pagos.isLoading}
-                      error={pagos.error}
-                      caption={t('reporteriaFinanciera.pagos.caption', 'Pagos de la sucursal')}
-                    />
-                  </>
-                ) : null}
-              </div>
-            )}
+            <div className="flex flex-col gap-3">
+              <DateRangePicker
+                value={range}
+                onChange={setRange}
+                disabled={pagos.isLoading && !pagos.data}
+              />
+              {!rangeInvalid ? (
+                <>
+                  <div className="flex justify-end">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        exportToCsv<ReportePagoMedioItem>(
+                          `pagos-${range.fecha_desde}-a-${range.fecha_hasta}.csv`,
+                          [
+                            { header: 'Fecha', accessor: (r) => r.fecha },
+                            { header: 'Medio de pago', accessor: (r) => r.medio_pago },
+                            { header: 'Monto neto', accessor: (r) => r.monto_neto },
+                          ],
+                          pagos.data?.items ?? [],
+                        )
+                      }
+                      disabled={(pagos.data?.items ?? []).length === 0}
+                      data-testid="reporteria-financiera-pagos-export-csv"
+                    >
+                      {t('reporteria.exportCsv', 'Exportar CSV')}
+                    </Button>
+                  </div>
+                  <PagosTable
+                    items={pagos.data?.items ?? []}
+                    isLoading={pagos.isLoading}
+                    error={pagos.error}
+                    caption={
+                      selected
+                        ? t('reporteriaFinanciera.pagos.caption', 'Pagos de la sucursal')
+                        : t('reporteriaFinanciera.pagos.captionAllBranches', 'Pagos de todas las sucursales')
+                    }
+                  />
+                </>
+              ) : null}
+            </div>
           </TabsContent>
         </Tabs>
       </div>

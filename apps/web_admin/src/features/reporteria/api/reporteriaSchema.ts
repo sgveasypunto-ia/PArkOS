@@ -93,7 +93,11 @@ export const ocupacionResponseSchema = z.object({
 export type OcupacionResponse = z.infer<typeof ocupacionResponseSchema>;
 
 export interface ReporteriaQuery {
-  uuid_sucursal: string;
+  // HU-fix-reporteria-todas-sucursales: ``null`` is the cross-branch
+  // ("Todas las sucursales") shape; the API layer omits the
+  // ``uuid_sucursal`` query param in that case so the backend
+  // resolves scope fresh from ``usuarios_sucursal``.
+  uuid_sucursal: string | null;
   placa?: string;
   activo?: boolean;
   fecha_desde?: string;

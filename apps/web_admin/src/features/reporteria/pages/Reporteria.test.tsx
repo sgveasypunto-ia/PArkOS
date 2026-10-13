@@ -107,16 +107,14 @@ describe('Reporteria (operacional) page — HU-X.8 branch combobox', () => {
     await waitFor(() => {
       expect(screen.getByTestId('reporteria-branch-combobox')).toBeInTheDocument();
     });
-    // The "current" hint is the active branch.
+    // The subtitle carries the branch name in parens (this is the
+    // canonical "which branch is active" surface -- the legacy
+    // "Actual: <nombre>" hint paragraph was removed by
+    // HU-fix-usuarios-alignment, so we no longer pin that data-testid
+    // here).
     await waitFor(() => {
-      expect(
-        screen.getByTestId('reporteria-branch-combobox-selected'),
-      ).toBeInTheDocument();
+      expect(screen.getByTestId('reporteria-branch-name')).toBeInTheDocument();
     });
-    expect(
-      screen.getByTestId('reporteria-branch-combobox-selected').textContent,
-    ).toMatch(/Norte/);
-    // The subtitle carries the branch name in parens.
     expect(screen.getByTestId('reporteria-branch-name').textContent).toMatch(
       /Norte/,
     );
@@ -147,26 +145,69 @@ describe('Reporteria (operacional) page — HU-X.8 branch combobox', () => {
     );
   });
 
-  it('HU-F9 R21: "Todas las sucursales" option is offered and selecting it clears the global selection', async () => {
+  it('HU-fix-reporteria-todas-sucursales: "Todas las sucursales" picks the cross-branch aggregate; the same page layout (KPIs panel + tabs + heatmap) renders with branch-scoped endpoints called without uuid_sucursal', async () => {
     window.localStorage.setItem('parkos.lastSelectedSucursal', SUC_NORTE);
     const user = userEvent.setup();
-    render(<Reporteria />, { wrapper: fullWrapper });
-    await waitFor(() => {
-      expect(screen.getByTestId('reporteria-branch-combobox')).toBeInTheDocument();
+    const seenUrls: string[] = [];
+    const baseImpl = mockedRaw.getMockImplementation();
+    mockedRaw.mockImplementation(async (input: unknown) => {
+      const url = String(input);
+      seenUrls.push(url);
+      return baseImpl ? baseImpl(input) : ({ ok: true, status: 200, json: async () => ({}), text: async () => '' } as Response);
     });
+    render(<Reporteria />, { wrapper: fullWrapper });
+
     const input = screen.getByTestId('reporteria-branch-combobox');
     await user.click(input);
     const allOption = await screen.findByTestId(
       'reporteria-branch-combobox-option-all',
     );
     await user.click(allOption);
-    // The global selection is cleared (null) and the no-branch notice
-    // takes over. The heatmap keeps rendering because it is
-    // cross-branch by design.
+
+    // The global selection is cleared (null) and the SAME page layout
+    // renders with cross-branch data (no "Seleccioná una sucursal"
+    // placeholder anymore -- the user reported that as a bug).
     await waitFor(() => {
       expect(window.localStorage.getItem('parkos.lastSelectedSucursal')).toBeNull();
     });
-    expect(screen.getByTestId('reporteria-no-branch')).toBeInTheDocument();
+    expect(screen.queryByTestId('reporteria-no-branch')).not.toBeInTheDocument();
+    // The totals panel + tabs are present.
+    expect(screen.getByTestId('reporteria-totales-section')).toBeInTheDocument();
+    expect(screen.getByTestId('reporteria-tab-ingresos')).toBeInTheDocument();
+    expect(screen.getByTestId('reporteria-tab-salidas')).toBeInTheDocument();
+    expect(screen.getByTestId('reporteria-tab-ocupacion')).toBeInTheDocument();
+    // The cross-branch heatmap lives inside the Ocupacion tab's
+    // TabsContent (it is always cross-branch, by design); activate
+    // the tab to assert it is wired up.
+    await user.click(screen.getByTestId('reporteria-tab-ocupacion'));
     expect(screen.getByTestId('reporteria-heatmap-section')).toBeInTheDocument();
+    // The subtitle badge now reads "Todas las sucursales".
+    expect(screen.getByTestId('reporteria-branch-name').textContent).toMatch(
+      /Todas las sucursales/,
+    );
+
+    // The branch-scoped admin reporteria endpoints were re-called
+    // WITHOUT a ``uuid_sucursal`` query param after "Todas" was
+    // picked -- the cross-branch aggregate path on the backend
+    // (HU-fix-reporteria-todas-sucursales). Use ``findLast`` because
+    // the same endpoint was also called with the previous branch
+    // selected (SUC_NORTE) before the picker fired.
+    await waitFor(() => {
+      const allOperacionalUrl = [...seenUrls]
+        .reverse()
+        .find((u) => u.startsWith('/api/v1/admin/reporteria/operacional'));
+      expect(allOperacionalUrl).toBeDefined();
+      expect(allOperacionalUrl).not.toMatch(/uuid_sucursal=/);
+    });
+
+    await waitFor(() => {
+      const allOcupacionUrl = [...seenUrls]
+        .reverse()
+        .find((u) => u.startsWith('/api/v1/operacion/ocupacion'));
+      // The /operacion/ocupacion endpoint is called either with no
+      // params at all (cross-branch) or without uuid_sucursal=.
+      expect(allOcupacionUrl).toBeDefined();
+      expect(allOcupacionUrl).not.toMatch(/uuid_sucursal=/);
+    });
   });
 });
