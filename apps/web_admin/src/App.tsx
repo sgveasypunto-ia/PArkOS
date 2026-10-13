@@ -37,6 +37,7 @@ import ReclamoDetalle from '@/features/workflows/pages/ReclamoDetalle';
 import SyncDashboard from '@/features/sync/pages/SyncDashboard';
 import DianCola from '@/features/dian/pages/DianCola';
 import DianDetalle from '@/features/dian/pages/DianDetalle';
+import { FacturaDetalle } from '@/features/facturacion/pages/FacturaDetalle';
 import LogTransaccional from '@/features/auditoria/pages/LogTransaccional';
 import LogDetalle from '@/features/auditoria/pages/LogDetalle';
 import HashChainVerify from '@/features/auditoria/pages/HashChainVerify';
@@ -181,6 +182,12 @@ export default function App() {
               and /sync just above. */}
           <Route path="/dian" element={<DianCola />} />
           <Route path="/dian/:uuid" element={<DianDetalle />} />
+          {/* HU-X.1b: drill-down page for a single factura. Mounted in
+              the global group (no branch selector required) because
+              the factura itself carries ``uuid_sucursal`` and the JWT
+              tenant scope filters on the BE side. Same pattern as
+              ``/dian/:uuid`` and ``/reclamos/:uuid``. */}
+          <Route path="/facturacion/:uuid" element={<FacturaDetalle />} />
           {/* HU-F20.4: bitácora cross-branch (log_transaccional), chain
               verification + global typeahead. Cross-branch by nature
               (same reasoning as /sync just above), so it sits here
