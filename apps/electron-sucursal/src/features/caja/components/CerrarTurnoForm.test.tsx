@@ -281,6 +281,21 @@ describe('<CerrarTurnoForm /> — motivo del descuadre en Observaciones (conteo 
     );
   });
 
+  it('pre-flight falló (undefined + error) → no bloquea: botón habilitado con motivo vacío y aviso "no se pudo verificar el cuadre"', () => {
+    useRequiereJustificacionMock.mockReturnValue({
+      requiereJustificacion: undefined,
+      error: new Error('network'),
+    });
+    render(<Harness />);
+
+    expect((screen.getByTestId('cerrar-turno-confirmar') as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    expect(screen.getByTestId('cerrar-turno-observaciones-ayuda').textContent).toMatch(
+      /no se pudo verificar el cuadre/i,
+    );
+  });
+
   it('mientras el pre-flight carga (undefined) → conservador: motivo exigido y botón disabled, nunca asume "sin diferencia"', () => {
     useRequiereJustificacionMock.mockReturnValue({
       requiereJustificacion: undefined,

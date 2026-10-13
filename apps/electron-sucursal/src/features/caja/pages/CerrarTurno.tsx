@@ -131,7 +131,9 @@ export function CerrarTurno(): JSX.Element | null {
   });
 
   const onCancel = (): void => {
-    navigate('/');
+    // CerrarTurno vive en el drawer del Dashboard ('/'): navigate('/') es
+    // no-op. Cerrar el drawer es lo que realmente cancela.
+    useDashboardDrawerStore.getState().close();
   };
 
   const onFinalizar = (): void => {

@@ -53,6 +53,7 @@
     "observacionesLabelMotivo": "Observaciones (motivo del descuadre)",
     "observacionesPlaceholderMotivo": "Describe brevemente el motivo (mín. 3 caracteres).",
     "observacionesDescripcionMotivo": "Si hay diferencia entre el efectivo contado y lo esperado, escribe aquí el motivo del descuadre (obligatorio, mínimo 3 caracteres).",
+    "observacionesDescripcionPreflightFallido": "No se pudo verificar el cuadre. Si hay diferencia entre el efectivo contado y lo esperado, escribe el motivo; el sistema lo validará al confirmar.",
     "observacionesDescripcionOpcional": "Opcional",
     "observacionesRequeridas": "Escribe el motivo del descuadre (mínimo 3 caracteres).",
     "resumenCierre": {

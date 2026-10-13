@@ -165,7 +165,10 @@ export function CerrarTurnoForm({
   // esperado NUNCA viaja al cliente (conteo ciego: ni se renderiza, ni se
   // transmite).
   const watchEfectivoReportado = form.watch('valor_efectivo_reportado');
-  const { requiereJustificacion: requiereMotivoServer } = useRequiereJustificacion(
+  const {
+    requiereJustificacion: requiereMotivoServer,
+    error: preflightError,
+  } = useRequiereJustificacion(
     sesion.uuid,
     watchEfectivoReportado ?? 0,
   );
@@ -176,7 +179,13 @@ export function CerrarTurnoForm({
   // (seteado por `<CerrarTurno>` tras un rechazo real del backend) sigue
   // OR-eado por las dudas de una condición de carrera entre este
   // pre-flight y el POST real.
-  const requiereMotivo = (requiereMotivoServer ?? true) || forceRequireMotivo;
+  //
+  // Excepción: si el pre-flight FALLÓ (error y sin dato) no se puede dejar
+  // el botón bloqueado para siempre. El gate real sigue en el backend
+  // (400 justificacion_requerida), que `cerrarTurnoChain` ya reintenta.
+  const preflightNoVerificable = requiereMotivoServer === undefined && preflightError != null;
+  const requiereMotivo =
+    (requiereMotivoServer ?? (preflightNoVerificable ? false : true)) || forceRequireMotivo;
 
   // Until the operator starts counting, the field holds 0: showing "-base" as
   // the producido would read as a shortage nobody has counted yet.
@@ -389,7 +398,12 @@ export function CerrarTurnoForm({
                 />
               </FormControl>
               <FormDescription data-testid="cerrar-turno-observaciones-ayuda">
-                {requiereMotivo
+                {preflightNoVerificable && !requiereMotivo
+                  ? t('caja:cerrarTurno.observacionesDescripcionPreflightFallido', {
+                      defaultValue:
+                        'No se pudo verificar el cuadre. Si hay diferencia entre el efectivo contado y lo esperado, escribe el motivo; el sistema lo validará al confirmar.',
+                    })
+                  : requiereMotivo
                   ? t('caja:cerrarTurno.observacionesDescripcionMotivo', {
                       defaultValue:
                         'Si hay diferencia entre el efectivo contado y lo esperado, escribe aquí el motivo del descuadre (obligatorio, mínimo 3 caracteres).',

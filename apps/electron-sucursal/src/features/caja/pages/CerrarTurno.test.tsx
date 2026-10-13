@@ -8,7 +8,7 @@
  *         → logout trifecta + navigate('/login?closed=true', {replace:true}).
  *   U13: PUT 404 (sesión ya cerrada) → navigate('/login') sin ?closed=true,
  *         sin banner (case 5 en `cerrarTurnoChain.ts` — redirect silencioso).
- *   U14: Cancel button → navigate('/') sin invocar arqueo ni cierre.
+ *   U14: Cancel button → useDashboardDrawerStore.close() sin invocar arqueo ni cierre.
  *
  * REGRESSION (2026-09-21, Engram #1899): `<CerrarTurno>` ya NO llama
  * `cerrarSesion` importado de `api/sesionActivaApi` directamente — ahora
@@ -37,6 +37,7 @@ import type * as ReactRouterDom from 'react-router-dom';
 import '@/i18n';
 
 import { ParkosHttpError } from '@parkos/ui-kit/fetch';
+import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 
 const mockNavigate = vi.fn();
 const mockCerrarSesion = vi.fn();
@@ -420,8 +421,10 @@ describe('<CerrarTurno /> container — T3', () => {
     expect(screen.queryByTestId('cerrar-turno-error-cierre-ya-cerrado')).not.toBeInTheDocument();
   });
 
-  it('U14: Cancel button → navigate("/") sin invocar arqueo ni cerrarSesion', async () => {
+  it('U14: Cancel button → cierra el drawer del Dashboard (openDrawer=null) sin invocar arqueo ni cerrarSesion', async () => {
     const user = userEvent.setup();
+    useDashboardDrawerStore.getState().open('cerrar-turno', 'anchor-cerrar-turno');
+    expect(useDashboardDrawerStore.getState().openDrawer).toBe('cerrar-turno');
     render(
       <MemoryRouter>
         <CerrarTurno />
@@ -430,7 +433,7 @@ describe('<CerrarTurno /> container — T3', () => {
     await user.click(screen.getByTestId('cerrar-turno-cancelar'));
 
     await waitFor(() => {
-      expect(mockNavigate).toHaveBeenCalledWith('/');
+      expect(useDashboardDrawerStore.getState().openDrawer).toBeNull();
     });
     expect(mockSubmitArqueo).not.toHaveBeenCalled();
     expect(mockCerrarSesion).not.toHaveBeenCalled();
