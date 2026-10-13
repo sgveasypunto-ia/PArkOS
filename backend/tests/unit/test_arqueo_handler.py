@@ -693,7 +693,10 @@ async def test_arqueo_cierre_dia_uses_bogota_business_date() -> None:
     m_insertar_arqueo = AsyncMock(return_value=_build_arqueo_row())
     m_cerrar_sesiones = AsyncMock(return_value=0)
 
-    with patch.object(handler_mod, "hoy_bogota", return_value=fecha_negocio),          patch.object(handler_mod.repo_arqueo, "resolver_tipo_arqueo_por_uuid", m_resolver_tipo),          patch.object(handler_mod.repo_arqueo, "resolver_tolerancia_vigente", m_resolver_tol),          patch.object(handler_mod.repo_arqueo, "calcular_esperado_cierre_dia", m_esperado_dia),          patch.object(handler_mod.repo_arqueo, "insertar_arqueo", m_insertar_arqueo),          patch.object(handler_mod.repo_arqueo, "cerrar_sesiones_del_dia_bulk", m_cerrar_sesiones):
+    # Regla b-cd-sesion: una unica sesion abierta, la del actor.
+    m_abiertas = AsyncMock(return_value=[MagicMock(uuid_usuario=ctx.actor_uuid)])
+
+    with patch.object(handler_mod, "hoy_bogota", return_value=fecha_negocio),          patch.object(handler_mod.repo_arqueo, "listar_sesiones_abiertas_del_dia", m_abiertas),          patch.object(handler_mod.repo_arqueo, "resolver_tipo_arqueo_por_uuid", m_resolver_tipo),         patch.object(handler_mod.repo_arqueo, "resolver_tolerancia_vigente", m_resolver_tol),          patch.object(handler_mod.repo_arqueo, "calcular_esperado_cierre_dia", m_esperado_dia),          patch.object(handler_mod.repo_arqueo, "insertar_arqueo", m_insertar_arqueo),          patch.object(handler_mod.repo_arqueo, "cerrar_sesiones_del_dia_bulk", m_cerrar_sesiones):
         await handler_mod.post_arqueo(
             response=response,
             payload=payload,
@@ -702,5 +705,6 @@ async def test_arqueo_cierre_dia_uses_bogota_business_date() -> None:
             _claims=None,
         )
 
+    assert m_abiertas.await_args.kwargs["fecha"] == fecha_negocio
     assert m_esperado_dia.await_args.kwargs["fecha"] == fecha_negocio
     assert m_cerrar_sesiones.await_args.kwargs["fecha"] == fecha_negocio

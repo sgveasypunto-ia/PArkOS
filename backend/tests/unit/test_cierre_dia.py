@@ -93,8 +93,12 @@ async def test_cierre_dia_3_sesiones_2_cerradas_1_abierta_cerrar_solo_abierta() 
     arqueo_row = MagicMock()
     arqueo_row.uuid = uuid_lib.uuid4()
 
+    # Regla b-cd-sesion: el cierre exige UNA sola sesion abierta y propia.
+    m_abiertas = AsyncMock(return_value=[MagicMock(uuid_usuario=ctx.actor_uuid)])
+
     with patch.object(handler_mod.repo_arqueo, "resolver_tipo_arqueo_por_uuid", m_resolver_tipo), \
          patch.object(handler_mod.repo_arqueo, "resolver_tolerancia_vigente", m_resolver_tol), \
+         patch.object(handler_mod.repo_arqueo, "listar_sesiones_abiertas_del_dia", m_abiertas), \
          patch.object(handler_mod.repo_arqueo, "calcular_esperado_cierre_dia", m_calcular_esperado_cierre_dia), \
          patch.object(handler_mod.repo_arqueo, "insertar_arqueo", AsyncMock(return_value=arqueo_row)), \
          patch.object(handler_mod.repo_arqueo, "cerrar_sesiones_del_dia_bulk", m_cerrar_bulk):

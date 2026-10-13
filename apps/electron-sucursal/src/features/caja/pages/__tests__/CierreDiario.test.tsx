@@ -79,6 +79,17 @@ vi.mock('../../hooks/useArqueoResumenPorSesion', () => ({
   }),
 }));
 
+// useSesionActiva(): sesión activa del usuario que cierra.
+let mockSesionActivaUuid: string | null = null;
+vi.mock('../../hooks/useSesionActiva', () => ({
+  useSesionActiva: () => ({
+    sesion: mockSesionActivaUuid ? { uuid: mockSesionActivaUuid } : null,
+    isLoading: false,
+    error: undefined,
+    refresh: vi.fn(),
+  }),
+}));
+
 // useArqueo().submit
 const mockSubmit = vi.fn();
 vi.mock('../../hooks/useArqueo', () => ({
@@ -150,16 +161,15 @@ const TRES_SESIONES = {
   cierre_dia: null,
 };
 
-// Sin sesiones abiertas: el cierre diario solo procede con todas cerradas
-// (Caja bug 4); los escenarios de envío usan este resumen.
-const DOS_CERRADAS = {
-  ...TRES_SESIONES,
-  sesiones: TRES_SESIONES.sesiones.slice(0, 2),
-};
+// Una única sesión abierta y es la del usuario que cierra: el cierre diario
+// solo procede así (b-cd-sesion); los escenarios de envío usan este resumen.
+const SESION_PROPIA_UUID = '44444444-5555-4666-8777-888888888888';
+const UNA_ABIERTA_PROPIA = TRES_SESIONES;
 
 beforeEach(() => {
   vi.clearAllMocks();
   mockResumenData = undefined;
+  mockSesionActivaUuid = SESION_PROPIA_UUID;
   mockResumenError = undefined;
   mockTipoUuid = TIPO_CIERRE_DIA_UUID;
 });
@@ -211,7 +221,7 @@ describe('HU-F10.3 — <CierreDiario /> routed page (REQ-OPS-164 + REQ-OPS-167, 
   // page-3 — happy path: 1 open session → submit calls chain
   // ──────────────────────────────────────────────────────────────────
   it('page-3: with 1 open session, summary loads, submit calls cierreDiarioChain (no logout)', async () => {
-    mockResumenData = DOS_CERRADAS;
+    mockResumenData = UNA_ABIERTA_PROPIA;
     mockRunCierreDiarioChain.mockResolvedValueOnce({
       kind: 'success',
       uuid_arqueo: 'arqueo-uuid-AD',
@@ -235,6 +245,18 @@ describe('HU-F10.3 — <CierreDiario /> routed page (REQ-OPS-164 + REQ-OPS-167, 
     // NO useAuthStore.clear() on success — supervisor preserves own
     // session per AD-3 + REQ-OPS-164.
     expect(mockClear).not.toHaveBeenCalled();
+  });
+
+  it('page-3b: la única sesión abierta es de otro usuario → botón deshabilitado y aviso', async () => {
+    mockResumenData = UNA_ABIERTA_PROPIA;
+    mockSesionActivaUuid = null; // el usuario que cierra no tiene la sesión abierta
+    renderPage();
+    await waitFor(() => {
+      expect(
+        screen.getByTestId('cierre-diario-sesiones-abiertas'),
+      ).toHaveAttribute('data-motivo', 'sesion_ajena');
+    });
+    expect(screen.getByTestId('cierre-diario-confirmar')).toBeDisabled();
   });
 
   // ──────────────────────────────────────────────────────────────────
@@ -262,7 +284,7 @@ describe('HU-F10.3 — <CierreDiario /> routed page (REQ-OPS-164 + REQ-OPS-167, 
   // page-5 — success banner after chain returns ok:true
   // ──────────────────────────────────────────────────────────────────
   it('page-5: success banner renders after cierreDiarioChain returns { kind: "success" }', async () => {
-    mockResumenData = DOS_CERRADAS;
+    mockResumenData = UNA_ABIERTA_PROPIA;
     mockRunCierreDiarioChain.mockResolvedValueOnce({
       kind: 'success',
       uuid_arqueo: 'arqueo-uuid-AD',
@@ -289,7 +311,7 @@ describe('HU-F10.3 — <CierreDiario /> routed page (REQ-OPS-164 + REQ-OPS-167, 
   // page-6 — H9: resolved tipo_arqueo UUID is forwarded to the chain
   // ──────────────────────────────────────────────────────────────────
   it('page-6: submit forwards the resolved cierre_dia uuid_tipo_arqueo to the chain', async () => {
-    mockResumenData = DOS_CERRADAS;
+    mockResumenData = UNA_ABIERTA_PROPIA;
     mockRunCierreDiarioChain.mockResolvedValueOnce({
       kind: 'success',
       uuid_arqueo: 'arqueo-uuid-AD',
@@ -310,7 +332,7 @@ describe('HU-F10.3 — <CierreDiario /> routed page (REQ-OPS-164 + REQ-OPS-167, 
   // page-7 — H9: catalog not resolved yet -> no POST, explicit message
   // ──────────────────────────────────────────────────────────────────
   it('page-7: tipo_arqueo unresolved -> chain NOT called and an explicit error is shown', async () => {
-    mockResumenData = DOS_CERRADAS;
+    mockResumenData = UNA_ABIERTA_PROPIA;
     mockTipoUuid = undefined;
     renderPage();
     const confirmar = (await screen.findByTestId(
@@ -326,7 +348,7 @@ describe('HU-F10.3 — <CierreDiario /> routed page (REQ-OPS-164 + REQ-OPS-167, 
   // page-8 — H9: server detail surfaced instead of the generic banner
   // ──────────────────────────────────────────────────────────────────
   it('page-8: arqueo_fallido surfaces the server error detail in the banner', async () => {
-    mockResumenData = DOS_CERRADAS;
+    mockResumenData = UNA_ABIERTA_PROPIA;
     mockRunCierreDiarioChain.mockResolvedValueOnce({
       kind: 'arqueo_fallido',
       status: 422,

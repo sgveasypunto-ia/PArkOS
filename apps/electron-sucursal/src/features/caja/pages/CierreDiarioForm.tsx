@@ -49,6 +49,8 @@ import { contarSesiones, esSesionAbierta } from '../lib/sesionEstado';
  */
 export interface CierreDiarioFormProps {
   sesiones: ArqueoResumenPorSesion['sesiones'];
+  /** `uuid` de la sesión activa del usuario que cierra (useSesionActiva). */
+  uuidSesionPropia: string | null;
   totals: {
     valor_efectivo_reportado: number;
     diferencia: number;
@@ -88,8 +90,32 @@ function formatCOP(value: number | null): string {
   return value.toLocaleString('es-CO');
 }
 
+type MotivoBloqueoSesion =
+  | 'sin_sesion_abierta'
+  | 'sesion_ajena'
+  | 'varias_sesiones_abiertas';
+
+/**
+ * Regla del cierre diario: exactamente UNA sesión abierta y es la propia.
+ * Devuelve `null` cuando se cumple; si no, el motivo del bloqueo.
+ */
+function motivoBloqueoSesion(
+  sesiones: ArqueoResumenPorSesion['sesiones'],
+  uuidSesionPropia: string | null,
+): MotivoBloqueoSesion | null {
+  const abiertas = sesiones.filter(esSesionAbierta);
+  if (abiertas.length === 0) return 'sin_sesion_abierta';
+  if (abiertas.length > 1) return 'varias_sesiones_abiertas';
+  const unica = abiertas[0];
+  if (uuidSesionPropia !== null && unica?.uuid_sesion === uuidSesionPropia) {
+    return null;
+  }
+  return 'sesion_ajena';
+}
+
 export function CierreDiarioForm(props: {
   sesiones: ArqueoResumenPorSesion['sesiones'];
+  uuidSesionPropia: string | null;
   totals: {
     valor_efectivo_reportado: number;
     diferencia: number;
@@ -123,14 +149,22 @@ export function CierreDiarioForm(props: {
     !requiresJustificacion ||
     (typeof watchedJustificacion === 'string' &&
       watchedJustificacion.trim().length >= 3);
-  // Caja bug 4: con sesiones abiertas el cierre diario no procede; se
-  // explica junto al botón (aria-describedby) en vez de dejarlo mudo.
+  // Regla de negocio: el cierre diario solo procede con UNA única sesión
+  // abierta en la sucursal y que sea la del usuario que cierra. Se explica
+  // junto al botón (aria-describedby) en vez de dejarlo mudo.
   const { abiertas, total } = contarSesiones(props.sesiones);
   const sesionesAbiertasMsgId = `${formId}-sesiones-abiertas`;
+  const motivoSesion = motivoBloqueoSesion(
+    props.sesiones,
+    props.uuidSesionPropia,
+  );
+  // Con el cierre ya hecho todas las sesiones están cerradas: el aviso de
+  // sesión sería ruido (otro banner ya explica el estado).
+  const mostrarAvisoSesion = motivoSesion !== null && !props.cierreDiaExists;
   const isDisabled =
     props.isSubmitting ||
     props.cierreDiaExists ||
-    abiertas > 0 ||
+    motivoSesion !== null ||
     props.totals.valor_efectivo_reportado <= 0 ||
     !justificacionOk;
 
@@ -377,24 +411,29 @@ export function CierreDiarioForm(props: {
         )}
 
         {/* ── Buttons ──────────────────────────────────────────────── */}
-        {abiertas > 0 && (
+        {mostrarAvisoSesion && (
           <p
             id={sesionesAbiertasMsgId}
             data-testid="cierre-diario-sesiones-abiertas"
+            data-motivo={motivoSesion}
             role="status"
             className="rounded border border-warning bg-warning/10 p-2 text-sm text-warning"
           >
-            {abiertas === 1
-              ? t('caja:cierreDiario.sesionesAbiertasUna', {
-                  count: abiertas,
-                  defaultValue:
-                    `Hay ${abiertas} sesión abierta. Ciérrela antes de hacer el cierre diario.`,
-                })
-              : t('caja:cierreDiario.sesionesAbiertasVarias', {
-                  count: abiertas,
-                  defaultValue:
-                    `Hay ${abiertas} sesiones abiertas. Ciérrelas antes de hacer el cierre diario.`,
-                })}
+            {motivoSesion === 'sin_sesion_abierta' &&
+              t('caja:cierreDiario.sinSesionAbierta', {
+                defaultValue:
+                  'No hay ninguna sesión abierta. Para hacer el cierre diario debe tener su propia sesión abierta.',
+              })}
+            {motivoSesion === 'sesion_ajena' &&
+              t('caja:cierreDiario.sesionAjena', {
+                defaultValue:
+                  'La única sesión abierta no es suya. Solo quien la tiene abierta puede hacer el cierre diario.',
+              })}
+            {motivoSesion === 'varias_sesiones_abiertas' &&
+              t('caja:cierreDiario.sesionesAbiertasVarias', {
+                count: abiertas,
+                defaultValue: `Hay ${abiertas} sesiones abiertas. Para hacer el cierre diario debe quedar abierta solo la suya: pida que se cierren las demás.`,
+              })}
           </p>
         )}
         <div className="flex flex-wrap gap-2 pt-2">
@@ -403,7 +442,7 @@ export function CierreDiarioForm(props: {
             data-testid="cierre-diario-confirmar"
             disabled={isDisabled}
             aria-disabled={isDisabled}
-            aria-describedby={abiertas > 0 ? sesionesAbiertasMsgId : undefined}
+            aria-describedby={mostrarAvisoSesion ? sesionesAbiertasMsgId : undefined}
           >
             {/* Estado loading visual — `isSubmitting` ya existía en la
                 lógica (usado en `isDisabled`) pero el botón nunca
