@@ -7,9 +7,14 @@
  * string without timezone-aware parsing shifts it ~10h forward instead
  * of showing the correct LOCAL wall-clock time
  * (`formatBackendTimestampLocal`, see `./dateRange`).
+ *
+ * HU-X.2: the trailing "Detalle" cell renders a `<Link to={/facturacion/...}>`
+ * (REQ-X-09) so the test wraps the component in a `MemoryRouter` to
+ * provide the router context that react-router-dom requires.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 
 import { FacturasTable } from './FacturasTable';
 import type { ReporteFacturaItem } from '../api/reporteriaSchema';
@@ -42,12 +47,27 @@ const ITEM: ReporteFacturaItem = {
 describe('FacturasTable', () => {
   it('renders the naive-UTC created_at as the correct LOCAL time, not shifted ~10h', () => {
     render(
-      <FacturasTable items={[ITEM]} isLoading={false} error={undefined} caption="Facturas" />,
+      <MemoryRouter>
+        <FacturasTable items={[ITEM]} isLoading={false} error={undefined} caption="Facturas" />
+      </MemoryRouter>,
     );
     const row = screen.getByText('FE-001').closest('tr');
     expect(row).toHaveTextContent('2026-10-02 18:26:30');
     // Old buggy `new Date(value).toISOString()` pattern double-shifted
     // this exact instant to the next day.
     expect(row).not.toHaveTextContent('2026-10-03 04:26:30');
+  });
+
+  it('renders the drill-down "Ver detalle" link to /facturacion/:uuid (HU-X.2)', () => {
+    render(
+      <MemoryRouter>
+        <FacturasTable items={[ITEM]} isLoading={false} error={undefined} caption="Facturas" />
+      </MemoryRouter>,
+    );
+    const link = screen.getByTestId(
+      `reporteria-financiera-facturas-detalle-${ITEM.uuid}`,
+    );
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveAttribute('href', `/facturacion/${ITEM.uuid}`);
   });
 });

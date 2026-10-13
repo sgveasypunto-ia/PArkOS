@@ -1,9 +1,14 @@
 /**
  * `ClienteFacturasTab.test.tsx` — cross-branch read-only facturas view
  * (HU-F20.1), mocked at `fetchReporteriaFacturas`.
+ *
+ * HU-X.2: the trailing "Detalle" cell renders a `<Link to={/facturacion/...}>`
+ * (REQ-X-09) so the test wraps the component in a `MemoryRouter` to
+ * provide the router context that react-router-dom requires.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 
 const { UUID_CLIENTE, UUID_FACTURA } = vi.hoisted(() => ({
   UUID_CLIENTE: '11111111-1111-1111-1111-111111111111',
@@ -38,7 +43,11 @@ import { ClienteFacturasTab } from './ClienteFacturasTab';
 
 describe('<ClienteFacturasTab />', () => {
   it('calls fetchReporteriaFacturas with uuid_cliente only (no uuid_sucursal)', async () => {
-    render(<ClienteFacturasTab uuidCliente={UUID_CLIENTE} />);
+    render(
+      <MemoryRouter>
+        <ClienteFacturasTab uuidCliente={UUID_CLIENTE} />
+      </MemoryRouter>,
+    );
 
     await waitFor(() => {
       expect(screen.getByTestId(`cliente-factura-row-${UUID_FACTURA}`)).toBeInTheDocument();
@@ -52,10 +61,27 @@ describe('<ClienteFacturasTab />', () => {
   });
 
   it('renders the per-row uuid_sucursal column since rows can span branches', async () => {
-    render(<ClienteFacturasTab uuidCliente={UUID_CLIENTE} />);
+    render(
+      <MemoryRouter>
+        <ClienteFacturasTab uuidCliente={UUID_CLIENTE} />
+      </MemoryRouter>,
+    );
 
     await waitFor(() => {
       expect(screen.getByText('suc-norte')).toBeInTheDocument();
     });
+  });
+
+  it('renders the drill-down "Ver detalle" link to /facturacion/:uuid (HU-X.2)', async () => {
+    render(
+      <MemoryRouter>
+        <ClienteFacturasTab uuidCliente={UUID_CLIENTE} />
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId(`cliente-factura-detalle-${UUID_FACTURA}`)).toBeInTheDocument();
+    });
+    const link = screen.getByTestId(`cliente-factura-detalle-${UUID_FACTURA}`);
+    expect(link).toHaveAttribute('href', `/facturacion/${UUID_FACTURA}`);
   });
 });

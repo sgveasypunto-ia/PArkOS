@@ -15,10 +15,17 @@
  *     (success / destructive) so the state reads without relying on
  *     color alone (the label itself carries the meaning).
  *
+ * HU-X.2: the trailing "Detalle" cell renders a `<Link to={/facturacion/...}>`
+ * (REQ-X-09) so the admin can drill down from the reporteria list
+ * into the per-factura page (HU-X.1b). Uses lucide's `ExternalLink`
+ * icon as a visual cue; the link text is in es-CO.
+ *
  * Accessibility (RNF-022 WCAG 2.1 AA): same conventions as
  * `IngresosTable.tsx` (caption, `scope="col"`, status/alert live regions).
  */
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router-dom';
+import { ExternalLink } from 'lucide-react';
 
 import {
   Table,
@@ -95,13 +102,16 @@ export function FacturasTable({ items, isLoading, error, caption }: FacturasTabl
           <TableHead scope="col">{t('reporteriaFinanciera.facturas.iva', 'IVA')}</TableHead>
           <TableHead scope="col">{t('reporteriaFinanciera.facturas.total', 'Total')}</TableHead>
           <TableHead scope="col">{t('reporteriaFinanciera.facturas.estado', 'Estado')}</TableHead>
+          <TableHead scope="col" className="text-right">
+            {t('reporteriaFinanciera.facturas.acciones', 'Detalle')}
+          </TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {items.length === 0 ? (
           <TableRow>
             <TableCell
-              colSpan={7}
+              colSpan={8}
               role="status"
               aria-live="polite"
               data-testid="reporteria-financiera-facturas-empty"
@@ -115,7 +125,7 @@ export function FacturasTable({ items, isLoading, error, caption }: FacturasTabl
           </TableRow>
         ) : (
           items.map((row) => (
-            <TableRow key={row.uuid}>
+            <TableRow key={row.uuid} data-testid={`reporteria-financiera-facturas-row-${row.uuid}`}>
               <TableCell className="font-mono">{row.numero_completo ?? '—'}</TableCell>
               <TableCell className="tabular-nums">{formatDate(row.created_at)}</TableCell>
               <TableCell className="tabular-nums">{formatMoney(row.subtotal)}</TableCell>
@@ -133,6 +143,16 @@ export function FacturasTable({ items, isLoading, error, caption }: FacturasTabl
                     ? t('reporteriaFinanciera.facturas.estadoVigente', 'Vigente')
                     : t('reporteriaFinanciera.facturas.estadoAnulada', 'Anulada')}
                 </Badge>
+              </TableCell>
+              <TableCell className="text-right">
+                <Link
+                  to={`/facturacion/${row.uuid}`}
+                  className="inline-flex items-center gap-1 text-sm text-primary underline-offset-2 hover:underline"
+                  data-testid={`reporteria-financiera-facturas-detalle-${row.uuid}`}
+                >
+                  {t('reporteriaFinanciera.facturas.verDetalle', 'Ver detalle')}
+                  <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+                </Link>
               </TableCell>
             </TableRow>
           ))
