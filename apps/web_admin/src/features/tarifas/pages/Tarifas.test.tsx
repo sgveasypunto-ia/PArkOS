@@ -143,7 +143,14 @@ vi.mock('@parkos/ui-kit/hooks', () => ({
   useAdminAuth: () => ({
     user: { uuid: 'u-1', email: 'admin@parkos.local' },
     rol: 'admin',
-    sucursalUuids: ['suc-1'],
+    // TP19 + TP20 add a second branch (SUCURSAL_2) on top of the
+    // canonical SUCURSAL_1, so the inline branch combobox stays
+    // populated. The list of permitidas must include both UUIDs
+    // for the client-side filter to keep them.
+    sucursalUuids: [
+      '11111111-1111-1111-1111-111111111111',
+      '22222222-2222-2222-2222-222222222222',
+    ],
     permisos: ['config_tarifas'],
     isAuthenticated: true,
     isLoading: false,
@@ -241,8 +248,8 @@ const SAMPLE_GRUPO_KEY = grupoKeyFor(
 );
 
 const SUCURSAL_NOMBRES = [
-  { uuid: SUCURSAL_1, nombre: 'Sucursal Centro' },
-  { uuid: SUCURSAL_2, nombre: 'Sucursal Norte' },
+  { uuid: SUCURSAL_1, nombre: 'Sucursal Centro', prefijo_nombre: 'CEN' },
+  { uuid: SUCURSAL_2, nombre: 'Sucursal Norte', prefijo_nombre: 'NOR' },
 ];
 
 beforeEach(() => {
@@ -1208,4 +1215,74 @@ describe('Tarifas page', () => {
   // un archivo separado que corre standalone (``--run`` flag) para no
   // contaminar la suite principal. Ver
   // ``Tarifas.design-preview.test.tsx``.
+
+  it('TP19 (HU-X.8 follow-up): the header hosts a branch combobox that writes through to the global SucursalContext', async () => {
+    // Operator flow: admin lands on /tarifas from /dashboard with
+    // SUCURSAL_1 already active. The combobox reflects the selection
+    // and the table is filtered to that branch.
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListTarifas.mockResolvedValue([
+      { ...SAMPLE_TARIFA, uuid_sucursal: SUCURSAL_1 },
+      {
+        ...SAMPLE_TARIFA,
+        uuid: 'cccccccc-1111-1111-1111-111111111111',
+        uuid_sucursal: SUCURSAL_2,
+        valor: '3000.0000',
+      },
+    ]);
+    render(<Tarifas />, { wrapper: fullWrapper });
+    await waitFor(() => {
+      expect(screen.getByTestId('tarifas-branch-combobox')).toBeInTheDocument();
+    });
+    // The "current" hint is the active branch.
+    await waitFor(() => {
+      expect(screen.getByTestId('tarifas-branch-combobox-selected')).toBeInTheDocument();
+    });
+    expect(
+      screen.getByTestId('tarifas-branch-combobox-selected').textContent,
+    ).toMatch(/Sucursal Centro/);
+    // The subtitle names the active branch.
+    expect(screen.getByTestId('tarifas-active-branch-name').textContent).toMatch(
+      /Sucursal Centro/,
+    );
+    // The table is filtered to the active branch.
+    expect(
+      screen.getByTestId(`tarifa-row-${SAMPLE_GRUPO_KEY}`),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId(
+        `tarifa-row-${grupoKeyFor(SUCURSAL_2, SAMPLE_TARIFA.uuid_tipo_vehiculo, SAMPLE_TARIFA.vigente_desde)}`,
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  it('TP20 (HU-X.8 follow-up): switching branches mid-edit closes the create/edit modal automatically', async () => {
+    // Operator-reported edge case (mirror of CP20): open the create
+    // modal, switch branches via the combobox, the modal MUST close
+    // — the BE rejects any `uuid_sucursal` swap on a tarifa
+    // (HTTP 409 `tarifa_sucursal_inmutable`).
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListTarifas.mockResolvedValue([]);
+    const user = userEvent.setup();
+    render(<Tarifas />, { wrapper: fullWrapper });
+    await waitFor(() => screen.getByTestId('tarifa-empty'));
+    // Open the create modal.
+    await user.click(screen.getByTestId('tarifa-new'));
+    expect(screen.getByTestId('tarifa-form-modal')).toBeInTheDocument();
+    // Open the combobox and pick the new branch.
+    const input = screen.getByTestId('tarifas-branch-combobox');
+    await user.click(input);
+    const newOption = await screen.findByTestId(
+      `tarifas-branch-combobox-option-${SUCURSAL_2}`,
+    );
+    await user.click(newOption);
+    // The modal must close on branch change.
+    await waitFor(() => {
+      expect(screen.queryByTestId('tarifa-form-modal')).not.toBeInTheDocument();
+    });
+    // And the global context now points at SUCURSAL_2.
+    expect(window.localStorage.getItem('parkos.lastSelectedSucursal')).toBe(
+      SUCURSAL_2,
+    );
+  });
 });

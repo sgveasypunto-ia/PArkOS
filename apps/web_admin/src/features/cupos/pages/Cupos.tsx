@@ -10,10 +10,21 @@
  * The list is filtered strictly by the branch selected in the topbar
  * selector. Cross-branch views are out of scope for this screen —
  * the multi-branch admin view lives in a separate dashboard surface.
+ *
+ * Branch picker (HU-X.8 follow-up): the header now hosts a
+ * `<SucursalFilterCombobox>` that writes through to `useSucursal()`,
+ * mirroring the pattern shipped on `/reporteria/financiera`. The
+ * inline picker lets the admin switch branches without bouncing back
+ * to `/seleccionar-sucursal`. When the active branch changes mid-edit
+ * the CREATE/EDIT modal is closed automatically — the BE rejects any
+ * `uuid_sucursal` swap (HTTP 409 `cantidad_sucursal_inmutable`), so a
+ * stale modal would surface an opaque error.
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSWRConfig } from 'swr';
+
+import { useAdminAuth } from '@parkos/ui-kit/hooks';
 
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
@@ -26,6 +37,10 @@ import {
   VersionHistoryPanel,
   type VersionHistoryItem,
 } from '@/features/configuracion/components/VersionHistoryPanel';
+import {
+  SucursalFilterCombobox,
+  type SucursalFilterComboboxOption,
+} from '@/features/admin/components/SucursalFilterCombobox';
 import { useSucursalesDirectorio } from '@/features/sucursales/hooks/useSucursalesDirectorio';
 import { createTipoVehiculo } from '@/features/tipos-vehiculo/api/tiposVehiculoApi';
 import { useTiposVehiculo } from '@/features/tipos-vehiculo/hooks/useTiposVehiculo';
@@ -267,9 +282,25 @@ function ListContent({
 
 export default function Cupos(): JSX.Element {
   const { t } = useTranslation();
-  const { selected: selectedSucursal } = useSucursal();
+  const { selected: selectedSucursal, setSelected } = useSucursal();
+  const { sucursalUuids: permitidas } = useAdminAuth();
 
   const { sucursales } = useSucursalesDirectorio();
+
+  // Inline picker: project the directorio (server-filtered to the
+  // admin's permitidas) into the SucursalFilterCombobox shape. Same
+  // shape as the SucursalPicker grid on /seleccionar-sucursal.
+  const branchOptions: SucursalFilterComboboxOption[] = useMemo(() => {
+    if (!sucursales) return [];
+    const permitidasSet = permitidas.length > 0 ? new Set(permitidas) : null;
+    return sucursales
+      .filter((s) => permitidasSet === null || permitidasSet.has(s.uuid))
+      .map((s) => ({
+        uuid: s.uuid,
+        nombre: s.nombre,
+        prefijo_nombre: s.prefijo_nombre,
+      }));
+  }, [sucursales, permitidas]);
 
   const { cupos, refresh, isLoading, error } = useCantidadList();
   const { tipos: tiposVehiculo, refresh: refreshTipos } = useTiposVehiculo();
@@ -347,6 +378,20 @@ export default function Cupos(): JSX.Element {
     setErrorState(null);
   }
 
+  // Close the modal whenever the active branch changes mid-edit. The
+  // BE rejects any attempt to swap `uuid_sucursal` on a cupo
+  // (HTTP 409 `cantidad_sucursal_inmutable`), so a stale modal would
+  // either submit a payload for a branch the row no longer belongs
+  // to, or carry phantom state the operator did not intend. Closing
+  // is the least surprising UX — the operator reopens the modal from
+  // the new branch's list if they still need to edit.
+  useEffect(() => {
+    closeModal();
+    setHistoryOpenFor(null);
+    // closeModal and setHistoryOpenFor are stable setters; only the
+    // branch change should re-trigger the close.
+  }, [selectedSucursal]);
+
   async function onSubmit(values: CupoCreateInput): Promise<void> {
     setSubmitting(true);
     setErrorState(null);
@@ -414,18 +459,45 @@ export default function Cupos(): JSX.Element {
     >
       <PageHeader
         title={t('cupos.title', 'Cupos')}
+        subtitle={
+          <span>
+            {t(
+              'cupos.subtitle',
+              'Capacidad máxima de vehículos por tipo, vigente en la sucursal seleccionada.',
+            )}
+            {activeSucursalLabel ? (
+              <span
+                className="ml-2 font-medium"
+                data-testid="cupos-active-branch-name"
+              >
+                ({activeSucursalLabel})
+              </span>
+            ) : null}
+          </span>
+        }
         actions={
-          <Button
-            type="button"
-            onClick={() => {
-              setCreating(true);
-              setEditing(null);
-              setErrorState(null);
-            }}
-            data-testid="cupo-new"
-          >
-            {t('cupos.new', 'Nuevo cupo')}
-          </Button>
+          <>
+            <SucursalFilterCombobox
+              options={branchOptions}
+              value={selectedSucursal ?? ''}
+              onChange={(uuid) => setSelected(uuid)}
+              label={t('branchSelector.label', 'Seleccionar sucursal')}
+              placeholder={t('sucursalPicker.search', 'Buscar por nombre o prefijo…')}
+              disabled={sucursales === undefined}
+              testId="cupos-branch-combobox"
+            />
+            <Button
+              type="button"
+              onClick={() => {
+                setCreating(true);
+                setEditing(null);
+                setErrorState(null);
+              }}
+              data-testid="cupo-new"
+            >
+              {t('cupos.new', 'Nuevo cupo')}
+            </Button>
+          </>
         }
       />
 

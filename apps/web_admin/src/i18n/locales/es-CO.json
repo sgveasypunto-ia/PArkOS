@@ -454,6 +454,7 @@
   },
   "tarifas": {
     "title": "Tarifas",
+    "subtitle": "Tarifa vigente por modalidad y tipo de vehículo en la sucursal seleccionada.",
     "new": "Nueva tarifa",
     "createTitle": "Crear nueva tarifa",
     "editTitle": "Editar tarifa",
@@ -499,6 +500,7 @@
   },
   "cupos": {
     "title": "Cupos",
+    "subtitle": "Capacidad máxima de vehículos por tipo, vigente en la sucursal seleccionada.",
     "new": "Nuevo cupo",
     "createTitle": "Crear nuevo cupo",
     "editTitle": "Editar cupo",

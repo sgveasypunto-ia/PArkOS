@@ -30,6 +30,13 @@
  * ``App.tsx``), so an admin without a selected branch never reaches
  * here — we render a placeholder rather than a confusing 400.
  *
+ * Branch picker (HU-X.8 follow-up): the header now hosts a
+ * `<SucursalFilterCombobox>` that writes through to `useSucursal()`,
+ * mirroring the pattern shipped on `/reporteria/financiera`. Switching
+ * branches invalidates the per-branch SWR caches (``ingresos``,
+ * ``salidas``, ``ocupacion``, ``operacional``) and the cross-branch
+ * ``ocupacion`` heatmap keeps its own cache (range-only key).
+ *
  * RNF-022 (WCAG 2.1 AA): Tabs and triggers come from Radix so keyboard
  * navigation (Left/Right, Home/End) and ``aria-controls``/
  * ``aria-selected`` are correct; the per-tab containers carry
@@ -40,6 +47,8 @@
 import { useMemo, useState } from 'react';
 import useSWR from 'swr';
 import { useTranslation } from 'react-i18next';
+
+import { useAdminAuth } from '@parkos/ui-kit/hooks';
 
 import { parkosFetchRaw } from '@/lib/fetch';
 import { useSucursal } from '@/lib/sucursal-context';
@@ -52,6 +61,10 @@ import {
 import { Button } from '@/components/ui/button';
 import { HeatmapOcupacion } from '@/components/charts/HeatmapOcupacion';
 import { exportToCsv } from '@/lib/export/csv';
+import {
+  SucursalFilterCombobox,
+  type SucursalFilterComboboxOption,
+} from '@/features/admin/components/SucursalFilterCombobox';
 import type { IngresoRead, SalidaListRead } from '../api/reporteriaSchema';
 
 import {
@@ -75,6 +88,7 @@ import { defaultRange, formatBackendTimestampLocal } from '../components/dateRan
 interface BranchSummary {
   uuid: string;
   nombre: string | null;
+  prefijo_nombre?: string | null;
 }
 
 const BRANCHES_PATH = '/api/v1/sucursales';
@@ -92,7 +106,8 @@ async function fetchJson<T>(input: string): Promise<T> {
 
 export default function Reporteria() {
   const { t } = useTranslation();
-  const { selected } = useSucursal();
+  const { selected, setSelected } = useSucursal();
+  const { sucursalUuids: permitidas } = useAdminAuth();
   const [tab, setTab] = useState<'ingresos' | 'salidas' | 'ocupacion'>(
     'ingresos',
   );
@@ -105,6 +120,20 @@ export default function Reporteria() {
   );
   const branchName =
     branches.data?.items.find((b) => b.uuid === selected)?.nombre ?? null;
+
+  // Inline picker options: project the cross-tenant branch list down
+  // to the admin's permitidas. Same memo as `ReporteriaFinanciera`.
+  const branchOptions: SucursalFilterComboboxOption[] = useMemo(() => {
+    const items = branches.data?.items ?? [];
+    const permitidasSet = permitidas.length > 0 ? new Set(permitidas) : null;
+    return items
+      .filter((i) => permitidasSet === null || permitidasSet.has(i.uuid))
+      .map((i) => ({
+        uuid: i.uuid,
+        nombre: i.nombre,
+        prefijo_nombre: i.prefijo_nombre,
+      }));
+  }, [branches.data, permitidas]);
 
   const ingresosQuery = selected ? { uuid_sucursal: selected, limit: 50 } : null;
   const salidasQuery = selected ? { uuid_sucursal: selected, limit: 50 } : null;
@@ -161,21 +190,35 @@ export default function Reporteria() {
       data-testid="page-reporteria"
     >
       <div className="mx-auto flex max-w-5xl flex-col gap-6">
-        <header className="border-b pb-4">
-          <h1 className="text-3xl font-bold tracking-tight">
-            {t('reporteria.title', 'Reportería operacional')}
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            {t(
-              'reporteria.subtitle',
-              'Ingresos, salidas y ocupación de la sucursal seleccionada.',
-            )}
-            {branchName ? (
-              <span className="ml-2 font-medium" data-testid="reporteria-branch-name">
-                ({branchName})
-              </span>
-            ) : null}
-          </p>
+        <header className="flex flex-col gap-4 border-b pb-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight">
+              {t('reporteria.title', 'Reportería operacional')}
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              {t(
+                'reporteria.subtitle',
+                'Ingresos, salidas y ocupación de la sucursal seleccionada.',
+              )}
+              {branchName ? (
+                <span
+                  className="ml-2 font-medium"
+                  data-testid="reporteria-branch-name"
+                >
+                  ({branchName})
+                </span>
+              ) : null}
+            </p>
+          </div>
+          <SucursalFilterCombobox
+            options={branchOptions}
+            value={selected ?? ''}
+            onChange={(uuid) => setSelected(uuid)}
+            label={t('branchSelector.label', 'Seleccionar sucursal')}
+            placeholder={t('sucursalPicker.search', 'Buscar por nombre o prefijo…')}
+            disabled={branches.isLoading}
+            testId="reporteria-branch-combobox"
+          />
         </header>
 
         <section
