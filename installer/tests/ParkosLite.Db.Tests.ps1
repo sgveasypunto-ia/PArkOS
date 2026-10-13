@@ -67,6 +67,20 @@ Describe 'Initialize-ParkosLitePgData' {
         $pwArg = ($global:initArgs | Where-Object { $_ -like '--pwfile=*' }) -replace '^--pwfile=', ''
         (Test-Path $pwArg) | Should Be $false
     }
+    It 'ejecuta initdb con un cwd valido (no hereda el del instalador, que puede no existir)' {
+        $d = Join-Path $TestDrive 'pg2cwd'
+        $global:initCwd = $null
+        Mock Invoke-ParkosLiteNative {
+            $global:initCwd = $WorkingDirectory
+            New-Item -ItemType Directory -Force -Path $d | Out-Null
+            Set-Content (Join-Path $d 'PG_VERSION') '16'
+            Set-Content (Join-Path $d 'postgresql.conf') '# conf'
+            $script:ok
+        }
+        Initialize-ParkosLitePgData -PgRoot 'C:\lite\pgsql' -PgData $d -Port 5434 -PostgresPassword 'x' | Out-Null
+        $global:initCwd | Should Not BeNullOrEmpty
+        (Test-Path -LiteralPath $global:initCwd) | Should Be $true
+    }
     It 'si initdb falla lanza con el codigo de salida' {
         $d = Join-Path $TestDrive 'pg3'
         Mock Invoke-ParkosLiteNative { @{ ExitCode = 1; Output = @('boom') } }
