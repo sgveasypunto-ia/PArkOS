@@ -124,9 +124,10 @@ export default function App() {
           }
         >
           {/* Global routes — auth required, NO branch required.
-              `Catalogos`, `Empresa`, and `Usuarios` are tenant-global
-              surfaces (DEC-CATALOG-01), so they sit OUTSIDE
-              `<RequireSucursal>`. The chrome shell wraps them so
+              `Catalogos`, `Empresa`, `Usuarios`, `Reporteria*`, and the
+              cross-tenant admin surfaces (alertas, dian, sync, ...)
+              live OUTSIDE `<RequireSucursal>` (DEC-CATALOG-01 + the
+              HU-F9 reporteria rework). The chrome shell wraps them so
               the operator always sees their identity + logout even
               before picking a branch. */}
           <Route path="/" element={<GlobalHQ />} />
@@ -238,17 +239,31 @@ export default function App() {
               path="/configuracion-seguridad"
               element={<ConfiguracionSeguridad />}
             />
-            <Route path="/reporteria" element={<Reporteria />} />
-            <Route
-              path="/reporteria/financiera"
-              element={<ReporteriaFinanciera />}
-            />
-            <Route
-              path="/reporteria/suscripciones"
-              element={<ReporteriaSuscripciones />}
-            />
             <Route path="/audit" element={<AuditDashboard />} />
           </Route>
+
+          {/* Reporteria (HU-F9) -- lives in the GLOBAL group so the
+              inline SucursalFilterCombobox can offer an "Todas las
+              sucursales" option (setSelected(null)) without the branch
+              guard bouncing the user to /seleccionar-sucursal. The
+              individual pages already render their own
+              `if (!selected) { placeholder }` guard (Reporteria.tsx,
+              ReporteriaFinanciera.tsx) so a missing branch selection
+              is surfaced as an inline notice, not a 422. Cross-branch
+              tabs (heatmap de ocupacion, FE) keep working in the
+              "Todas" mode -- branch-scoped tabs (KPIs operacionales,
+              facturas, pagos) show a notice explaining why no data
+              appears. Same pattern as /usuarios, /alertas, /dian,
+              /sync: cross-tenant surfaces live outside RequireSucursal. */}
+          <Route path="/reporteria" element={<Reporteria />} />
+          <Route
+            path="/reporteria/financiera"
+            element={<ReporteriaFinanciera />}
+          />
+          <Route
+            path="/reporteria/suscripciones"
+            element={<ReporteriaSuscripciones />}
+          />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

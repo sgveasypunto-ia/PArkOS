@@ -25,10 +25,16 @@
  * per-tipo cupo/activos cards — cross-branch (every branch the admin can
  * see), unlike the rest of this page which is scoped to ``selected``.
  *
- * Branch context comes from ``useSucursal()``; this page lives inside
- * the branch-scoped route group (gated by ``<RequireSucursal>`` in
- * ``App.tsx``), so an admin without a selected branch never reaches
- * here — we render a placeholder rather than a confusing 400.
+ * Branch context comes from ``useSucursal()``; this page lives in the
+ * global route group (HU-F9, see ``App.tsx`` -- the
+ * ``<RequireSucursal>`` guard was removed so the inline
+ * ``<SucursalFilterCombobox>`` can offer an "Todas las sucursales"
+ * option without the picker bouncing the user off the page). The
+ * page still renders an inline placeholder when no branch is selected
+ * so the layout stays predictable, and the KPIs/Facturas/Pagos tabs
+ * surface a notice explaining why no data appears in "Todas" mode --
+ * the heatmap and the FE tab keep working because those endpoints are
+ * already cross-branch.
  *
  * Branch picker (HU-X.8 follow-up): the header now hosts a
  * `<SucursalFilterCombobox>` that writes through to `useSucursal()`,
@@ -166,15 +172,69 @@ export default function Reporteria() {
         className="min-h-screen bg-background p-6"
         data-testid="page-reporteria"
       >
-        <p
-          className="rounded-md border bg-muted/40 p-4 text-sm text-muted-foreground"
-          data-testid="reporteria-no-branch"
-        >
-          {t(
-            'reporteria.noBranch',
-            'Seleccioná una sucursal para ver la reportería.',
-          )}
-        </p>
+        <div className="mx-auto flex max-w-5xl flex-col gap-6">
+          <header className="flex flex-col gap-4 border-b pb-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h1 className="text-3xl font-bold tracking-tight">
+                {t('reporteria.title', 'Reportería operacional')}
+              </h1>
+              <p className="text-sm text-muted-foreground">
+                {t(
+                  'reporteria.subtitle.allBranches',
+                  'Vista agregada de todas las sucursales permitidas. Seleccioná una sucursal específica para ver KPIs operacionales, ingresos, salidas y ocupación.',
+                )}
+              </p>
+            </div>
+            <SucursalFilterCombobox
+              options={branchOptions}
+              value=""
+              onChange={(uuid) => setSelected(uuid || null)}
+              label={t('branchSelector.label', 'Seleccionar sucursal')}
+              placeholder={t('sucursalPicker.search', 'Buscar por nombre o prefijo…')}
+              disabled={branches.isLoading}
+              testId="reporteria-branch-combobox"
+              allLabel={t(
+                'reporteria.allBranches',
+                'Todas las sucursales',
+              )}
+            />
+          </header>
+          <p
+            className="rounded-md border bg-muted/40 p-4 text-sm text-muted-foreground"
+            data-testid="reporteria-no-branch"
+          >
+            {t(
+              'reporteria.noBranch',
+              'Seleccioná una sucursal para ver la reportería.',
+            )}
+          </p>
+          <section
+            aria-label={t('reporteria.heatmapOnlyLabel', 'Heatmap cross-branch')}
+            className="rounded-lg border bg-card p-4"
+            data-testid="reporteria-heatmap-section"
+          >
+            {heatmap.error ? (
+              <p
+                role="alert"
+                aria-live="assertive"
+                data-testid="reporteria-heatmap-error"
+                className="text-sm text-destructive"
+              >
+                {heatmap.error.message}
+              </p>
+            ) : (
+              <HeatmapOcupacion
+                data={heatmap.data?.data ?? []}
+                sucursales={heatmap.data?.sucursales ?? []}
+                title={t(
+                  'reporteria.ocupacion.heatmapTitle',
+                  'Actividad por hora ({{desde}} → {{hasta}})',
+                  { desde: range.fecha_desde, hasta: range.fecha_hasta },
+                )}
+              />
+            )}
+          </section>
+        </div>
       </main>
     );
   }
@@ -213,11 +273,15 @@ export default function Reporteria() {
           <SucursalFilterCombobox
             options={branchOptions}
             value={selected ?? ''}
-            onChange={(uuid) => setSelected(uuid)}
+            onChange={(uuid) => setSelected(uuid || null)}
             label={t('branchSelector.label', 'Seleccionar sucursal')}
             placeholder={t('sucursalPicker.search', 'Buscar por nombre o prefijo…')}
             disabled={branches.isLoading}
             testId="reporteria-branch-combobox"
+            allLabel={t(
+              'reporteria.allBranches',
+              'Todas las sucursales',
+            )}
           />
         </header>
 
