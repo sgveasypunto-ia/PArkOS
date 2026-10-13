@@ -138,7 +138,6 @@ async def buscar_salida_facturable(
     Handler maps ``None`` to 404 ``salida_no_encontrada``.
     """
     from ..models.A.salidas import Salidas  # local import to avoid cycles
-
     from .salida import bloquear_salida  # local import to avoid cycles
 
     # Same per-salida lock as anular_salida_no_pagada: whichever flow runs

@@ -15,7 +15,7 @@ _PARKOS_CORE_SRC = _BACKEND_ROOT / "packages" / "parkos_core" / "src"
 if str(_PARKOS_CORE_SRC) not in sys.path:
     sys.path.insert(0, str(_PARKOS_CORE_SRC))
 
-import pytest  # noqa: E402,I001
+import pytest  # noqa: E402
 
 
 class _EmptyScalars:
@@ -40,7 +40,6 @@ class _CapturingSession:
 @pytest.fixture
 def app_and_session(monkeypatch: pytest.MonkeyPatch):
     from fastapi import FastAPI
-
     from parkos_core.api.v1.catalogos import router as catalogos_router
     from parkos_core.db.engine import get_session
 

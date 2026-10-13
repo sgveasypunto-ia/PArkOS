@@ -31,8 +31,8 @@ if str(_PARKOS_CORE_SRC) not in sys.path:
     sys.path.insert(0, str(_PARKOS_CORE_SRC))
 
 import pytest  # noqa: E402
-from parkos_core.repo.fe_emision import FeEmisionResultado  # noqa: E402
 from fastapi import HTTPException, Request  # noqa: E402
+from parkos_core.repo.fe_emision import FeEmisionResultado  # noqa: E402
 
 
 def _make_ctx(
@@ -697,15 +697,14 @@ async def test_venta_plan_juridica_a_cliente_natural_422() -> None:
     ), patch.object(
         handler_mod.repo_venta, "buscar_cliente_por_uuid_o_crear",
         new=AsyncMock(return_value=cliente_row),
-    ):
-        with pytest.raises(HTTPException) as excinfo:
-            await handler_mod.venta_suscripcion(
-                response=_new_response(),
-                payload=payload,
-                session=session,
-                ctx=_make_ctx(),
-                _claims=None,
-            )
+    ), pytest.raises(HTTPException) as excinfo:
+        await handler_mod.venta_suscripcion(
+            response=_new_response(),
+            payload=payload,
+            session=session,
+            ctx=_make_ctx(),
+            _claims=None,
+        )
     assert excinfo.value.status_code == 422
     assert excinfo.value.detail["error"] == "plan_tipo_cliente_incompatible"
     assert session.commit.await_count == 0

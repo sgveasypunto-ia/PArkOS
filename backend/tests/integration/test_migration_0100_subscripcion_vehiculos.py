@@ -30,16 +30,17 @@ def _repair_sql() -> str:
 
 @pytest.fixture
 async def par(pg_engine):
-    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from datetime import timedelta
 
-    from tests.conftest import VFixtureFactory
     from parkos_core.models.V.clientes import Clientes
     from parkos_core.models.V.subscripciones_cliente import SubscripcionesCliente
     from parkos_core.models.V.sucursal import Sucursal
     from parkos_core.models.V.tipo_subscripciones import TipoSubscripciones
     from parkos_core.models.V.vehiculos import Vehiculos
     from parkos_core.runtime.tiempo import hoy_bogota
-    from datetime import timedelta
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from tests.conftest import VFixtureFactory
 
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as s:
@@ -136,7 +137,8 @@ async def test_reparacion_cierra_fantasmas_sin_borrar_ni_tocar_estado(pg_engine,
             ).all()
             assert len(filas) == antes == 1
             estado, hasta, desde = filas[0]
-            assert estado == "inactivo" and hasta == desde
+            assert estado == "inactivo"
+            assert hasta == desde
             # y la invariante vuelve a poder validarse
             await conn.execute(
                 text(f"ALTER TABLE prod.subscripcion_vehiculos ADD CONSTRAINT {CHECK} "
