@@ -26,6 +26,17 @@
  * Cross-branch scope: the list is global by design (IT-1.4 admin
  * user management is admin-wide, not per-sucursal). The picker
  * switch does NOT invalidate this list.
+ *
+ * Branch picker (HU-X.8 follow-up): the inline `<SucursalFilterCombobox>`
+ * writes through to the global `SucursalContext` (same hook as the
+ * topbar BranchSelector and the same hook as `/reporteria/financiera`,
+ * `/cupos`, `/tarifas`, `/reporteria`). Picking a branch here ALSO
+ * changes the topbar selection — that is the intended write-through
+ * behaviour. The branch filter was removed from the local
+ * `UsuariosFiltros` state and now follows `useSucursal().selected`;
+ * the "Todas" pseudo-option is gone (use the topbar's `Cambiar
+ * sucursal` flow to clear the global context if you need to see
+ * users from every branch at once).
  */
 import { useMemo, useState } from 'react';
 import * as React from 'react';
@@ -35,6 +46,7 @@ import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogDescription, DialogTitle } from '@/components/ui/dialog';
+import { useSucursal } from '@/lib/sucursal-context';
 
 import { useSucursalOptions } from '@/features/sucursales/hooks/useSucursalesDirectorio';
 
@@ -57,6 +69,8 @@ export default function UsuariosList(): JSX.Element {
   const { usuarios, isLoading, error, refresh, create, assignBranch, unassignBranch } =
     useAdminUsuarios();
 
+  const { selected: selectedSucursal, setSelected } = useSucursal();
+
   const [createOpen, setCreateOpen] = useState(false);
   const [assignTarget, setAssignTarget] = useState<AdminUsuarioRead | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -66,8 +80,8 @@ export default function UsuariosList(): JSX.Element {
   const branchDirectory = useSucursalOptions();
 
   const filteredUsuarios = useMemo(
-    () => filterUsuarios(usuarios ?? [], filtros),
-    [usuarios, filtros],
+    () => filterUsuarios(usuarios ?? [], filtros, selectedSucursal),
+    [usuarios, filtros, selectedSucursal],
   );
 
   // Branch assignments are rendered INLINE in the table from
@@ -149,18 +163,18 @@ export default function UsuariosList(): JSX.Element {
 
         <div data-testid="admin-filter-sucursal-wrap">
           <SucursalFilterCombobox
-            options={branchDirectory.options.map((s) => ({
+            options={branchDirectory.sucursales.map((s) => ({
               uuid: s.uuid,
               nombre: s.nombre,
+              prefijo_nombre: s.prefijo_nombre,
             }))}
-            value={filtros.sucursal}
-            onChange={(uuid) => setFiltros((f) => ({ ...f, sucursal: uuid }))}
+            value={selectedSucursal ?? ''}
+            onChange={(uuid) => setSelected(uuid)}
             label={t('gestionUsuarios.filtros.sucursalLabel', 'Sucursal')}
             placeholder={t(
               'gestionUsuarios.filtros.sucursalCombobox.search',
               'Buscar por nombre, prefijo o UUID…',
             )}
-            allLabel={t('gestionUsuarios.filtros.todas', 'Todas')}
             testId="admin-filter-sucursal"
           />
         </div>

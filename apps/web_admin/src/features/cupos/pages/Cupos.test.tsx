@@ -123,7 +123,14 @@ vi.mock('@parkos/ui-kit/hooks', () => ({
   useAdminAuth: () => ({
     user: { uuid: 'u-1', email: 'admin@parkos.local' },
     rol: 'admin',
-    sucursalUuids: ['suc-1'],
+    // CP19 + CP20 add a second branch (SUCURSAL_2) on top of the
+    // canonical SUCURSAL_1, so the inline branch combobox stays
+    // populated. The list of permitidas must include both UUIDs
+    // for the client-side filter to keep them.
+    sucursalUuids: [
+      '11111111-1111-1111-1111-111111111111',
+      '22222222-2222-2222-2222-222222222222',
+    ],
     permisos: ['config_cupos'],
     isAuthenticated: true,
     isLoading: false,
@@ -190,7 +197,7 @@ beforeEach(() => {
   mockedListByKey.mockReset();
   mockedListSucursales.mockReset();
   mockedListSucursales.mockResolvedValue([
-    { uuid: SUCURSAL_1, nombre: 'Sucursal Centro' },
+    { uuid: SUCURSAL_1, nombre: 'Sucursal Centro', prefijo_nombre: 'CEN' },
   ]);
   useAuthStore.setState({ accessToken: 'tok', refreshToken: 'ref', expiresAt: null });
 });
@@ -734,5 +741,97 @@ describe('Cupos page', () => {
     expect(
       screen.queryByTestId(`cupo-scheduled-${vigenteRow.uuid}`),
     ).not.toBeInTheDocument();
+  });
+
+  it('CP19 (HU-X.8 follow-up): the header hosts a branch combobox that writes through to the global SucursalContext', async () => {
+    // Operator flow: admin lands on /cupos from /dashboard with
+    // SUCURSAL_1 already active. The combobox reflects the selection
+    // and the table is filtered to that branch.
+    const SUCURSAL_2 = '22222222-2222-2222-2222-222222222222';
+    mockedListSucursales.mockResolvedValue([
+      { uuid: SUCURSAL_1, nombre: 'Sucursal Centro', prefijo_nombre: 'CEN' },
+      { uuid: SUCURSAL_2, nombre: 'Sucursal Norte', prefijo_nombre: 'NOR' },
+    ]);
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListCupos.mockResolvedValue([
+      { ...SAMPLE_CUPO, uuid_sucursal: SUCURSAL_1, cantidad: 50 },
+      {
+        ...SAMPLE_CUPO,
+        uuid: '99999999-9999-9999-9999-999999999999',
+        uuid_sucursal: SUCURSAL_2,
+        cantidad: 99,
+      },
+    ]);
+    render(<Cupos />, { wrapper: fullWrapper });
+    await waitFor(() => {
+      expect(screen.getByTestId('cupos-branch-combobox')).toBeInTheDocument();
+    });
+    // The "current" hint is the active branch.
+    await waitFor(() => {
+      expect(screen.getByTestId('cupos-branch-combobox-selected')).toBeInTheDocument();
+    });
+    expect(
+      screen.getByTestId('cupos-branch-combobox-selected').textContent,
+    ).toMatch(/Sucursal Centro/);
+    // The subtitle names the active branch.
+    expect(screen.getByTestId('cupos-active-branch-name').textContent).toMatch(
+      /Sucursal Centro/,
+    );
+    // The table is filtered to the active branch.
+    expect(
+      screen.getByTestId('cupo-row-aaaaaaaa-1111-1111-1111-111111111111'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('cupo-row-99999999-9999-9999-9999-999999999999'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('CP20 (HU-X.8 follow-up): switching branches mid-edit closes the create/edit modal automatically', async () => {
+    // Operator-reported edge case: open the create modal, switch
+    // branches via the combobox, the modal MUST close — the BE
+    // rejects any `uuid_sucursal` swap on a cupo
+    // (HTTP 409 `cantidad_sucursal_inmutable`), so a stale modal
+    // would surface an opaque error on submit.
+    const SUCURSAL_2 = '22222222-2222-2222-2222-222222222222';
+    mockedListSucursales.mockResolvedValue([
+      { uuid: SUCURSAL_1, nombre: 'Sucursal Centro', prefijo_nombre: 'CEN' },
+      { uuid: SUCURSAL_2, nombre: 'Sucursal Norte', prefijo_nombre: 'NOR' },
+    ]);
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    mockedListCupos.mockResolvedValue([]);
+    const user = userEvent.setup();
+    render(<Cupos />, { wrapper: fullWrapper });
+    await waitFor(() => screen.getByTestId('cupo-empty'));
+    // Open the create modal.
+    await user.click(screen.getByTestId('cupo-new'));
+    expect(screen.getByTestId('cupo-form-modal')).toBeInTheDocument();
+    // Switch the active branch from the topbar (the inline combobox
+    // is in the header; the page-level test exercises the same
+    // `useSucursal().selected` subscription via the same effect).
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_2);
+    // Re-render the page by toggling a noop state through the
+    // existing `localStorage.setItem` triggers a `storage` event
+    // on the window — but `SucursalProvider` reads the initial value
+    // on mount and does not subscribe to `storage` events. The
+    // realistic path is: user opens the combobox, picks a branch,
+    // the combobox calls `setSelected`, which re-renders the page.
+    // Easiest cross-test seam: dispatch the React update via
+    // `act(() => window.localStorage.setItem(...))` does NOT trigger
+    // a re-render. Instead, exercise the same hook path the real UI
+    // uses: click the combobox, then the new-branch option.
+    const input = screen.getByTestId('cupos-branch-combobox');
+    await user.click(input);
+    const newOption = await screen.findByTestId(
+      `cupos-branch-combobox-option-${SUCURSAL_2}`,
+    );
+    await user.click(newOption);
+    // The modal must close on branch change.
+    await waitFor(() => {
+      expect(screen.queryByTestId('cupo-form-modal')).not.toBeInTheDocument();
+    });
+    // And the global context now points at SUCURSAL_2.
+    expect(window.localStorage.getItem('parkos.lastSelectedSucursal')).toBe(
+      SUCURSAL_2,
+    );
   });
 });

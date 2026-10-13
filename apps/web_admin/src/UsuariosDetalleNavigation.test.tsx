@@ -67,7 +67,20 @@ const { USER_UUID, USUARIO, calls } = vi.hoisted(() => {
       created_at: '2026-01-01T00:00:00Z',
       created_by: null,
       sync_status: null,
-      sucursales: [],
+      // HU-X.8 follow-up: the test sets a global branch in
+      // localStorage (`ALLOWED_UUID` below), so the page's
+      // `filterUsuarios` is keyed on the GLOBAL context, not the
+      // local `filtros.sucursal`. Give the fixture user an open
+      // assignment to that branch so the row passes the filter
+      // and the navigation links remain reachable.
+      sucursales: [
+        {
+          uuid_sucursal: '2049f2cd-b2a8-4e45-9d19-31fa87eb67c6',
+          nombre: 'Test branch',
+          prefijo_nombre: 'TST',
+          vigente_desde: '2026-01-01',
+        },
+      ],
     },
   };
 });

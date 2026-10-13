@@ -3,11 +3,11 @@
  * web_admin redesign).
  *
  * Layout:
- *   - Header: title + "Nueva tarifa" button.
+ *   - Header: title + branch picker (HU-X.8 follow-up) + "Nueva tarifa" button.
  *   - TarifaForm modal (create + edit). Cancel dispatches close.
  *   - Single filtered list scoped to the branch selected in the topbar
- *     (`useSucursal().selected`). Cross-branch views are out of scope
- *     for this screen — the multi-branch admin view lives in a
+ *     selector (`useSucursal().selected`). Cross-branch views are out of
+ *     scope for this screen — the multi-branch admin view lives in a
  *     separate dashboard surface. Each row has an "Editar" button
  *     (PUT) and a "Ver histórico" toggle that reveals the
  *     VersionHistoryPanel below the list.
@@ -18,12 +18,22 @@
  * per modalidad — so the page flattens the rows on read via
  * ``agruparTarifas``.
  *
+ * Branch picker (HU-X.8 follow-up): the header now hosts a
+ * `<SucursalFilterCombobox>` that writes through to `useSucursal()`,
+ * mirroring the pattern shipped on `/reporteria/financiera`. When
+ * the active branch changes mid-edit the CREATE/EDIT modal is closed
+ * automatically — the BE rejects any `uuid_sucursal` swap (HTTP 409
+ * `tarifa_sucursal_inmutable`), so a stale modal would surface an
+ * opaque error.
+ *
  * Container/presentational split: this file owns state, SWR mutations,
  * and error mapping. TarifaForm and VersionHistoryPanel are presentational.
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSWRConfig } from 'swr';
+
+import { useAdminAuth } from '@parkos/ui-kit/hooks';
 
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
@@ -34,6 +44,10 @@ import {
   VersionHistoryPanel,
   type VersionHistoryItem,
 } from '@/features/configuracion/components/VersionHistoryPanel';
+import {
+  SucursalFilterCombobox,
+  type SucursalFilterComboboxOption,
+} from '@/features/admin/components/SucursalFilterCombobox';
 import { useSucursalesDirectorio } from '@/features/sucursales/hooks/useSucursalesDirectorio';
 import { useTiposVehiculo } from '@/features/tipos-vehiculo/hooks/useTiposVehiculo';
 import { useSucursal } from '@/lib/sucursal-context';
@@ -297,9 +311,25 @@ function toHistoryItem(t: Tarifa): VersionHistoryItem {
 
 export default function Tarifas(): JSX.Element {
   const { t } = useTranslation();
-  const { selected: selectedSucursal } = useSucursal();
+  const { selected: selectedSucursal, setSelected } = useSucursal();
+  const { sucursalUuids: permitidas } = useAdminAuth();
 
   const { sucursales } = useSucursalesDirectorio();
+
+  // Inline picker: project the directorio (server-filtered to the
+  // admin's permitidas) into the SucursalFilterCombobox shape. Same
+  // shape as the SucursalPicker grid on /seleccionar-sucursal.
+  const branchOptions: SucursalFilterComboboxOption[] = useMemo(() => {
+    if (!sucursales) return [];
+    const permitidasSet = permitidas.length > 0 ? new Set(permitidas) : null;
+    return sucursales
+      .filter((s) => permitidasSet === null || permitidasSet.has(s.uuid))
+      .map((s) => ({
+        uuid: s.uuid,
+        nombre: s.nombre,
+        prefijo_nombre: s.prefijo_nombre,
+      }));
+  }, [sucursales, permitidas]);
 
   const { tarifas, refresh, isLoading, error } = useTarifasList(null);
   const { tipos: tiposVehiculo } = useTiposVehiculo();
@@ -403,6 +433,20 @@ export default function Tarifas(): JSX.Element {
     setEditingGrupo(null);
     setErrorState(null);
   }
+
+  // Close the modal whenever the active branch changes mid-edit. The
+  // BE rejects any attempt to swap `uuid_sucursal` on a tarifa
+  // (HTTP 409 `tarifa_sucursal_inmutable`), so a stale modal would
+  // either submit a payload for a branch the row no longer belongs
+  // to, or carry phantom state the operator did not intend. Closing
+  // is the least surprising UX — the operator reopens the modal from
+  // the new branch's list if they still need to edit.
+  useEffect(() => {
+    closeModal();
+    setHistoryOpenFor(null);
+    // closeModal and setHistoryOpenFor are stable setters; only the
+    // branch change should re-trigger the close.
+  }, [selectedSucursal]);
 
   async function onSubmit(values: TarifaCreateInput): Promise<void> {
     setSubmitting(true);
@@ -606,18 +650,45 @@ export default function Tarifas(): JSX.Element {
     >
       <PageHeader
         title={t('tarifas.title', 'Tarifas')}
+        subtitle={
+          <span>
+            {t(
+              'tarifas.subtitle',
+              'Tarifa vigente por modalidad y tipo de vehículo en la sucursal seleccionada.',
+            )}
+            {activeSucursalLabel ? (
+              <span
+                className="ml-2 font-medium"
+                data-testid="tarifas-active-branch-name"
+              >
+                ({activeSucursalLabel})
+              </span>
+            ) : null}
+          </span>
+        }
         actions={
-          <Button
-            type="button"
-            onClick={() => {
-              setCreating(true);
-              setEditingGrupo(null);
-              setErrorState(null);
-            }}
-            data-testid="tarifa-new"
-          >
-            {t('tarifas.new', 'Nueva tarifa')}
-          </Button>
+          <>
+            <SucursalFilterCombobox
+              options={branchOptions}
+              value={selectedSucursal ?? ''}
+              onChange={(uuid) => setSelected(uuid)}
+              label={t('branchSelector.label', 'Seleccionar sucursal')}
+              placeholder={t('sucursalPicker.search', 'Buscar por nombre o prefijo…')}
+              disabled={sucursales === undefined}
+              testId="tarifas-branch-combobox"
+            />
+            <Button
+              type="button"
+              onClick={() => {
+                setCreating(true);
+                setEditingGrupo(null);
+                setErrorState(null);
+              }}
+              data-testid="tarifa-new"
+            >
+              {t('tarifas.new', 'Nueva tarifa')}
+            </Button>
+          </>
         }
       />
 
