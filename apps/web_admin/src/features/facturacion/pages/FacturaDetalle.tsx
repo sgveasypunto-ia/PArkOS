@@ -165,7 +165,11 @@ export function FacturaDetalle(): JSX.Element {
         }}
       />
 
-      <FacturaAccionesMenu uuid={header.uuid} estado={estado} />
+      <FacturaAccionesMenu
+        uuid={header.uuid}
+        uuid_ingreso={header.uuid_ingreso}
+        estado={estado}
+      />
     </article>
   );
 }
