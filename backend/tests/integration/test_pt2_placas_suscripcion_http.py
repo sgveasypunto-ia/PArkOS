@@ -609,9 +609,13 @@ async def test_quitar_placa_cierra_sin_fila_abierta_fantasma(client, pg_engine, 
 
     filas_a = await _filas_junction(pg_engine, sub, placa_a)
     assert [f for f in filas_a if f[1] is None] == [], "fila abierta fantasma de la placa quitada"
-    assert len(filas_a) == 1 and filas_a[0][0] == "inactivo" and filas_a[0][1] is not None
+    assert len(filas_a) == 1
+    assert filas_a[0][0] == "inactivo"
+    assert filas_a[0][1] is not None
     filas_b = await _filas_junction(pg_engine, sub, placa_b)
-    assert len(filas_b) == 1 and filas_b[0][0] == "activo" and filas_b[0][1] is None
+    assert len(filas_b) == 1
+    assert filas_b[0][0] == "activo"
+    assert filas_b[0][1] is None
 
     Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as s:
@@ -641,7 +645,7 @@ async def test_lectores_ignoran_fila_abierta_inactiva_legada(pg_engine, world) -
             ),
             {"u": tipo, "t": f"legado-{tipo.hex[:6]}", "a": w.sup_uuid},
         )
-    sub, (sv,) = await _make_sub(
+    _sub, (sv,) = await _make_sub(
         pg_engine, w, sucursal=w.suc_a, plan=w.plan_any, vehiculos=[(placa, tipo)]
     )
     # Simula el estado que dejaba el bug (fila abierta con estado inactivo) en
