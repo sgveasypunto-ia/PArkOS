@@ -111,11 +111,13 @@ vi.mock('../../operacion/hooks/useIngresosActivos', () => ({
 }));
 
 const mockGetIngresosByPlaca = vi.fn();
+const mockGetIngresosByConsecutivo = vi.fn();
 vi.mock('../../operacion/api/ingresoActivoApi', async (importOriginal) => {
   const actual = await importOriginal<typeof IngresoActivoApiModule>();
   return {
     ...actual,
     getIngresosByPlaca: (...args: unknown[]) => mockGetIngresosByPlaca(...args),
+    getIngresosByConsecutivo: (...args: unknown[]) => mockGetIngresosByConsecutivo(...args),
   };
 });
 
@@ -176,6 +178,7 @@ beforeEach(() => {
   });
   mockUseIngresosActivos.mockReturnValue([]);
   mockGetIngresosByPlaca.mockResolvedValue([]);
+  mockGetIngresosByConsecutivo.mockResolvedValue([]);
   useDashboardDrawerStore.getState().close();
   useResumenCierrePendiente.getState().setPendiente(false);
 });
@@ -529,5 +532,92 @@ describe('<PlacaInputHero /> — HU-F7.1 búsqueda sin placa (T5) autocomplete',
     });
     expect(useDashboardDrawerStore.getState().initialPlaca).toBe('ZZZ999');
     expect(mockGetIngresosByPlaca).toHaveBeenCalledWith('ZZZ999', { soloActivos: true });
+  });
+});
+
+describe('<PlacaInputHero /> — salida por consecutivo escrito + Enter (sin sugerencia resaltada)', () => {
+  const CONSECUTIVO = 'PATINETA-000003-34a24bae';
+  const ITEM_PATINETA = {
+    uuid: 'uuid-ingreso-patineta',
+    placa: null,
+    fecha_ingreso: '2026-09-19T10:00:00Z',
+    consecutivo: CONSECUTIVO,
+    created_at: '2026-09-19T10:00:00Z',
+    uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000002',
+    uuid_sucursal: 'suc-uuid-1',
+  };
+
+  function renderConSesion(): void {
+    mockUseSesionActiva.mockReturnValue({
+      sesion: baseSesion,
+      isLoading: false,
+      error: undefined,
+      refresh: mockRefresh,
+    });
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>,
+    );
+  }
+
+  it('A1: consecutivo exacto presente en la lista + Enter → salida con uuid, nunca ingreso', async () => {
+    mockUseIngresosActivos.mockReturnValue([ITEM_PATINETA]);
+    renderConSesion();
+
+    const input = screen.getByTestId('placa-hero-input');
+    await userEvent.type(input, CONSECUTIVO);
+    await userEvent.keyboard('{Escape}{Enter}');
+
+    await waitFor(() => {
+      expect(useDashboardDrawerStore.getState().openDrawer).toBe('salida');
+    });
+    const state = useDashboardDrawerStore.getState();
+    expect(state.initialUuidIngreso).toBe('uuid-ingreso-patineta');
+    expect(state.initialPlaca).toBeNull();
+    expect(mockGetIngresosByPlaca).not.toHaveBeenCalled();
+  });
+
+  it('A2: un único candidato por consecutivo parcial + Enter → salida con uuid', async () => {
+    mockUseIngresosActivos.mockReturnValue([ITEM_PATINETA]);
+    renderConSesion();
+
+    await userEvent.type(screen.getByTestId('placa-hero-input'), '000003');
+    await userEvent.keyboard('{Escape}{Enter}');
+
+    await waitFor(() => {
+      expect(useDashboardDrawerStore.getState().openDrawer).toBe('salida');
+    });
+    expect(useDashboardDrawerStore.getState().initialUuidIngreso).toBe('uuid-ingreso-patineta');
+    expect(mockGetIngresosByPlaca).not.toHaveBeenCalled();
+  });
+
+  it('A3: lista no cargada (null) + consecutivo + Enter → consulta ?consecutivo=&activo=true y abre salida', async () => {
+    mockUseIngresosActivos.mockReturnValue(null);
+    mockGetIngresosByConsecutivo.mockResolvedValue([ITEM_PATINETA]);
+    renderConSesion();
+
+    await userEvent.type(screen.getByTestId('placa-hero-input'), CONSECUTIVO);
+    await userEvent.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(useDashboardDrawerStore.getState().openDrawer).toBe('salida');
+    });
+    expect(mockGetIngresosByConsecutivo).toHaveBeenCalledWith(CONSECUTIVO, { soloActivos: true });
+    expect(useDashboardDrawerStore.getState().initialUuidIngreso).toBe('uuid-ingreso-patineta');
+    expect(mockGetIngresosByPlaca).not.toHaveBeenCalled();
+  });
+
+  it('A4: consecutivo que no resuelve → alerta "consecutivo no encontrado" y NO abre ningún drawer', async () => {
+    mockUseIngresosActivos.mockReturnValue([]);
+    mockGetIngresosByConsecutivo.mockResolvedValue([]);
+    renderConSesion();
+
+    await userEvent.type(screen.getByTestId('placa-hero-input'), 'PATINETA-000009-deadbeef');
+    await userEvent.keyboard('{Enter}');
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/consecutivo.*no encontrado/i);
+    expect(useDashboardDrawerStore.getState().openDrawer).toBeNull();
+    expect(mockGetIngresosByPlaca).not.toHaveBeenCalled();
   });
 });
