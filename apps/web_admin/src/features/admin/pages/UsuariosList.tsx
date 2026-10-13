@@ -1,14 +1,16 @@
 /**
  * `<UsuariosList />` — IT-1.4 + PR3 of the web_admin redesign, filter
- * bar + create-wizard added by HU-F16.2.
+ * bar + create-wizard added by HU-F16.2; page-local free-text search
+ * added by HU-F9.
  *
  * Container that:
  *   - Lists every active admin/operator user via SWR.
- *   - Filters that list client-side by rol / sucursal / estado
- *     (HU-F16.2) -- `GET /admin/usuarios` takes no query params and the
- *     endpoint is already bounded to 100 rows (see
- *     `AdminUsuarioTable.tsx`'s docblock), so filtering the already-
- *     fetched page is the right shape here, not a server round-trip.
+ *   - Filters that list client-side by rol / estado / search query /
+ *     sucursal (HU-F16.2 + HU-F9) -- `GET /admin/usuarios` takes no
+ *     query params and the endpoint is already bounded to 100 rows
+ *     (see `AdminUsuarioTable.tsx`'s docblock), so filtering the
+ *     already-fetched page is the right shape here, not a server
+ *     round-trip.
  *   - Lets the admin create a new user via the 3-step `<UsuarioCrear />`
  *     wizard (HU-F16.2 -- replaces the old single-shot
  *     `AdminUsuarioForm`/`CreateUserForm` for the CREATE flow only).
@@ -27,16 +29,23 @@
  * user management is admin-wide, not per-sucursal). The picker
  * switch does NOT invalidate this list.
  *
- * Branch picker (HU-X.8 follow-up): the inline `<SucursalFilterCombobox>`
- * writes through to the global `SucursalContext` (same hook as the
- * topbar BranchSelector and the same hook as `/reporteria/financiera`,
- * `/cupos`, `/tarifas`, `/reporteria`). Picking a branch here ALSO
- * changes the topbar selection — that is the intended write-through
- * behaviour. The branch filter was removed from the local
- * `UsuariosFiltros` state and now follows `useSucursal().selected`;
- * the "Todas" pseudo-option is gone (use the topbar's `Cambiar
- * sucursal` flow to clear the global context if you need to see
- * users from every branch at once).
+ * Branch picker (HU-X.8 + HU-F9 follow-ups): the inline
+ * `<SucursalFilterCombobox>` was moved to the page header (same row
+ * as the search input and the "+ Nuevo usuario" button) so the layout
+ * mirrors the reporteria surfaces (`/reporteria`, `/reporteria/financiera`).
+ * The combobox writes through to the global `SucursalContext` (same
+ * hook as the topbar BranchSelector and the same hook as
+ * `/reporteria/financiera`, `/cupos`, `/tarifas`, `/reporteria`).
+ * Picking a branch here ALSO changes the topbar selection -- that is
+ * the intended write-through behaviour. The picker now offers a
+ * "Todas las sucursales" pseudo-option (HU-F9) that sets
+ * `selected = null` and shows every user across all permitted
+ * branches.
+ *
+ * Search (HU-F9): a `<UsuarioSearchInput>` lives in the same header
+ * cluster and filters the already-fetched list by `email`, `nombre`,
+ * and `apellido` (case-insensitive `includes`). Clearing the search
+ * is a no-op against the rest of the filters (rol / estado / branch).
  */
 import { useMemo, useState } from 'react';
 import * as React from 'react';
@@ -53,6 +62,7 @@ import { useSucursalOptions } from '@/features/sucursales/hooks/useSucursalesDir
 import { AdminUsuarioTable } from '../components/AdminUsuarioTable';
 import { AdminUsuarioSucursalesManager } from '../components/AdminUsuarioSucursalesManager';
 import { SucursalFilterCombobox } from '../components/SucursalFilterCombobox';
+import { UsuarioSearchInput } from '../components/UsuarioSearchInput';
 import {
   ESTADOS,
   ROLES,
@@ -116,16 +126,42 @@ export default function UsuariosList(): JSX.Element {
           'Crea, lista y asigna sucursales a usuarios administradores y operadores.',
         )}
         actions={
-          <Button
-            type="button"
-            onClick={() => {
-              setCreateOpen(true);
-              setCreateError(null);
-            }}
-            data-testid="admin-new"
-          >
-            {t('gestionUsuarios.newUser', '+ Nuevo usuario')}
-          </Button>
+          <div className="flex flex-wrap items-end gap-3">
+            <UsuarioSearchInput
+              value={filtros.search}
+              onChange={(v) => setFiltros((f) => ({ ...f, search: v }))}
+              testId="admin-search-usuario"
+            />
+            <SucursalFilterCombobox
+              options={branchDirectory.sucursales.map((s) => ({
+                uuid: s.uuid,
+                nombre: s.nombre,
+                prefijo_nombre: s.prefijo_nombre,
+              }))}
+              value={selectedSucursal ?? ''}
+              onChange={(uuid) => setSelected(uuid || null)}
+              label={t('gestionUsuarios.filtros.sucursalLabel', 'Sucursal')}
+              placeholder={t(
+                'gestionUsuarios.filtros.sucursalCombobox.search',
+                'Buscar por nombre, prefijo o UUID…',
+              )}
+              allLabel={t(
+                'gestionUsuarios.filtros.todas',
+                'Todas las sucursales',
+              )}
+              testId="admin-filter-sucursal"
+            />
+            <Button
+              type="button"
+              onClick={() => {
+                setCreateOpen(true);
+                setCreateError(null);
+              }}
+              data-testid="admin-new"
+            >
+              {t('gestionUsuarios.newUser', '+ Nuevo usuario')}
+            </Button>
+          </div>
         }
       />
 
@@ -160,24 +196,6 @@ export default function UsuariosList(): JSX.Element {
             ))}
           </select>
         </label>
-
-        <div data-testid="admin-filter-sucursal-wrap">
-          <SucursalFilterCombobox
-            options={branchDirectory.sucursales.map((s) => ({
-              uuid: s.uuid,
-              nombre: s.nombre,
-              prefijo_nombre: s.prefijo_nombre,
-            }))}
-            value={selectedSucursal ?? ''}
-            onChange={(uuid) => setSelected(uuid)}
-            label={t('gestionUsuarios.filtros.sucursalLabel', 'Sucursal')}
-            placeholder={t(
-              'gestionUsuarios.filtros.sucursalCombobox.search',
-              'Buscar por nombre, prefijo o UUID…',
-            )}
-            testId="admin-filter-sucursal"
-          />
-        </div>
 
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
           {t('gestionUsuarios.filtros.estadoLabel', 'Estado')}

@@ -146,4 +146,27 @@ describe('Reporteria (operacional) page — HU-X.8 branch combobox', () => {
       /Sur/,
     );
   });
+
+  it('HU-F9 R21: "Todas las sucursales" option is offered and selecting it clears the global selection', async () => {
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUC_NORTE);
+    const user = userEvent.setup();
+    render(<Reporteria />, { wrapper: fullWrapper });
+    await waitFor(() => {
+      expect(screen.getByTestId('reporteria-branch-combobox')).toBeInTheDocument();
+    });
+    const input = screen.getByTestId('reporteria-branch-combobox');
+    await user.click(input);
+    const allOption = await screen.findByTestId(
+      'reporteria-branch-combobox-option-all',
+    );
+    await user.click(allOption);
+    // The global selection is cleared (null) and the no-branch notice
+    // takes over. The heatmap keeps rendering because it is
+    // cross-branch by design.
+    await waitFor(() => {
+      expect(window.localStorage.getItem('parkos.lastSelectedSucursal')).toBeNull();
+    });
+    expect(screen.getByTestId('reporteria-no-branch')).toBeInTheDocument();
+    expect(screen.getByTestId('reporteria-heatmap-section')).toBeInTheDocument();
+  });
 });

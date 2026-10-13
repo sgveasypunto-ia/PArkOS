@@ -25,6 +25,14 @@
  * the topbar). The subtitle also shows the current branch name in
  * parens, matching the `Reporteria.tsx` style.
  *
+ * HU-F9: the picker now exposes a "Todas las sucursales" option that
+ * switches the page to cross-branch mode. In that mode the branch-
+ * scoped Facturas / Pagos tabs surface an inline notice (their backend
+ * endpoints require `uuid_sucursal`); the FE tab keeps working because
+ * ``reporte_fe`` is already cross-branch. Lives in the global route
+ * group (see ``App.tsx``) so the picker can write `selected=null`
+ * without ``<RequireSucursal>`` bouncing to ``/seleccionar-sucursal``.
+ *
  * Branch context comes from `useSucursal()`, same as `<Reporteria />`.
  */
 import { useMemo, useState } from 'react';
@@ -163,16 +171,28 @@ export default function ReporteriaFinanciera() {
               {t('reporteriaFinanciera.title', 'Reportería financiera')}
             </h1>
             <p className="text-sm text-muted-foreground">
-              {t(
-                'reporteriaFinanciera.subtitle',
-                'Facturas, facturación electrónica (FE) y pagos.',
-              )}
+              {selected
+                ? t(
+                    'reporteriaFinanciera.subtitle',
+                    'Facturas, facturación electrónica (FE) y pagos.',
+                  )
+                : t(
+                    'reporteriaFinanciera.subtitle.allBranches',
+                    'Facturación electrónica cross-branch y pagos agregados. Las facturas requieren una sucursal específica.',
+                  )}
               {branchName ? (
                 <span
                   className="ml-2 font-medium"
                   data-testid="reporteria-financiera-branch-name"
                 >
                   ({branchName})
+                </span>
+              ) : !selected ? (
+                <span
+                  className="ml-2 font-medium"
+                  data-testid="reporteria-financiera-branch-name"
+                >
+                  ({t('reporteria.allBranches', 'Todas las sucursales')})
                 </span>
               ) : null}
             </p>
@@ -181,10 +201,14 @@ export default function ReporteriaFinanciera() {
             label={t('branchSelector.label', 'Seleccionar sucursal')}
             options={branchOptions}
             value={selected ?? ''}
-            onChange={(uuid) => setSelected(uuid)}
+            onChange={(uuid) => setSelected(uuid || null)}
             placeholder={t('sucursalPicker.search', 'Buscar por nombre o prefijo…')}
             disabled={branches.isLoading}
             testId="reporteria-financiera-branch-combobox"
+            allLabel={t(
+              'reporteria.allBranches',
+              'Todas las sucursales',
+            )}
           />
         </header>
 

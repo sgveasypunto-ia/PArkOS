@@ -78,36 +78,103 @@ describe('filterUsuarios (pure filtering logic)', () => {
   const rows = [admin1, operador1, operadorInactivo];
 
   it('returns every row when every filter is "" (no filter) and no branch is selected', () => {
-    expect(filterUsuarios(rows, { rol: '', estado: '' }, null)).toEqual(rows);
+    expect(filterUsuarios(rows, { rol: '', estado: '', search: '' }, null)).toEqual(rows);
   });
 
   it('filters by rol', () => {
-    expect(filterUsuarios(rows, { rol: 'admin', estado: '' }, null)).toEqual([admin1]);
-    expect(filterUsuarios(rows, { rol: 'operador', estado: '' }, null)).toEqual([
+    expect(filterUsuarios(rows, { rol: 'admin', estado: '', search: '' }, null)).toEqual([admin1]);
+    expect(filterUsuarios(rows, { rol: 'operador', estado: '', search: '' }, null)).toEqual([
       operador1,
       operadorInactivo,
     ]);
   });
 
   it('filters by sucursal (matches any open assignment)', () => {
-    expect(filterUsuarios(rows, { rol: '', estado: '' }, SUC_NORTE)).toEqual([admin1]);
-    expect(filterUsuarios(rows, { rol: '', estado: '' }, SUC_SUR)).toEqual([operador1]);
+    expect(filterUsuarios(rows, { rol: '', estado: '', search: '' }, SUC_NORTE)).toEqual([admin1]);
+    expect(filterUsuarios(rows, { rol: '', estado: '', search: '' }, SUC_SUR)).toEqual([operador1]);
   });
 
   it('filters by estado', () => {
-    expect(filterUsuarios(rows, { rol: '', estado: 'inactivo' }, null)).toEqual([
+    expect(filterUsuarios(rows, { rol: '', estado: 'inactivo', search: '' }, null)).toEqual([
       operadorInactivo,
     ]);
   });
 
   it('combines filters with AND semantics', () => {
     expect(
-      filterUsuarios(rows, { rol: 'operador', estado: 'activo' }, null),
+      filterUsuarios(rows, { rol: 'operador', estado: 'activo', search: '' }, null),
     ).toEqual([operador1]);
   });
 
   it('returns [] when no row matches every active filter', () => {
-    expect(filterUsuarios(rows, { rol: 'admin', estado: '' }, SUC_SUR)).toEqual([]);
+    expect(filterUsuarios(rows, { rol: 'admin', estado: '', search: '' }, SUC_SUR)).toEqual([]);
+  });
+
+  it('HU-F9: filters by search against email (case-insensitive)', () => {
+    // The default makeRow() email is `user@parkos.local`, so we
+    // override admin1 + operador1 with realistic emails to assert
+    // case-insensitive matches.
+    const adminWithEmail = makeRow({
+      uuid: '1',
+      email: 'admin@parkos.local',
+      rol: 'admin',
+      estado: 'activo',
+      sucursales: [{ uuid_sucursal: SUC_NORTE, nombre: 'Norte', prefijo_nombre: 'NOR', vigente_desde: '2026-01-01' }],
+    });
+    const operadorWithEmail = makeRow({
+      uuid: '2',
+      email: 'operador@parkos.local',
+      rol: 'operador',
+      estado: 'activo',
+      sucursales: [{ uuid_sucursal: SUC_SUR, nombre: 'Sur', prefijo_nombre: 'SUR', vigente_desde: '2026-01-01' }],
+    });
+    const richRows = [adminWithEmail, operadorWithEmail, operadorInactivo];
+    // "ADMIN" (uppercase) matches admin@parkos.local
+    expect(
+      filterUsuarios(richRows, { rol: '', estado: '', search: 'ADMIN' }, null),
+    ).toEqual([adminWithEmail]);
+    // Full email also matches
+    expect(
+      filterUsuarios(richRows, { rol: '', estado: '', search: 'operador@parkos' }, null),
+    ).toEqual([operadorWithEmail]);
+  });
+
+  it('HU-F9: filters by search against nombre + apellido (joined)', () => {
+    // "QA Edit" matches the operador1 fixture (nombre overridden below
+    // to "QA Edit Operador", apellido "Pruebas" -- joined with a
+    // single space).
+    const richOperador = makeRow({
+      uuid: '2',
+      rol: 'operador',
+      estado: 'activo',
+      nombre: 'QA Edit Operador',
+      apellido: 'Pruebas',
+      sucursales: [{ uuid_sucursal: SUC_SUR, nombre: 'Sur', prefijo_nombre: 'SUR', vigente_desde: '2026-01-01' }],
+    });
+    const richRows = [admin1, richOperador, operadorInactivo];
+    expect(
+      filterUsuarios(richRows, { rol: '', estado: '', search: 'qa edit' }, null),
+    ).toEqual([richOperador]);
+    // apellido only
+    expect(
+      filterUsuarios(richRows, { rol: '', estado: '', search: 'pruebas' }, null),
+    ).toEqual([richOperador]);
+  });
+
+  it('HU-F9: empty search (whitespace only) disables the search filter', () => {
+    expect(
+      filterUsuarios(rows, { rol: '', estado: '', search: '   ' }, null),
+    ).toEqual(rows);
+  });
+
+  it('HU-F9: search combines with rol/sucursal with AND semantics', () => {
+    // "admin" + rol=operador -> only operador rows whose email OR
+    // nombre includes "admin" -- operador1's email is operador@parkos
+    // (no match), operadorInactivo has no email either. Both rows
+    // share the search so neither matches -> [].
+    expect(
+      filterUsuarios(rows, { rol: 'operador', estado: '', search: 'admin' }, null),
+    ).toEqual([]);
   });
 });
 
@@ -272,5 +339,65 @@ describe('<UsuariosList /> — filter bar wiring', () => {
     });
     expect(screen.getByTestId(`admin-row-${UUID_ADMIN}`)).toBeInTheDocument();
     expect(screen.queryByTestId(`admin-row-${UUID_OPERADOR}`)).not.toBeInTheDocument();
+  });
+
+  it('HU-F9: typing in the search input filters the table by email', async () => {
+    const user = userEvent.setup();
+    render(<UsuariosList />, { wrapper: isolatedCache });
+
+    await waitFor(() => {
+      expect(screen.getByTestId(`admin-row-${UUID_ADMIN}`)).toBeInTheDocument();
+      expect(screen.getByTestId(`admin-row-${UUID_OPERADOR}`)).toBeInTheDocument();
+    });
+
+    const search = screen.getByTestId('admin-search-usuario');
+    await user.type(search, 'operador');
+
+    expect(screen.queryByTestId(`admin-row-${UUID_ADMIN}`)).not.toBeInTheDocument();
+    expect(screen.getByTestId(`admin-row-${UUID_OPERADOR}`)).toBeInTheDocument();
+  });
+
+  it('HU-F9: the search input is wired to the header cluster next to the branch combobox', () => {
+    render(<UsuariosList />, { wrapper: isolatedCache });
+
+    // The search input and the branch combobox are siblings under
+    // the page-header-actions cluster, matching the reporteria pages
+    // where the picker sits in the same header.
+    const search = screen.getByTestId('admin-search-usuario');
+    const combobox = screen.getByTestId('admin-filter-sucursal');
+    const newButton = screen.getByTestId('admin-new');
+    const headerActions = newButton.closest('[data-testid="page-header-actions"]');
+    expect(headerActions).toBeInTheDocument();
+    expect(headerActions).toContainElement(search);
+    expect(headerActions).toContainElement(combobox);
+    expect(headerActions).toContainElement(newButton);
+  });
+
+  it('HU-F9: "Todas las sucursales" option in the branch combobox clears the global selection and shows every user', async () => {
+    // Start with a global branch selection so the table is filtered
+    // and the combobox shows the "current" hint.
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUC_NORTE);
+    const user = userEvent.setup();
+    render(<UsuariosList />, { wrapper: isolatedCache });
+
+    // Mount: filtered to SUC_NORTE — only admin (Norte assignment) is shown.
+    await waitFor(() => {
+      expect(screen.getByTestId(`admin-row-${UUID_ADMIN}`)).toBeInTheDocument();
+      expect(screen.queryByTestId(`admin-row-${UUID_OPERADOR}`)).not.toBeInTheDocument();
+    });
+
+    // Open the picker and click the "Todas" pseudo-option.
+    const input = screen.getByTestId('admin-filter-sucursal');
+    await user.click(input);
+    const allOption = await screen.findByTestId('admin-filter-sucursal-option-all');
+    await user.click(allOption);
+
+    // The global context is cleared (null in localStorage) and the
+    // table re-fetches with no branch filter — every user is shown.
+    await waitFor(() => {
+      expect(window.localStorage.getItem('parkos.lastSelectedSucursal')).toBeNull();
+    });
+    expect(screen.getByTestId(`admin-row-${UUID_ADMIN}`)).toBeInTheDocument();
+    expect(screen.getByTestId(`admin-row-${UUID_OPERADOR}`)).toBeInTheDocument();
   });
 });
