@@ -87,6 +87,12 @@ Total de casos documentados en este archivo: **19** (uno por archivo seleccionad
 - **Categoría**: integration
 - **Escenario verificado**: que un token de emparejamiento de un solo uso, emitido por un administrador para una sucursal, permita a esa sucursal consumirlo y obtener un JWT de sincronización real. El archivo documenta 9 escenarios de emparejamiento en su docstring (reuso, expiración, revocación, sucursal incorrecta, límite de tasa, permisos de archivo del JWT persistido, entre otros) y suma después 2 pruebas más de backfill topológico de catálogo añadidas posteriormente en el mismo archivo; varios de los 9 escenarios originales están marcados `xfail` por gaps preexistentes fuera de alcance (ver `plan-pruebas.md` §7).
 
+## Reglas de operación por diseño (no son defectos)
+
+### Ingreso sin placa (`apps/electron-sucursal`, `useTiposVehiculoSinPlaca`)
+
+Solo `bicicleta` y `patineta` pueden ingresar sin placa (REQ-OPS-196, decisión Q4). **Carros y motos requieren placa** y fluyen por `<PlacaInput>`. Si el catálogo solo trae `{carro, moto}` (p. ej. API caída y `HARDCODED_CATALOG`), el panel de ingreso sin placa muestra "Esta sucursal no admite ingresos sin placa". Que un carro o una moto no aparezcan en ese selector es el comportamiento esperado. Cubierto por `useTiposVehiculoSinPlaca.test.tsx` (`test_filter_excludes_carro_moto`, `test_filter_includes_bicicleta_patineta`).
+
 ## Estáticas — reglas arquitectónicas
 
 ### `backend/tests/static/test_no_raw_dml_on_a_tables.py`

@@ -161,6 +161,20 @@ uv run mypy packages/parkos_core/src
 
 Ver `estandares.md` para el detalle de reglas, exclusiones y su justificación.
 
+### 6. Inspeccionar texto con tildes con `psql` en Windows
+
+Si al consultar la BD ves `Ý`, `¾` o `±` donde debería haber `í`, `ó` o `ñ`, **los datos están bien**: son los bytes UTF-8 (o Latin-1) mostrados por la consola CP850 de Windows con `client_encoding=LATIN1`. Ejemplo real: `Ñandú` se veía distinto aunque en la BD se guarda como UTF-8 correcto (el test `tests/integration/test_ingreso_utf8_roundtrip_db.py` lo fija).
+
+Para leer el texto correctamente:
+
+```powershell
+chcp 65001                      # consola en UTF-8
+$env:PGCLIENTENCODING = "UTF8"  # o, dentro de psql: \encoding UTF8
+docker exec -it parkos-branch-db psql -U parkos -d parkos -c "SELECT observaciones FROM prod.ingreso LIMIT 3"
+```
+
+Para no depender de la consola, verifica los bytes: `SELECT encode(convert_to(observaciones, 'UTF8'), 'hex') FROM prod.ingreso ...` (p. ej. `ñ` = `c3b1`, `í` = `c3ad`, `ó` = `c3b3`) o `encode(observaciones::bytea, 'hex')`. Solo lectura: no corrijas "a mano" datos que se ven raros sin comprobar antes los bytes.
+
 ## Frontend (`apps/web_admin`)
 
 ### 1. Instalar dependencias
