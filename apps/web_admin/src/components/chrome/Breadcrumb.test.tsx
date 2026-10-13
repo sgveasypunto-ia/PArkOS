@@ -237,4 +237,90 @@ describe('Breadcrumb', () => {
     const current = screen.getByTestId('breadcrumb-current');
     expect(current).toHaveTextContent(/tarifas/i);
   });
+
+  it('T12: en "/reporteria/financiera" con sucursal, la cadena es Inicio → Sucursales → <Branch> → Reporte financiero (sin "Reportería" intermedio)', () => {
+    render(
+      <Providers initialEntries={['/reporteria/financiera']} selectedUuid={SUCURSAL_UUID}>
+        <Breadcrumb />
+      </Providers>,
+    );
+    const links = screen.getAllByTestId('breadcrumb-link');
+    expect(links).toHaveLength(3);
+    expect(links[0]).toHaveAttribute('href', '/');
+    expect(links[0]).toHaveTextContent(/inicio/i);
+    expect(links[1]).toHaveAttribute('href', '/seleccionar-sucursal');
+    expect(links[1]).toHaveTextContent(/sucursales/i);
+    expect(links[2]).toHaveAttribute('href', '/dashboard');
+    expect(links[2]).toHaveTextContent(SUCURSAL_NOMBRE);
+    const current = screen.getByTestId('breadcrumb-current');
+    expect(current).toHaveTextContent(/reporte financiero/i);
+    // Guard: ningún crumb intermedio debe ser "Reportería" — la cadena no
+    // implica jerarquía padre/hijo con /reporteria operacional.
+    expect(screen.queryByText(/^reporter[ií]a$/i)).not.toBeInTheDocument();
+    const allLinks = screen.queryAllByTestId('breadcrumb-link');
+    for (const link of allLinks) {
+      expect(link).not.toHaveAttribute('href', '/reporteria');
+    }
+  });
+
+  it('T13: en "/reporteria/financiera" sin sucursal, la cadena es Inicio → Reporte financiero', () => {
+    render(
+      <Providers initialEntries={['/reporteria/financiera']} selectedUuid={null}>
+        <Breadcrumb />
+      </Providers>,
+    );
+    const links = screen.getAllByTestId('breadcrumb-link');
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute('href', '/');
+    const current = screen.getByTestId('breadcrumb-current');
+    expect(current).toHaveTextContent(/reporte financiero/i);
+    expect(screen.queryByText(/^reporter[ií]a$/i)).not.toBeInTheDocument();
+  });
+
+  it('T14: en "/reporteria/suscripciones" con sucursal, la cadena es Inicio → Sucursales → <Branch> → Reporte de suscripciones (sin "Reportería" intermedio)', () => {
+    render(
+      <Providers initialEntries={['/reporteria/suscripciones']} selectedUuid={SUCURSAL_UUID}>
+        <Breadcrumb />
+      </Providers>,
+    );
+    const links = screen.getAllByTestId('breadcrumb-link');
+    expect(links).toHaveLength(3);
+    expect(links[0]).toHaveAttribute('href', '/');
+    expect(links[0]).toHaveTextContent(/inicio/i);
+    expect(links[1]).toHaveAttribute('href', '/seleccionar-sucursal');
+    expect(links[1]).toHaveTextContent(/sucursales/i);
+    expect(links[2]).toHaveAttribute('href', '/dashboard');
+    expect(links[2]).toHaveTextContent(SUCURSAL_NOMBRE);
+    const current = screen.getByTestId('breadcrumb-current');
+    expect(current).toHaveTextContent(/reporte de suscripciones/i);
+    expect(screen.queryByText(/^reporter[ií]a$/i)).not.toBeInTheDocument();
+    const allLinks = screen.queryAllByTestId('breadcrumb-link');
+    for (const link of allLinks) {
+      expect(link).not.toHaveAttribute('href', '/reporteria');
+    }
+  });
+
+  it('T15: en "/reporteria/suscripciones" sin sucursal, la cadena es Inicio → Reporte de suscripciones', () => {
+    render(
+      <Providers initialEntries={['/reporteria/suscripciones']} selectedUuid={null}>
+        <Breadcrumb />
+      </Providers>,
+    );
+    const links = screen.getAllByTestId('breadcrumb-link');
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute('href', '/');
+    const current = screen.getByTestId('breadcrumb-current');
+    expect(current).toHaveTextContent(/reporte de suscripciones/i);
+    expect(screen.queryByText(/^reporter[ií]a$/i)).not.toBeInTheDocument();
+  });
+
+  it('T16: en "/reporteria" (operacional) la cadena sigue incluyendo "Reportería" como current', () => {
+    render(
+      <Providers initialEntries={['/reporteria']} selectedUuid={SUCURSAL_UUID}>
+        <Breadcrumb />
+      </Providers>,
+    );
+    const current = screen.getByTestId('breadcrumb-current');
+    expect(current).toHaveTextContent(/reporter[ií]a/i);
+  });
 });
