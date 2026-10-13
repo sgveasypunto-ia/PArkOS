@@ -1,22 +1,16 @@
 /**
- * `router.test.ts` -- REQ-OPS-199 / D3 drill-down regression guard.
- *
- * F12.1.1 dropped the `diferencia_datafono` datafono decision from the
- * alert emission path (REQ-OPS-196). The FE drill-down route in
- * `router.ts:44` MUST nonetheless remain in place: alerts with
- * `valor_diferencia_datafono != 0` pre-dating F12.1.1 are preserved in the
- * bitácora (D3, no-DELETE compliance), and operators must be able to
- * navigate from those legacy rows to the arqueo detail page.
+ * `router.test.ts` -- drill-down regression guard (HU-F11.2, REQ-OPS-178).
  *
  * The router map (`DRILL_DOWN_ROUTES`) is the single source of truth for
- * per-`tipo_alerta` drill-down. This test pins:
- *   S1: `diferencia_datafono` is a registered drill-down key (no removal).
- *   S2: `diferencia_datafono` routes to `/caja/arqueo/{uuid_arqueo}` when
- *       the alert carries `uuid_arqueo`, otherwise the default fallback.
- *   S3: `drillDownHref` resolves `diferencia_datafono` deterministically.
- *
- * The drill-down target matches the canonical arqueo detail route -- no
- * new route, no UI breakage for historical alerts.
+ * per-`tipo_alerta` drill-down. The codes that never had a backend emitter
+ * (arqueo_sin_cerrar, caja_sin_apertura, fallo_conexion_local,
+ * diferencia_datafono) were retired from the map together with the panel
+ * whitelist. This test pins:
+ *   S1: only live business codes are registered drill-down keys.
+ *   S2: `descuadre_critico` routes to `/caja/arqueo/{uuid_arqueo}` when the
+ *       alert carries `uuid_arqueo`, otherwise the default fallback.
+ *   S3: `drillDownHref` resolves via the map, and falls back to the default
+ *       detail route for an unknown or missing `tipo_alerta`.
  */
 import { describe, it, expect } from 'vitest';
 
@@ -32,7 +26,7 @@ function makeAlert(overrides: Record<string, unknown> = {}): MergedAlerta {
   return {
     uuid: '00000000-0000-0000-0000-000000000bbb',
     uuid_arqueo: VALID_UUID_ARQUEO,
-    tipo_alerta: 'diferencia_datafono',
+    tipo_alerta: 'descuadre_critico',
     datos_nuevos: null,
     ...overrides,
   } as unknown as MergedAlerta;
@@ -40,33 +34,31 @@ function makeAlert(overrides: Record<string, unknown> = {}): MergedAlerta {
 
 const baseAlert = makeAlert();
 
-function datafonoRoute(): (alert: MergedAlerta) => string {
-  const fn = DRILL_DOWN_ROUTES['diferencia_datafono'];
-  if (!fn) throw new Error('diferencia_datafono drill-down route is not registered');
-  return fn;
-}
-
-describe('drill-down router -- REQ-OPS-199 / D3 (F12.1.1 preservation)', () => {
-  it('S1: diferencia_datafono is a registered drill-down key', () => {
-    // The map is the single source of truth: the entry MUST be present
-    // post-F12.1.1 so historical alertas remain navigable. This pins
-    // D3 (drill-down preserved) + REQ-OPS-199.
-    const fn = DRILL_DOWN_ROUTES['diferencia_datafono'];
-    expect(typeof fn).toBe('function');
+describe('drill-down router -- REQ-OPS-178', () => {
+  it('S1: retired orphan codes are not drill-down keys', () => {
+    for (const code of [
+      'arqueo_sin_cerrar',
+      'caja_sin_apertura',
+      'fallo_conexion_local',
+      'diferencia_datafono',
+    ]) {
+      expect(DRILL_DOWN_ROUTES[code]).toBeUndefined();
+    }
+    expect(typeof DRILL_DOWN_ROUTES['descuadre_critico']).toBe('function');
   });
 
-  it('S2: diferencia_datafono routes to /caja/arqueo/{uuid_arqueo} when arqueo is set', () => {
-    const href = datafonoRoute()(baseAlert);
-    expect(href).toBe(`/caja/arqueo/${VALID_UUID_ARQUEO}`);
-  });
-
-  it('S2b: diferencia_datafono falls back to /alertas/{uuid} when arqueo is missing', () => {
-    const href = datafonoRoute()(makeAlert({ uuid_arqueo: null }));
-    expect(href).toBe(`/alertas/${baseAlert.uuid}`);
-  });
-
-  it('S3: drillDownHref resolves diferencia_datafono via the map', () => {
+  it('S2: descuadre_critico routes to /caja/arqueo/{uuid_arqueo} when arqueo is set', () => {
     expect(drillDownHref(baseAlert)).toBe(`/caja/arqueo/${VALID_UUID_ARQUEO}`);
+  });
+
+  it('S2b: descuadre_critico falls back to /alertas/{uuid} when arqueo is missing', () => {
+    expect(drillDownHref(makeAlert({ uuid_arqueo: null }))).toBe(`/alertas/${baseAlert.uuid}`);
+  });
+
+  it('S3: unknown tipo_alerta falls back to the default detail route', () => {
+    expect(drillDownHref(makeAlert({ tipo_alerta: 'diferencia_datafono' }))).toBe(
+      `/alertas/${baseAlert.uuid}`,
+    );
   });
 
   it('S3b: drillDownHref returns default when tipo_alerta is missing', () => {

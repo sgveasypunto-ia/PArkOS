@@ -15,13 +15,13 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from datetime import UTC, datetime
-from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.A.alert_types import AlertTypes
 from ..models.L_W.alerta import Alerta
+from ..schemas.workflows import AlertSeveridad, AlertSeverity
 
 
 class UnknownAlertTypeError(Exception):
@@ -32,14 +32,14 @@ class UnknownAlertTypeError(Exception):
 # ``severidad`` vocabulary (alta|media|baja) predates and differs from
 # the DB's ``severity`` CHECK constraint (info|warning|critical,
 # ``models/A/alert_types.py``). Ordered mapping, most-to-least severe.
-_SEVERITY_TO_SEVERIDAD: dict[str, Literal["alta", "media", "baja"]] = {
+_SEVERITY_TO_SEVERIDAD: dict[AlertSeverity, AlertSeveridad] = {
     "critical": "alta",
     "warning": "media",
     "info": "baja",
 }
 
 
-def severity_to_severidad(severity: str) -> Literal["alta", "media", "baja"]:
+def severity_to_severidad(severity: str) -> AlertSeveridad:
     """Map the DB ``severity`` vocabulary to the FE ``severidad`` one.
 
     Raises ``KeyError`` for any value outside the 3 CHECK-constrained

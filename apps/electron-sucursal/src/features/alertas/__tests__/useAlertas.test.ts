@@ -165,9 +165,9 @@ describe('useAlertas — REQ-OPS-179 (HU-F11.2)', () => {
     // RED bootstrap here is the import + key registration; the
     // selector tests live in C2 (constants.test.ts) once `constants.ts`
     // lands. For now we assert that the constants module is exported
-    // with the canonical 14/8 split (11 originals + fe_emision_fallida + 2 placa codes).
+    // with the canonical 9/8 split (9 business + 8 technical).
     const constants = await import('../constants');
-    expect(constants.BUSINESS_ALERT_CODES.size).toBe(14);
+    expect(constants.BUSINESS_ALERT_CODES.size).toBe(9);
     expect(constants.TECHNICAL_ALERT_CODES.size).toBe(8);
     // Disjoint sets — no overlap between business and technical codes.
     for (const code of constants.BUSINESS_ALERT_CODES) {
@@ -297,18 +297,20 @@ describe('useAlertas — REQ-OPS-179 (HU-F11.2)', () => {
     }
   });
 
-  it('U12: los 5 codigos originales sin fila en alert_types del backend conservan el neutro "media" (no se inventa severidad)', () => {
+  it('U12: los 5 codigos huerfanos retirados (sin emisor ni fila en alert_types) ya no son de negocio y se descartan', () => {
     useAuthStoreSelectorMock.mockReturnValue('jwt-abc');
-    const sinMapeo = [
+    const retirados = [
       'arqueo_sin_cerrar',
       'caja_sin_apertura',
       'reimpresion_excesiva',
       'fallo_conexion_local',
       'diferencia_datafono',
     ];
-    swrResponses.alerta = { data: sinMapeo.map((c) => row(c)) };
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
+    swrResponses.alerta = { data: retirados.map((c) => row(c)) };
     swrResponses.types = { error: new Error('alert-types down') };
     const { mergedAlertas } = useAlertas(VALID_UUID);
-    expect(mergedAlertas.map((m) => m.severidad)).toEqual(sinMapeo.map(() => 'media'));
+    debug.mockRestore();
+    expect(mergedAlertas).toEqual([]);
   });
 });

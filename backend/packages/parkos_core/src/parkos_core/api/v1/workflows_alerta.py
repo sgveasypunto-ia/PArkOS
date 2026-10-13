@@ -117,6 +117,7 @@ from ...schemas.workflows import (
     AlertaListItem,
     AlertaListResponse,
     AlertaRead,
+    AlertSeverity,
 )
 from ..deps import requires_issuer
 from . import _helpers
@@ -135,7 +136,7 @@ _alerta_read_issuer_dep = requires_issuer("operador-", "admin-")
 router = APIRouter(prefix="/workflows/alerta", tags=["workflows"])
 
 _ESTADO_VALUES = Literal["abierta", "en_revision", "resuelta"]
-_SEVERIDAD_VALUES = Literal["info", "warning", "critical"]
+_SEVERIDAD_VALUES = AlertSeverity
 
 
 @router.get(

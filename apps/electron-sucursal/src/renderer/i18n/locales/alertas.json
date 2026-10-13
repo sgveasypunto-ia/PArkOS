@@ -33,12 +33,7 @@
     "numeracion_toppoint_agotada": "Numeración de facturación agotada",
     "cache_desactualizado": "Caché desactualizado",
     "capacidad_agotada_forzado": "Ingreso forzado sin capacidad",
-    "arqueo_sin_cerrar": "Arqueo sin cerrar",
-    "caja_sin_apertura": "Caja sin apertura",
     "suscripcion_proxima_vencer": "Suscripción próxima a vencer",
-    "reimpresion_excesiva": "Reimpresión excesiva",
-    "fallo_conexion_local": "Fallo de conexión local",
-    "diferencia_datafono": "Diferencia de datáfono",
     "fe_emision_fallida": "Factura electrónica no emitida",
     "suscripcion_placa_agregada": "Placa agregada a una suscripción",
     "suscripcion_placa_quitada": "Placa quitada de una suscripción"
@@ -49,11 +44,6 @@
     "numeracion_toppoint_agotada": "La resolución de facturación está por agotarse; solicitar una nueva.",
     "cache_desactualizado": "El caché local quedó desactualizado; reintentar la sincronización.",
     "capacidad_agotada_forzado": "Se forzó el ingreso pese a capacidad agotada; revisar la operación.",
-    "arqueo_sin_cerrar": "Hay un arqueo parcial abierto que debe cerrarse.",
-    "caja_sin_apertura": "La caja no registra apertura de turno en la jornada actual.",
-    "suscripcion_proxima_vencer": "Una suscripción está próxima a vencer; contactar al cliente.",
-    "reimpresion_excesiva": "Se reimprimieron tiquetes por encima del umbral del día.",
-    "fallo_conexion_local": "El servicio local no responde; verificar la red de la sucursal.",
-    "diferencia_datafono": "El datafono reportó una diferencia que requiere conciliación."
+    "suscripcion_proxima_vencer": "Una suscripción está próxima a vencer; contactar al cliente."
   }
 }

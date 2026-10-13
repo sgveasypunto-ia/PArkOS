@@ -478,6 +478,14 @@ class AlertaListResponse(ReadListBase[AlertaListItem]):
 # ---------------------------------------------------------------------------
 
 
+# Canonical severity vocabulary (``prod.alert_types.severity`` CHECK; what
+# the admin app consumes) and the legacy ``severidad`` vocabulary the branch
+# app parses from ``GET /workflows/alert-types``. The translation between the
+# two lives ONLY in ``repo/alert_types.py::severity_to_severidad``.
+AlertSeverity = Literal["info", "warning", "critical"]
+AlertSeveridad = Literal["alta", "media", "baja"]
+
+
 class AlertTypeRead(_Base):
     """Read-back for ``GET /workflows/alert-types`` (FE contract, HU-F11.2).
 
@@ -487,7 +495,7 @@ class AlertTypeRead(_Base):
     """
 
     codigo: str
-    severidad: Literal["alta", "media", "baja"]
+    severidad: AlertSeveridad
     descripcion: str
     mensaje: str
 

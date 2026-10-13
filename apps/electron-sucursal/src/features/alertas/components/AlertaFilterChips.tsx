@@ -11,8 +11,9 @@
 import { useTranslation } from 'react-i18next';
 
 import type { MergedAlerta } from '../../../lib/api/schemas/alertas';
+import { SEVERIDADES, type Severidad } from '../../../lib/alertas/severity';
 
-export type SeverityFilter = 'alta' | 'media' | 'baja';
+export type SeverityFilter = Severidad;
 
 export interface AlertaFilterChipsProps {
   alerts: MergedAlerta[];
@@ -21,8 +22,6 @@ export interface AlertaFilterChipsProps {
   onToggleSeveridad: (sev: SeverityFilter) => void;
   onToggleTipoAlerta: (tipo: string) => void;
 }
-
-const SEVERIDADES: SeverityFilter[] = ['alta', 'media', 'baja'];
 
 // F31.3 rediseño: mismo mapeo severidad → token semántico que
 // `AlertaCard.SEVERITY_VARIANT` — el chip "activo" adopta el color de
