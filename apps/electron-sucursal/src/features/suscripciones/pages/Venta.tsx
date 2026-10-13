@@ -1092,7 +1092,7 @@ export function Venta({
                     }
                   }}
                   placeholder={
-                    selectedTipoVehiculo?.tipo.trim().toLowerCase() === 'moto'
+                    selectedTipoVehiculo?.tipo?.trim().toLowerCase() === 'moto'
                       ? PLACEHOLDER_PLACA_MOTO
                       : PLACEHOLDER_PLACA_AUTO
                   }
