@@ -8391,3 +8391,81 @@ Click → navega a /facturacion/{uuid}. La SPA usa el uuid del row (no el de FE)
 - **R-HU-X-2** — Custom handler mantiene el shape del response ({items, next_cursor}) idéntico al factory. Tests pinned.
 - **R-HU-X-3** — Append-only compliance: las 3 actions insertan en prod.reimpresion_ticket, prod.anulaciones, prod.reclamos. V_FACTURA_ESTADO view flipea el estado a 'anulada' automáticamente (derived, no UPDATE a prod.facturas).
 - **R-HU-X-4** — Sandbox F.6 limitation: vitest unit tests con mocks (no Playwright real Electron).
+
+## HU-X.8 Spec-Delta Appendix (follow-up de HU-X, 2026-10-13)
+HU-X.8 cerro los 4 forward hooks identificados durante el walkthrough
+post-sdd-archive de HU-X.1..X.7. No agrega capabilities nuevas (la spec
+acturacion-admin/spec.md ya cubre la superficie funcional); solo
+documenta:
+- New BE endpoint para resolver el FE row por parent uuid_factura
+  (resuelve Fwd-X-1 sin query param: query param no funciona
+  porque el path /factura-electronica/{uuid} requiere uuid en path;
+  con ?uuid_factura= FastAPI devuelve 405 Method Not Allowed).
+- Resolution de los forward hooks UX que el walkthrough encontro
+  fuera de scope en HU-X (Fwd-X-4, Fwd-X-5, Fwd-X-6).
+
+### New BE endpoint (HU-X.8 T1.1)
+
+GET /api/v1/facturacion/factura-electronica/by-factura/{uuid_factura}
+
+3-step handler (mirrors get_factura_electronica from T5):
+1. V2 SELECT prod.factura_electronica WHERE uuid_factura == X via
+   buscar_factura_electronica_por_factura (404 factura_sin_fe if no
+   row; pre-existing helper at repo/factura_electronica.py:164).
+2. Tenant scope post-V1 (403 if operador- cross-branch).
+3. JOIN prod.v_factura_electronica_acuse -> latest envio_dian
+   tip (defensive null mapping when the chain is empty).
+
+Distinct path from GET /facturacion/factura-electronica/{uuid}
+so the existing path-based route stays backward-compatible (no
+behavior change for callers that already know the FE uuid: the FE
+create handler, the bitacora view, etc.).
+
+Response shape: same FacturaElectronicaRead as T5. Headers:
+Cache-Control: no-store (DEC-FE-06).
+
+Errors:
+- 403 tenant_scope_violation
+- 404 factura_sin_fe (parent uuid_factura has no FE row -- the page
+  renders the FE no generada card on this response)
+
+Source: backend/packages/parkos_core/src/parkos_core/api/v1/facturacion.py
+(HU-X.8 handler, mirrors T5 get_factura_electronica exactly).
+Tests: backend/tests/unit/test_factura_electronica_get_and_retry_handlers.py
+(test_get_factura_electronica_by_factura_happy_path + _404_when_parent_has_no_fe).
+
+### Resolved forward hooks
+
+- Fwd-X-1 -> RESOLVED in HU-X.8 T1.1 (above endpoint).
+- Fwd-X-2 (display endpoint for cliente real en drill-down) ->
+  deferred (display enrichment no es bug; el page ya documenta el
+  MVP behavior en REQ-X-03 alternative C).
+- Fwd-X-3 (uuid_referencia en log_transaccional) -> deferred
+  (requires a migration; pre-existing infra concern not introduced
+  by HU-X).
+- Fwd-X-4 (BranchPickerInline con search en /reporteria/financiera)
+  -> RESOLVED in HU-X.8 T3.
+- Fwd-X-5 (Branch indicator (({branchName})) en subtitulo de
+  ReporteriaFinanciera) -> RESOLVED in HU-X.8 T3.
+- Fwd-X-6 (Dashboard Facturas KpiCard con to + empty state) ->
+  RESOLVED in HU-X.8 T4.
+- Fwd-X-7 (axe-core snapshot test para FacturaDetalle) ->
+  deferred (FacturaDetalle uses inline semantics matching
+  IngresosTable/SalidasTable patterns; the test is forward hook).
+
+### Carryover risks (HU-X.8)
+
+- R-HU-X.8-1 - The new BE endpoint by-factura/{uuid_factura} adds a
+  new path to the facturacion router. The existing AST walk
+  tests/static/test_facturacion_handler_structure.py may need a
+  manual pass to add the new path to the paths_in_handler_module
+  set (forward hook to a test pinning update if the static AST
+  check breaks). Current FE: only the drill-down page consumes it.
+- R-HU-X.8-2 - BranchPickerInline reuses SucursalPicker for
+  the popover content. If SucursalPicker changes its prop API in
+  the future, BranchPickerInline must follow (no other consumers
+  in the workspace today, low risk).
+- R-HU-X.8-3 - The FE drill-down page now uses the new endpoint;
+  the path-based get_factura_electronica is still consumed by the
+  FE create handler and the bitacora view. No risk of those callers
+  silently changing because the path is unchanged.
