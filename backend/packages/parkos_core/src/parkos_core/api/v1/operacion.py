@@ -1478,11 +1478,31 @@ async def get_ocupacion(
     defense in depth enforced by
     ``tests/static/test_no_write_in_ocupacion.py``.
     """
-    # 1. Resolve target sucursal (KD-3 chain):
+    # 1. Resolve target sucursal (KD-3 chain, HU-fix-reporteria-todas-
+    #    sucursales follow-up):
     #    - query param wins;
     #    - else ctx.sucursal_uuid;
-    #    - else 400 missing_sucursal_context.
-    target = uuid_sucursal or ctx.sucursal_uuid
+    #    - else ALL permitted branches (the "Todas las sucursales"
+    #      cross-branch aggregate path, mirrors /admin/reporteria/
+    #      ocupacion); the response's ``uuid_sucursal`` is ``None`` in
+    #      that mode so the UI knows it is reading an aggregate.
+    aggregate_mode = uuid_sucursal is None and ctx.sucursal_uuid is None
+    if aggregate_mode:
+        target_for_response: uuid_lib.UUID | None = None
+        target_for_repo: uuid_lib.UUID | "list[uuid_lib.UUID]" = list(scope.permitidas)
+    else:
+        # Single-branch read -- same KD-3 chain as before, but we now
+        # gate on the no-uuid_sucursal-yet case explicitly so the
+        # aggregate-mode branch above cannot accidentally swallow a
+        # missing ctx.sucursal_uuid.
+        resolved = uuid_sucursal or ctx.sucursal_uuid
+        if resolved is None:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "missing_sucursal_context"},
+            )
+        target_for_response = resolved
+        target_for_repo = resolved
 
     # 2. Authorization (KD-3, PR-A).
     #
@@ -1503,17 +1523,24 @@ async def get_ocupacion(
             status_code=400,
             detail={"error": "missing_sucursal_context"},
         )
-    permitidas = scope.narrow(target)
-    target = next(iter(permitidas))
+    if not aggregate_mode:
+        # Single-branch path: scope.narrow raises 403
+        # TenantScopeViolationError on a non-permitted branch, same as
+        # the pre-HU-fix code path. The cross-branch path skips this
+        # gate by construction (target_for_repo is the full permitted
+        # set, every branch already authorized by ``scope.permitidas``).
+        assert isinstance(target_for_repo, uuid_lib.UUID)
+        scope.narrow(target_for_repo)
 
-    # 3. Repo call (READ-ONLY; encapsulated JOIN).
-    items = await get_ocupacion_puros_activos(session, uuid_sucursal=target)
+    # 3. Repo call (READ-ONLY; encapsulated JOIN). Single-branch reads
+    #    hand a scalar UUID; the cross-branch path hands a list.
+    items = await get_ocupacion_puros_activos(session, uuid_sucursal=target_for_repo)
 
     # 4. Cache-Control: no-store (consistent with F1.3 R8 / F1.8 R8).
     response.headers["Cache-Control"] = "no-store"
 
     return OcupacionResponse(
-        uuid_sucursal=target,
+        uuid_sucursal=target_for_response,
         items=[OcupacionItem.model_validate(it) for it in items],
         generado_en=datetime.now(tz=UTC),
     )

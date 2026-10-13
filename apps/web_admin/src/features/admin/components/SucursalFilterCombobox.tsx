@@ -109,10 +109,12 @@ export function SucursalFilterCombobox({
    */
   const suppressNextFocusRef = useRef<boolean>(false);
 
-  const selected = useMemo(
-    () => options.find((o) => o.uuid === value) ?? null,
-    [options, value],
-  );
+  // HU-fix-usuarios-alignment: the previously-rendered "Actual: ..."
+  // hint paragraph was the only consumer of a ``selected`` lookup
+  // (option-by-uuid match); with the hint gone the lookup is no
+  // longer needed at render time. The autocomplete path (WAI-ARIA
+  // combobox with active-descendant) can re-derive it from
+  // ``options`` and ``value`` directly when it lands.
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

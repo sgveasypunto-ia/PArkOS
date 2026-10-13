@@ -61,8 +61,14 @@ export function useReporteriaSalidas(query: ReporteriaQuery | null) {
 
 export function useReporteriaOcupacion(uuid_sucursal: string | null) {
   return useSWR<OcupacionResponse>(
-    uuid_sucursal ? reporteriaOcupacionKey(uuid_sucursal) : null,
-    () => fetchReporteriaOcupacion(uuid_sucursal as string),
+    // HU-fix-reporteria-todas-sucursales: ``null`` here means "Todas
+    // las sucursales" -- the helper now keys on the literal token
+    // 'all' so SWR's request deduplication does not collapse the
+    // single-branch and cross-branch responses into a single cache
+    // slot. The api layer omits the query param when the token is
+    // 'all' (see fetchReporteriaOcupacion).
+    uuid_sucursal !== null ? reporteriaOcupacionKey(uuid_sucursal) : '/api/v1/operacion/ocupacion::all',
+    () => fetchReporteriaOcupacion(uuid_sucursal),
     { ...STALE, refreshInterval: 0 },
   );
 }
@@ -70,7 +76,7 @@ export function useReporteriaOcupacion(uuid_sucursal: string | null) {
 export function useReporteriaOperacional(
   query:
     | {
-        uuid_sucursal: string;
+        uuid_sucursal: string | null;
         fecha_desde?: string;
         fecha_hasta?: string;
       }
@@ -86,7 +92,9 @@ export function useReporteriaOperacional(
 export function reporteriaIngresosKey(q: ReporteriaQuery): string {
   return [
     '/api/v1/operacion/ingresos',
-    q.uuid_sucursal,
+    // 'all' token marks the cross-branch ("Todas las sucursales")
+    // call so the cache slot is distinct from any single-branch one.
+    q.uuid_sucursal ?? 'all',
     q.placa ?? '',
     q.activo === undefined ? '' : String(q.activo),
     q.limit ?? 50,
@@ -96,7 +104,7 @@ export function reporteriaIngresosKey(q: ReporteriaQuery): string {
 export function reporteriaSalidasKey(q: ReporteriaQuery): string {
   return [
     '/api/v1/operacion/salidas',
-    q.uuid_sucursal,
+    q.uuid_sucursal ?? 'all',
     q.placa ?? '',
     q.fecha_desde ?? '',
     q.fecha_hasta ?? '',
@@ -109,13 +117,13 @@ export function reporteriaOcupacionKey(uuid: string): string {
 }
 
 export function reporteriaOperacionalKey(q: {
-  uuid_sucursal: string;
+  uuid_sucursal: string | null;
   fecha_desde?: string;
   fecha_hasta?: string;
 }): string {
   return [
     '/api/v1/admin/reporteria/operacional',
-    q.uuid_sucursal,
+    q.uuid_sucursal ?? 'all',
     q.fecha_desde ?? '',
     q.fecha_hasta ?? '',
   ].join('::');
@@ -144,7 +152,7 @@ export function reporteriaOcupacionHeatmapKey(r: {
 // HU-F17.3 -- reportería financiera (facturas, FE, pagos).
 
 export interface ReporteriaFacturasQuery {
-  uuid_sucursal: string;
+  uuid_sucursal: string | null;
   desde?: string;
   hasta?: string;
   cursor?: string;
@@ -162,7 +170,7 @@ export function useReporteriaFacturas(query: ReporteriaFacturasQuery | null) {
 export function reporteriaFacturasKey(q: ReporteriaFacturasQuery): string {
   return [
     '/api/v1/admin/reporteria/facturas',
-    q.uuid_sucursal,
+    q.uuid_sucursal ?? 'all',
     q.desde ?? '',
     q.hasta ?? '',
     q.cursor ?? '',
@@ -189,7 +197,7 @@ export function reporteriaFeKey(q: ReporteriaFeQuery): string {
 }
 
 export interface ReporteriaPagosQuery {
-  uuid_sucursal: string;
+  uuid_sucursal: string | null;
   desde?: string;
   hasta?: string;
 }
@@ -203,9 +211,12 @@ export function useReporteriaPagos(query: ReporteriaPagosQuery | null) {
 }
 
 export function reporteriaPagosKey(q: ReporteriaPagosQuery): string {
-  return ['/api/v1/admin/reporteria/pagos', q.uuid_sucursal, q.desde ?? '', q.hasta ?? ''].join(
-    '::',
-  );
+  return [
+    '/api/v1/admin/reporteria/pagos',
+    q.uuid_sucursal ?? 'all',
+    q.desde ?? '',
+    q.hasta ?? '',
+  ].join('::');
 }
 
 // HU-F17.4 -- subscription cohort retention heatmap + próximas a vencer.

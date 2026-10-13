@@ -141,15 +141,14 @@ export default function Reporteria() {
       }));
   }, [branches.data, permitidas]);
 
-  const ingresosQuery = selected ? { uuid_sucursal: selected, limit: 50 } : null;
-  const salidasQuery = selected ? { uuid_sucursal: selected, limit: 50 } : null;
+  const ingresosQuery = { uuid_sucursal: selected, limit: 50 };
+  const salidasQuery = { uuid_sucursal: selected, limit: 50 };
 
   const ingresos = useReporteriaIngresos(ingresosQuery);
   const salidas = useReporteriaSalidas(salidasQuery);
   const ocupacion = useReporteriaOcupacion(selected);
 
   const operacionalQuery = useMemo(() => {
-    if (!selected) return null;
     return {
       uuid_sucursal: selected,
       fecha_desde: range.fecha_desde,
@@ -166,106 +165,55 @@ export default function Reporteria() {
     hasta: range.fecha_hasta,
   });
 
-  if (!selected) {
-    return (
-      <main
-        className="min-h-screen bg-background p-6"
-        data-testid="page-reporteria"
-      >
-        <div className="mx-auto flex max-w-5xl flex-col gap-6">
-          <header className="flex flex-col gap-4 border-b pb-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h1 className="text-3xl font-bold tracking-tight">
-                {t('reporteria.title', 'Reportería operacional')}
-              </h1>
-              <p className="text-sm text-muted-foreground">
-                {t(
-                  'reporteria.subtitle.allBranches',
-                  'Vista agregada de todas las sucursales permitidas. Seleccioná una sucursal específica para ver KPIs operacionales, ingresos, salidas y ocupación.',
-                )}
-              </p>
-            </div>
-            <SucursalFilterCombobox
-              options={branchOptions}
-              value=""
-              onChange={(uuid) => setSelected(uuid || null)}
-              label={t('branchSelector.label', 'Seleccionar sucursal')}
-              placeholder={t('sucursalPicker.search', 'Buscar por nombre o prefijo…')}
-              disabled={branches.isLoading}
-              testId="reporteria-branch-combobox"
-              allLabel={t(
-                'reporteria.allBranches',
-                'Todas las sucursales',
-              )}
-            />
-          </header>
-          <p
-            className="rounded-md border bg-muted/40 p-4 text-sm text-muted-foreground"
-            data-testid="reporteria-no-branch"
-          >
-            {t(
-              'reporteria.noBranch',
-              'Seleccioná una sucursal para ver la reportería.',
-            )}
-          </p>
-          <section
-            aria-label={t('reporteria.heatmapOnlyLabel', 'Heatmap cross-branch')}
-            className="rounded-lg border bg-card p-4"
-            data-testid="reporteria-heatmap-section"
-          >
-            {heatmap.error ? (
-              <p
-                role="alert"
-                aria-live="assertive"
-                data-testid="reporteria-heatmap-error"
-                className="text-sm text-destructive"
-              >
-                {heatmap.error.message}
-              </p>
-            ) : (
-              <HeatmapOcupacion
-                data={heatmap.data?.data ?? []}
-                sucursales={heatmap.data?.sucursales ?? []}
-                title={t(
-                  'reporteria.ocupacion.heatmapTitle',
-                  'Actividad por hora ({{desde}} → {{hasta}})',
-                  { desde: range.fecha_desde, hasta: range.fecha_hasta },
-                )}
-              />
-            )}
-          </section>
-        </div>
-      </main>
-    );
-  }
-
   const rangeInvalid =
     range.fecha_desde > range.fecha_hasta ||
     !/^\d{4}-\d{2}-\d{2}$/.test(range.fecha_desde) ||
     !/^\d{4}-\d{2}-\d{2}$/.test(range.fecha_hasta);
+
+  // HU-fix-reporteria-todas-sucursales: when ``selected`` is null
+  // ("Todas las sucursales"), the same layout renders -- KPIs panel
+  // + tabs + heatmap -- with data aggregated across every permitted
+  // branch. The previous shape returned a totally different screen
+  // (placeholder + heatmap only) which the user reported as a bug
+  // ("deberia mostrar la misma pantalla que cuando se selecciona una
+  // sucursal pero sumando al información de todas las sucursales").
+  // Subtitles + branch name badge both swap to the "Todas las
+  // sucursales" copy in that mode; everything else is identical.
 
   return (
     <main
       className="min-h-screen bg-background p-6"
       data-testid="page-reporteria"
     >
-      <div className="mx-auto flex max-w-5xl flex-col gap-6">
+      <div className="mx-auto flex w-full max-w-none flex-col gap-6">
         <header className="flex flex-col gap-4 border-b pb-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-3xl font-bold tracking-tight">
               {t('reporteria.title', 'Reportería operacional')}
             </h1>
             <p className="text-sm text-muted-foreground">
-              {t(
-                'reporteria.subtitle',
-                'Ingresos, salidas y ocupación de la sucursal seleccionada.',
-              )}
+              {selected
+                ? t(
+                    'reporteria.subtitle',
+                    'Ingresos, salidas y ocupación de la sucursal seleccionada.',
+                  )
+                : t(
+                    'reporteria.subtitle.allBranches',
+                    'Vista agregada de todas las sucursales permitidas.',
+                  )}
               {branchName ? (
                 <span
                   className="ml-2 font-medium"
                   data-testid="reporteria-branch-name"
                 >
                   ({branchName})
+                </span>
+              ) : !selected ? (
+                <span
+                  className="ml-2 font-medium"
+                  data-testid="reporteria-branch-name"
+                >
+                  ({t('reporteria.allBranches', 'Todas las sucursales')})
                 </span>
               ) : null}
             </p>
@@ -343,7 +291,10 @@ export default function Reporteria() {
                   size="sm"
                   onClick={() =>
                     exportToCsv<IngresoRead>(
-                      `ingresos-${selected}.csv`,
+                      // HU-fix-reporteria-todas-sucursales: the
+                      // filename reflects the scope -- "all" instead
+                      // of the uuid when no branch is selected.
+                      `ingresos-${selected ?? 'all'}.csv`,
                       [
                         { header: 'Placa', accessor: (r) => r.placa ?? '' },
                         { header: 'Fecha de ingreso', accessor: (r) => formatBackendTimestampLocal(r.fecha_ingreso) },
@@ -363,7 +314,11 @@ export default function Reporteria() {
                 items={ingresos.data ?? []}
                 isLoading={ingresos.isLoading}
                 error={ingresos.error}
-                caption={t('reporteria.ingresos.caption', 'Ingresos de la sucursal')}
+                caption={
+                  selected
+                    ? t('reporteria.ingresos.caption', 'Ingresos de la sucursal')
+                    : t('reporteria.ingresos.captionAllBranches', 'Ingresos de todas las sucursales')
+                }
               />
             </div>
           </TabsContent>
@@ -377,7 +332,7 @@ export default function Reporteria() {
                   size="sm"
                   onClick={() =>
                     exportToCsv<SalidaListRead>(
-                      `salidas-${selected}.csv`,
+                      `salidas-${selected ?? 'all'}.csv`,
                       [
                         { header: 'Placa', accessor: (r) => r.placa ?? '' },
                         { header: 'Fecha de salida', accessor: (r) => formatBackendTimestampLocal(r.fecha_salida) },
@@ -396,7 +351,11 @@ export default function Reporteria() {
                 items={salidas.data ?? []}
                 isLoading={salidas.isLoading}
                 error={salidas.error}
-                caption={t('reporteria.salidas.caption', 'Salidas de la sucursal')}
+                caption={
+                  selected
+                    ? t('reporteria.salidas.caption', 'Salidas de la sucursal')
+                    : t('reporteria.salidas.captionAllBranches', 'Salidas de todas las sucursales')
+                }
               />
             </div>
           </TabsContent>

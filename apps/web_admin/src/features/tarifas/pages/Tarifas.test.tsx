@@ -1235,13 +1235,13 @@ describe('Tarifas page', () => {
     await waitFor(() => {
       expect(screen.getByTestId('tarifas-branch-combobox')).toBeInTheDocument();
     });
-    // The "current" hint is the active branch.
+    // The legacy "Actual: <nombre>" hint paragraph under the combobox
+    // was removed by HU-fix-usuarios-alignment (the same data-testid
+    // was used here). The active branch is now shown via the input's
+    // own value; the subtitle names the branch directly.
     await waitFor(() => {
-      expect(screen.getByTestId('tarifas-branch-combobox-selected')).toBeInTheDocument();
+      expect(screen.getByTestId('tarifas-active-branch-name')).toBeInTheDocument();
     });
-    expect(
-      screen.getByTestId('tarifas-branch-combobox-selected').textContent,
-    ).toMatch(/Sucursal Centro/);
     // The subtitle names the active branch.
     expect(screen.getByTestId('tarifas-active-branch-name').textContent).toMatch(
       /Sucursal Centro/,

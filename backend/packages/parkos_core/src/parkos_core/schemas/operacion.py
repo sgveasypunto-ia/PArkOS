@@ -404,13 +404,22 @@ class OcupacionItem(_Base):
 class OcupacionResponse(_Base):
     """Response shape de ``GET /operacion/ocupacion`` (REQ-OPS-030).
 
+    ``uuid_sucursal`` is the single branch the report was scoped to
+    or ``None`` when the caller omitted BOTH the query param and the
+    X-Sucursal-Context header -- the new "Todas las sucursales"
+    cross-branch aggregate path (HU-fix-reporteria-todas-sucursales).
+    UI surfaces that see ``uuid_sucursal is None`` render
+    "Todas las sucursales" in place of the branch name; the per-tipo
+    breakdown still resolves the same way, just summed across every
+    permitted branch.
+
     ``generado_en`` se construye en el handler con
     ``datetime.now(tz=timezone.utc)``; Pydantic serializa como
     ISO-8601 con sufijo ``Z``. El timestamp captura cuando se
     ensamblo la respuesta (no cuando se refresco la MV).
     """
 
-    uuid_sucursal: uuid_lib.UUID
+    uuid_sucursal: uuid_lib.UUID | None
     items: list[OcupacionItem]
     generado_en: datetime
 
