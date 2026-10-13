@@ -621,3 +621,67 @@ describe('<PlacaInputHero /> — salida por consecutivo escrito + Enter (sin sug
     expect(mockGetIngresosByPlaca).not.toHaveBeenCalled();
   });
 });
+
+describe('<VehiculosDentroList /> — click en un ítem abre la salida (B)', () => {
+  const ITEM_CON_PLACA = {
+    uuid: 'uuid-ingreso-abc123',
+    placa: 'ABC123',
+    fecha_ingreso: '2026-09-19T10:00:00Z',
+    consecutivo: null,
+    created_at: '2026-09-19T10:00:00Z',
+    uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000001',
+    uuid_sucursal: 'suc-uuid-1',
+  };
+  const ITEM_SIN_PLACA = {
+    uuid: 'uuid-ingreso-patineta',
+    placa: null,
+    fecha_ingreso: '2026-09-19T10:00:00Z',
+    consecutivo: 'PATINETA-000003-34a24bae',
+    created_at: '2026-09-19T10:00:00Z',
+    uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000002',
+    uuid_sucursal: 'suc-uuid-1',
+  };
+
+  function renderConSesion(): void {
+    mockUseSesionActiva.mockReturnValue({
+      sesion: baseSesion,
+      isLoading: false,
+      error: undefined,
+      refresh: mockRefresh,
+    });
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>,
+    );
+  }
+
+  it('B1: ítem sin placa → botón accesible que abre salida con initialUuidIngreso', async () => {
+    mockUseIngresosActivos.mockReturnValue([ITEM_SIN_PLACA]);
+    renderConSesion();
+
+    const li = screen.getByTestId('vehiculos-item-uuid-ingreso-patineta');
+    const boton = within(li).getByRole('button', { name: /PATINETA-000003-34a24bae/ });
+    await userEvent.click(boton);
+
+    const state = useDashboardDrawerStore.getState();
+    expect(state.openDrawer).toBe('salida');
+    expect(state.initialPlaca).toBeNull();
+    expect(state.initialUuidIngreso).toBe('uuid-ingreso-patineta');
+  });
+
+  it('B2: ítem con placa → abre salida con esa placa; activable por teclado (Enter)', async () => {
+    mockUseIngresosActivos.mockReturnValue([ITEM_CON_PLACA]);
+    renderConSesion();
+
+    const li = screen.getByTestId('vehiculos-item-uuid-ingreso-abc123');
+    const boton = within(li).getByRole('button', { name: /ABC123/ });
+    boton.focus();
+    await userEvent.keyboard('{Enter}');
+
+    const state = useDashboardDrawerStore.getState();
+    expect(state.openDrawer).toBe('salida');
+    expect(state.initialPlaca).toBe('ABC123');
+    expect(state.initialUuidIngreso).toBeNull();
+  });
+});

@@ -977,6 +977,7 @@ function VehiculosDentroList({
   uuid_sucursal: string | null;
 }): JSX.Element {
   const { t } = useTranslation('caja');
+  const openDrawer = useDashboardDrawerStore((s) => s.open);
   const items = useIngresosActivos(uuid_sucursal);
   // items is IngresoActivo[] | null. null = loading; [] = empty; >0 = lista.
   // Defensive: if the hook ever returned undefined, treat as loading.
@@ -1056,9 +1057,20 @@ function VehiculosDentroList({
           return (
             <li
               key={it.uuid}
-              className="group flex items-center justify-between rounded-xl px-3 py-2 hover:bg-accent/40 transition-colors"
               data-testid={`vehiculos-item-${it.uuid}`}
             >
+              {/* Fila accionable: click/Enter/Espacio abre la salida del
+                  vehículo (mismo helper que la búsqueda del hero). */}
+              <button
+                type="button"
+                data-testid={`vehiculos-item-action-${it.uuid}`}
+                aria-label={t('caja:dashboard.registrarSalidaDe', {
+                  defaultValue: `Registrar salida de ${idVisible}`,
+                  id: idVisible,
+                })}
+                onClick={() => openSalidaDeIngreso(openDrawer, 'vehiculos-item', it)}
+                className="group flex w-full items-center justify-between rounded-xl px-3 py-2 text-left hover:bg-accent/40 focus-ring-apple transition-colors"
+              >
               <span className="font-mono text-sm font-medium uppercase tracking-wide" title={it.uuid}>
                 {idVisible}
               </span>
@@ -1078,6 +1090,7 @@ function VehiculosDentroList({
                   {formatHoraCorta(horaIso)}
                 </span>
               </div>
+              </button>
             </li>
           );
         })}
