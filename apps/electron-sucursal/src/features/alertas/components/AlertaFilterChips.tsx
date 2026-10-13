@@ -57,53 +57,76 @@ export function AlertaFilterChips({
     <div
       role="group"
       aria-label={t('alertas:dashboard.filters.label', { defaultValue: 'Filtros de alertas' })}
-      className="flex flex-wrap items-center gap-2"
+      className="flex flex-wrap items-center gap-x-4 gap-y-2"
       data-testid="alerta-filter-chips"
     >
-      {SEVERIDADES.map((sev) => {
-        const pressed = activeSeveridad.has(sev);
-        return (
-          <button
-            key={sev}
-            type="button"
-            role="switch"
-            aria-checked={pressed}
-            aria-pressed={pressed}
-            aria-label={`severidad-${sev}`}
-            data-testid={`chip-severidad-${sev}`}
-            onClick={() => onToggleSeveridad(sev)}
-            className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${CHIP_FOCUS_CLASS} ${
-              pressed
-                ? SEVERITY_PRESSED_CLASS[sev]
-                : 'border-border bg-background text-foreground hover:bg-muted'
-            }`}
+      <div
+        role="group"
+        aria-labelledby="alerta-filter-severidad-label"
+        className="flex flex-wrap items-center gap-2"
+        data-testid="alerta-filter-group-severidad"
+      >
+        <span
+          id="alerta-filter-severidad-label"
+          className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+        >
+          {t('alertas:dashboard.filters.severidad', { defaultValue: 'Severidad' })}
+        </span>
+        {SEVERIDADES.map((sev) => {
+          const pressed = activeSeveridad.has(sev);
+          return (
+            <button
+              key={sev}
+              type="button"
+              aria-pressed={pressed}
+              aria-label={`severidad-${sev}`}
+              data-testid={`chip-severidad-${sev}`}
+              onClick={() => onToggleSeveridad(sev)}
+              className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${CHIP_FOCUS_CLASS} ${
+                pressed
+                  ? SEVERITY_PRESSED_CLASS[sev]
+                  : 'border-border bg-background text-foreground hover:bg-muted'
+              }`}
+            >
+              {t(`alertas:severidad.${sev}`, { defaultValue: sev })}
+            </button>
+          );
+        })}
+      </div>
+      {tipos.length > 0 && (
+        <div
+          role="group"
+          aria-labelledby="alerta-filter-tipo-label"
+          className="flex flex-wrap items-center gap-2"
+          data-testid="alerta-filter-group-tipo"
+        >
+          <span
+            id="alerta-filter-tipo-label"
+            className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
           >
-            {t(`alertas:severidad.${sev}`, { defaultValue: sev })}
-          </button>
-        );
-      })}
-      {tipos.map((tipo) => {
-        const pressed = activeTipoAlerta.has(tipo);
-        return (
-          <button
-            key={tipo}
-            type="button"
-            role="switch"
-            aria-checked={pressed}
-            aria-pressed={pressed}
-            aria-label={`tipo-${tipo}`}
-            data-testid={`chip-tipo-${tipo}`}
-            onClick={() => onToggleTipoAlerta(tipo)}
-            className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${CHIP_FOCUS_CLASS} ${
-              pressed
-                ? 'border-secondary bg-secondary text-secondary-foreground'
-                : 'border-border bg-background text-foreground hover:bg-muted'
-            }`}
-          >
-            {tipo}
-          </button>
-        );
-      })}
+            {t('alertas:dashboard.filters.tipo', { defaultValue: 'Tipo' })}
+          </span>
+          {tipos.map((tipo) => {
+            const pressed = activeTipoAlerta.has(tipo);
+            return (
+              <button
+                key={tipo}
+                type="button"
+                aria-pressed={pressed}
+                data-testid={`chip-tipo-${tipo}`}
+                onClick={() => onToggleTipoAlerta(tipo)}
+                className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${CHIP_FOCUS_CLASS} ${
+                  pressed
+                    ? 'border-secondary bg-secondary text-secondary-foreground'
+                    : 'border-border bg-background text-foreground hover:bg-muted'
+                }`}
+              >
+                {t(`alertas:tipo.${tipo}`, { defaultValue: tipo })}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

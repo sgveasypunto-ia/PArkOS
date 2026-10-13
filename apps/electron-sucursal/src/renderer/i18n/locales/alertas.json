@@ -9,7 +9,9 @@
     "error": "No se pudieron cargar las alertas",
     "empty": "Sin alertas activas para los filtros seleccionados.",
     "filters": {
-      "label": "Filtros de alertas"
+      "label": "Filtros de alertas",
+      "severidad": "Severidad",
+      "tipo": "Tipo"
     }
   },
   "severidad": {
@@ -26,6 +28,17 @@
     "noAlerts": "No hay alertas activas"
   },
   "tipo": {
+    "descuadre_critico": "Descuadre crítico",
+    "fe_error_toppoint": "Error de factura electrónica",
+    "numeracion_toppoint_agotada": "Numeración de facturación agotada",
+    "cache_desactualizado": "Caché desactualizado",
+    "capacidad_agotada_forzado": "Ingreso forzado sin capacidad",
+    "arqueo_sin_cerrar": "Arqueo sin cerrar",
+    "caja_sin_apertura": "Caja sin apertura",
+    "suscripcion_proxima_vencer": "Suscripción próxima a vencer",
+    "reimpresion_excesiva": "Reimpresión excesiva",
+    "fallo_conexion_local": "Fallo de conexión local",
+    "diferencia_datafono": "Diferencia de datáfono",
     "fe_emision_fallida": "Factura electrónica no emitida",
     "suscripcion_placa_agregada": "Placa agregada a una suscripción",
     "suscripcion_placa_quitada": "Placa quitada de una suscripción"
