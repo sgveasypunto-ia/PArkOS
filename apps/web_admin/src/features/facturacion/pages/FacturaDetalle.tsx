@@ -168,6 +168,7 @@ export function FacturaDetalle(): JSX.Element {
       <FacturaAccionesMenu
         uuid={header.uuid}
         uuid_ingreso={header.uuid_ingreso}
+        uuid_salida={header.uuid_salida}
         estado={estado}
       />
     </article>
