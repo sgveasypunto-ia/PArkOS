@@ -156,6 +156,19 @@ Describe 'Start-ParkosLitePg' {
     }
 }
 
+Describe 'Invoke-ParkosLitePgCtlStart' {
+    It 'lanza pg_ctl con un cwd valido (no hereda el del instalador)' {
+        $global:ctlCwd = $null
+        Mock Start-Process {
+            $global:ctlCwd = $WorkingDirectory
+            [PSCustomObject]@{ Handle = 1; ExitCode = 0 } | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { param($ms) $true } -PassThru
+        }
+        Invoke-ParkosLitePgCtlStart -PgRoot 'C:\lite\pgsql' -Arguments @('start') | Out-Null
+        $global:ctlCwd | Should Not BeNullOrEmpty
+        (Test-Path -LiteralPath $global:ctlCwd) | Should Be $true
+    }
+}
+
 Describe 'Wait-ParkosLitePgReady' {
     It 'devuelve true en cuanto pg_isready responde 0' {
         $global:n = 0

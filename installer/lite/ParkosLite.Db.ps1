@@ -211,7 +211,7 @@ function Invoke-ParkosLitePgCtlStart {
     param([Parameter(Mandatory)][string]$PgRoot, [Parameter(Mandatory)][string[]]$Arguments, [int]$TimeoutSec = 75)
     $out = [IO.Path]::GetTempFileName(); $err = [IO.Path]::GetTempFileName()
     try {
-        $p = Start-Process -FilePath (Get-ParkosLitePgBin -PgRoot $PgRoot -Name 'pg_ctl') -ArgumentList ($Arguments | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -WindowStyle Hidden -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+        $p = Start-Process -FilePath (Get-ParkosLitePgBin -PgRoot $PgRoot -Name 'pg_ctl') -ArgumentList ($Arguments | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -WorkingDirectory ([IO.Path]::GetTempPath()) -WindowStyle Hidden -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
         # Windows PowerShell 5.1: sin tocar .Handle, ExitCode puede quedar $null tras WaitForExit.
         $null = $p.Handle
         if (-not $p.WaitForExit($TimeoutSec * 1000)) { return @{ ExitCode = 124; Output = @('timeout esperando a pg_ctl start') } }
@@ -347,6 +347,7 @@ function Invoke-ParkosLiteProbe {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $FilePath
         $psi.Arguments = (($Arguments | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' ')
+        $psi.WorkingDirectory = [IO.Path]::GetTempPath()
         $psi.UseShellExecute = $false
         $psi.CreateNoWindow = $true
         $psi.RedirectStandardOutput = $true

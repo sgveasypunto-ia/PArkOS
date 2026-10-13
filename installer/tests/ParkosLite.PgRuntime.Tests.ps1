@@ -97,6 +97,11 @@ Describe 'Invoke-ParkosLiteProbe (proceso real, inofensivo)' {
         $r = Invoke-ParkosLiteProbe -FilePath "$env:SystemRoot\System32\cmd.exe" -Arguments @('/c', 'ping -n 30 127.0.0.1 >nul') -TimeoutSec 2
         $r.TimedOut | Should Be $true
     }
+    It 'corre el proceso en la carpeta temporal, no en el cwd heredado' {
+        $r = Invoke-ParkosLiteProbe -FilePath "$env:SystemRoot\System32\cmd.exe" -Arguments @('/c', 'cd') -TimeoutSec 20
+        $esperado = (Resolve-Path -LiteralPath ([IO.Path]::GetTempPath())).ProviderPath.TrimEnd('\')
+        (($r.Output -join '').Trim().TrimEnd('\')) | Should Be $esperado
+    }
     It 'un ejecutable inexistente no lanza: ExitCode -1' {
         $r = Invoke-ParkosLiteProbe -FilePath (Join-Path $TestDrive 'no-existe.exe') -Arguments @() -TimeoutSec 5
         $r.ExitCode | Should Be -1
