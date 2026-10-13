@@ -200,6 +200,20 @@ export default function Dashboard(): JSX.Element {
             value={kpi.facturas.value}
             loading={kpi.facturas.loading}
             error={kpi.facturas.error}
+            to="/reporteria/financiera"
+            linkHint={t('dashboard.verFacturas', 'Ver facturas →')}
+            render={
+              kpi.facturas.value === 0 && !kpi.facturas.loading && !kpi.facturas.error
+                ? () => (
+                    <p
+                      className="text-sm text-muted-foreground"
+                      data-testid="dashboard-facturas-empty"
+                    >
+                      {t('dashboard.facturasEmpty', 'Ninguna factura activa')}
+                    </p>
+                  )
+                : undefined
+            }
           />
           <KpiCard
             label={t('dashboard.montoTotal', 'Monto total (COP)')}
