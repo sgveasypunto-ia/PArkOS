@@ -314,6 +314,48 @@ class Diff:
         return not self.issues
 
 
+def default_partition_candidates(parent: str) -> tuple[str, ...]:
+    """Names a DEFAULT partition of ``parent`` may carry.
+
+    Auto-created ones are ``<parent>_default``; migration 0018 names the
+    ``pairing_tokens`` / ``revoked_sync_jwts`` ones ``<parent>_p_default``.
+    """
+    return (f"{parent}_default", f"{parent}_p_default")
+
+
+def check_default_partitions(cur, schema: str, parents, diff: Diff) -> None:
+    """(h3) every DEFAULT safety-net partition must stay empty (allowlist aside)."""
+    for parent, _partkey in parents:
+        for default_part in default_partition_candidates(parent):
+            cur.execute(
+                "SELECT to_regclass(%s)",
+                (f"{schema}.{default_part}",),
+            )
+            # to_regclass always returns one row; a missing relation is (None,).
+            if cur.fetchone()[0] is None:
+                continue
+            cur.execute(f'SELECT count(*) FROM "{schema}"."{default_part}"')  # noqa: S608
+            n_rows = cur.fetchone()[0]
+            if n_rows == 0:
+                continue
+            if default_part in DEFAULT_PARTITION_LEGACY:
+                print(
+                    f"(h3) info: {default_part} holds {n_rows} pre-0064 row(s) "
+                    f"(known legacy, allowlisted). Migrating them needs the "
+                    f"immutability story resolved -- see migration 0064 docstring."
+                )
+                continue
+            diff.fail(
+                f"(h3) {default_part} holds {n_rows} row(s) and is not on the "
+                f"allowlist of known pre-0064 legacy partitions "
+                f"({sorted(DEFAULT_PARTITION_LEGACY)}). A row landed outside "
+                f"every bounded partition: either the forward window ran out "
+                f"(run prod.fn_ensure_partitions()) or a writer stamped an "
+                f"unexpected key value. Do NOT allowlist this to silence the "
+                f"failure -- find out which date it wrote first."
+            )
+
+
 def diff_schema(tables: dict[str, Table], conn, schema: str = "prod") -> Diff:
     """Run all 8 checks against the live DB and accumulate issues."""
     diff = Diff()
@@ -581,34 +623,7 @@ def diff_schema(tables: dict[str, Table], conn, schema: str = "prod") -> Diff:
     # the REVOKE block forbid. They are allowlisted per-name rather than
     # baselined by count, because the counts legitimately differ between
     # cloud and branch -- only cloud ever wrote pairing_tokens.
-    for parent, _partkey in parents:
-        default_part = f"{parent}_default"
-        cur.execute(
-            "SELECT to_regclass(%s)",
-            (f"{schema}.{default_part}",),
-        )
-        if cur.fetchone() is None:
-            continue
-        cur.execute(f'SELECT count(*) FROM "{schema}"."{default_part}"')  # noqa: S608
-        n_rows = cur.fetchone()[0]
-        if n_rows == 0:
-            continue
-        if default_part in DEFAULT_PARTITION_LEGACY:
-            print(
-                f"(h3) info: {default_part} holds {n_rows} pre-0064 row(s) "
-                f"(known legacy, allowlisted). Migrating them needs the "
-                f"immutability story resolved -- see migration 0064 docstring."
-            )
-            continue
-        diff.fail(
-            f"(h3) {default_part} holds {n_rows} row(s) and is not on the "
-            f"allowlist of known pre-0064 legacy partitions "
-            f"({sorted(DEFAULT_PARTITION_LEGACY)}). A row landed outside "
-            f"every bounded partition: either the forward window ran out "
-            f"(run prod.fn_ensure_partitions()) or a writer stamped an "
-            f"unexpected key value. Do NOT allowlist this to silence the "
-            f"failure -- find out which date it wrote first."
-        )
+    check_default_partitions(cur, schema, parents, diff)
 
     # --- (i) MV canon guard — REQ-OPS-133 / Bug 3 of qa-2026-09-17 ---
     # The ``prod.mv_ocupacion_diaria`` materialized view is a hard
