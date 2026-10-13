@@ -560,6 +560,7 @@
 
     subscripcion_vehiculos {
         %% [V] Junction suscripción-vehículos cubiertos; filas vigentes <= cantidad_maxima_vehiculos del plan
+        %% Invariante (migración 0100): (estado = inactivo) <=> (vigente_hasta IS NOT NULL); a lo sumo una fila abierta activa por (uuid_subscripcion_cliente, uuid_vehiculo)
         %% Business
         uuid uuid PK "UUIDv4 generado en el nodo que crea la fila (offline-safe, sin colisión entre sedes)"
         uuid uuid_subscripcion_cliente FK "UK01 (uuid_subscripcion_cliente, uuid_vehiculo, vigente_desde) - suscripción que cubre"

@@ -562,3 +562,152 @@ async def test_auth_me_no_se_abre_a_otros_roles_admin_ni_a_tokens_temporales(
     r = await client.get("/api/v1/auth/me", headers=_h(op_token))
     assert r.status_code == 200
     assert PERM not in r.json()["permisos"]
+
+
+# ---------------------------------------------------------------------------
+# Bug #18 -- quitar placa no deja fila abierta fantasma + cupo bajo lock
+# ---------------------------------------------------------------------------
+
+
+async def _filas_junction(pg_engine, sub, placa):
+    async with pg_engine.connect() as conn:
+        return (
+            await conn.execute(
+                text(
+                    "SELECT sv.estado, sv.vigente_hasta FROM prod.subscripcion_vehiculos sv "
+                    "JOIN prod.vehiculos v ON v.uuid = sv.uuid_vehiculo "
+                    "WHERE sv.uuid_subscripcion_cliente = :s AND v.placa = :p"
+                ),
+                {"s": sub, "p": placa},
+            )
+        ).all()
+
+
+async def test_quitar_placa_cierra_sin_fila_abierta_fantasma(client, pg_engine, world) -> None:
+    from parkos_core.api.v1.operacion import (
+        resolve_active_subscription_for_exit as resolve_operacion,
+    )
+    from parkos_core.repo.subscripcion_activa import resolve_active_subscription_for_exit
+
+    w = world
+    placa_a, placa_b = _placa(), _placa()
+    sub, (sv_a,) = await _make_sub(
+        pg_engine, w, sucursal=w.suc_a, plan=w.plan_any, vehiculos=[(placa_a, w.carro)]
+    )
+    token = await _login(client, w.sup_email)
+
+    q = await client.put(
+        f"/api/v1/clientes/subscripcion-vehiculos/{sv_a}/quitar", headers=_h(token, w.suc_a)
+    )
+    assert q.status_code == 200, q.text
+    a = await client.post(
+        "/api/v1/clientes/subscripcion-vehiculos/agregar",
+        json={"uuid_subscripcion_cliente": str(sub), "placa": placa_b},
+        headers=_h(token, w.suc_a),
+    )
+    assert a.status_code == 201, a.text
+
+    filas_a = await _filas_junction(pg_engine, sub, placa_a)
+    assert [f for f in filas_a if f[1] is None] == [], "fila abierta fantasma de la placa quitada"
+    assert len(filas_a) == 1 and filas_a[0][0] == "inactivo" and filas_a[0][1] is not None
+    filas_b = await _filas_junction(pg_engine, sub, placa_b)
+    assert len(filas_b) == 1 and filas_b[0][0] == "activo" and filas_b[0][1] is None
+
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
+    async with Session() as s:
+        for fn in (resolve_active_subscription_for_exit, resolve_operacion):
+            res_a = await fn(s, placa=placa_a, uuid_sucursal=w.suc_a)
+            assert res_a.found is False, fn.__module__
+            res_b = await fn(s, placa=placa_b, uuid_sucursal=w.suc_a)
+            assert res_b.found is True, fn.__module__
+
+
+async def test_lectores_ignoran_fila_abierta_inactiva_legada(pg_engine, world) -> None:
+    """Datos legados (pre-fix): fila abierta con estado='inactivo' no cuenta."""
+    from parkos_core.api.v1.catalogos import _count_subscripciones_vigentes_dependientes
+    from parkos_core.api.v1.operacion import (
+        resolve_active_subscription_for_exit as resolve_operacion,
+    )
+    from parkos_core.repo.subscripcion_activa import resolve_active_subscription_for_exit
+
+    w = world
+    placa = _placa()
+    tipo = uuid_lib.uuid4()
+    async with pg_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO prod.tipos_vehiculo (uuid, tipo, vigente_desde, estado, created_by) "
+                "VALUES (:u, :t, now(), 'activo', :a)"
+            ),
+            {"u": tipo, "t": f"legado-{tipo.hex[:6]}", "a": w.sup_uuid},
+        )
+    sub, (sv,) = await _make_sub(
+        pg_engine, w, sucursal=w.suc_a, plan=w.plan_any, vehiculos=[(placa, tipo)]
+    )
+    # Simula el estado que dejaba el bug (fila abierta con estado inactivo) en
+    # una transaccion que se revierte: se suelta el CHECK que hoy lo impide
+    # (DDL transaccional en PG) y se leen los tres lectores en esa conexion.
+    async with pg_engine.connect() as conn:
+        trans = await conn.begin()
+        try:
+            await conn.execute(
+                text(
+                    "ALTER TABLE prod.subscripcion_vehiculos "
+                    "DROP CONSTRAINT IF EXISTS ck_subscripcion_vehiculos_estado_vigencia"
+                )
+            )
+            await conn.execute(
+                text("UPDATE prod.subscripcion_vehiculos SET estado='inactivo' WHERE uuid=:u"),
+                {"u": sv},
+            )
+            async with async_sessionmaker(bind=conn, expire_on_commit=False)() as s:
+                assert (
+                    await resolve_active_subscription_for_exit(
+                        s, placa=placa, uuid_sucursal=w.suc_a
+                    )
+                ).found is False
+                assert (
+                    await resolve_operacion(s, placa=placa, uuid_sucursal=w.suc_a)
+                ).found is False
+                assert await _count_subscripciones_vigentes_dependientes(s, tipo) == 0
+        finally:
+            await trans.rollback()
+
+
+async def test_agregar_concurrente_sobre_cupo_deja_pasar_solo_uno(client, pg_engine, world) -> None:
+    import asyncio
+
+    w = world
+    # plan_any: cantidad_maxima_vehiculos=5 -> 4 inscritas, quedan 1 cupo.
+    sub, _ = await _make_sub(
+        pg_engine,
+        w,
+        sucursal=w.suc_a,
+        plan=w.plan_any,
+        vehiculos=[(_placa(), w.carro) for _ in range(4)],
+    )
+    token = await _login(client, w.sup_email)
+    p1, p2 = _placa(), _placa()
+
+    async def _agregar(placa):
+        return await client.post(
+            "/api/v1/clientes/subscripcion-vehiculos/agregar",
+            json={"uuid_subscripcion_cliente": str(sub), "placa": placa},
+            headers=_h(token, w.suc_a),
+        )
+
+    r1, r2 = await asyncio.gather(_agregar(p1), _agregar(p2))
+    codes = sorted([r1.status_code, r2.status_code])
+    assert codes == [201, 422], (r1.text, r2.text)
+    async with pg_engine.connect() as conn:
+        n = (
+            await conn.execute(
+                text(
+                    "SELECT count(*) FROM prod.subscripcion_vehiculos "
+                    "WHERE uuid_subscripcion_cliente=:s AND vigente_hasta IS NULL "
+                    "AND estado='activo'"
+                ),
+                {"s": sub},
+            )
+        ).scalar_one()
+    assert n == 5

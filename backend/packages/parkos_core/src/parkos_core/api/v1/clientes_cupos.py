@@ -246,6 +246,13 @@ async def agregar_vehiculo(
             headers=no_store,
         ) from exc
 
+    # Cupo sin carrera: lock de la suscripcion y RECONTEO bajo el lock (el
+    # `detalle` leido arriba pudo quedar viejo frente a un alta concurrente).
+    await repo_venta.bloquear_subscripcion(session, payload.uuid_subscripcion_cliente)
+    detalle = await repo_cupos.buscar_subscripcion_con_vehiculos_por_uuid(
+        session, uuid_subscripcion_cliente=payload.uuid_subscripcion_cliente
+    )
+
     try:
         # PT-2: el tipo del PLAN se valida solo contra la placa NUEVA (las ya
         # inscritas -- p. ej. legado sin tipo -- no deben bloquear); V5
