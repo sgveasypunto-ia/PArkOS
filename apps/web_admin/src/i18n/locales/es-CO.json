@@ -24,6 +24,59 @@
     "noBranch": "Seleccioná una sucursal para ver el panel.",
     "loadError": "No se pudo cargar el panel de la sucursal."
   },
+  "reporteriaFinanciera": {
+    "facturas": {
+      "numeroCompleto": "Número",
+      "fecha": "Fecha",
+      "subtotal": "Subtotal",
+      "descuento": "Descuento",
+      "iva": "IVA",
+      "total": "Total",
+      "estado": "Estado",
+      "estadoVigente": "Vigente",
+      "estadoAnulada": "Anulada",
+      "empty": "No hay facturas para el rango seleccionado.",
+      "acciones": "Detalle",
+      "verDetalle": "Ver detalle"
+    },
+    "fe": {
+      "estadoFilter": "Filtrar por estado DIAN",
+      "estadoFilterAll": "Todos",
+      "caption": "Facturación electrónica"
+    },
+    "pagos": {
+      "empty": "No hay pagos en el rango seleccionado."
+    },
+    "loading": "Cargando...",
+    "tabsLabel": "Sección de reporte",
+    "tabs": {
+      "facturas": "Facturas",
+      "fe": "FE",
+      "pagos": "Pagos"
+    },
+    "title": "Reportería financiera",
+    "subtitle": "Facturas, facturación electrónica (FE) y pagos."
+  },
+  "clienteFacturas": {
+    "title": "Facturas del cliente",
+    "caption": "Facturas del cliente",
+    "numero": "Número",
+    "fecha": "Fecha",
+    "sucursal": "Sucursal",
+    "subtotal": "Subtotal",
+    "descuento": "Descuento",
+    "iva": "IVA",
+    "total": "Total",
+    "estado": "Estado",
+    "estadoVigente": "Vigente",
+    "estadoAnulada": "Anulada",
+    "empty": "Este cliente no tiene facturas registradas.",
+    "error": "No se pudieron cargar las facturas.",
+    "loading": "Cargando facturas…",
+    "acciones": "Detalle",
+    "verDetalle": "Ver detalle",
+    "table": "Sin sucursales para mostrar"
+  },
   "reporteria": {
     "title": "Reportería operacional",
     "subtitle": "Ingresos, salidas y ocupación de la sucursal seleccionada.",
@@ -265,6 +318,10 @@
     "dian": {
       "label": "DIAN",
       "description": "Monitor cross-branch de envíos a la DIAN: cola por estado y reintento de los rechazados."
+    },
+    "facturacion": {
+      "label": "Facturación",
+      "description": "Reportes financieros, FE, pagos y drill-down de facturas."
     },
     "auditoria": {
       "label": "Auditoría",
