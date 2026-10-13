@@ -356,6 +356,9 @@ def _mount_catalog(
             read_list_schema=read_list_schema,
             create_schema=create_schema,
             update_schema=update_schema,
+            # The tenant-free reads registered above are the ones served; hide
+            # the factory's duplicate GETs so they don't overwrite them in OpenAPI.
+            include_reads_in_schema=not tenant_free_reads,
             **_CATALOG_DEFAULTS,
         )
     )
