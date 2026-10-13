@@ -158,13 +158,18 @@ export const BREADCRUMB_ROUTES: readonly BreadcrumbEntry[] = [
     ],
   },
   // ---- Branch-scoped detail (more specific than branch-scoped lists) ----
+  // NOTE: /reporteria/financiera and /reporteria/suscripciones are sibling
+  // top-level sections of /reporteria (operacional), not children of it —
+  // /reporteria is reachable only from the Dashboard quick-link and shares
+  // no layout/index with the other two. The breadcrumb therefore must NOT
+  // insert an intermediate "Reportería" link that would imply a hierarchy
+  // that does not exist.
   {
     match: 'prefix',
     pattern: '/reporteria/financiera',
     branchScoped: true,
     crumbs: [
       { to: '/', i18nKey: 'breadcrumb.home' },
-      { to: '/reporteria', i18nKey: 'breadcrumb.section.reporteria' },
       { i18nKey: 'breadcrumb.reporteriaFinanciera' },
     ],
   },
@@ -174,7 +179,6 @@ export const BREADCRUMB_ROUTES: readonly BreadcrumbEntry[] = [
     branchScoped: true,
     crumbs: [
       { to: '/', i18nKey: 'breadcrumb.home' },
-      { to: '/reporteria', i18nKey: 'breadcrumb.section.reporteria' },
       { i18nKey: 'breadcrumb.reporteriaSuscripciones' },
     ],
   },
