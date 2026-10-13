@@ -487,3 +487,73 @@ describe('<PagoSheet /> — impresión completa de la factura', () => {
     expect(texto).toContain('ABC123');
   });
 });
+
+const httpError409 = (error: string) =>
+  Object.assign(new Error('http'), {
+    status: 409,
+    body: JSON.stringify({ detail: { error, uuid_salida: 'salida-1' } }),
+  });
+
+function abrirPago(): void {
+  render(<PagoSheet uuid_ingreso="uuid-1" uuid_salida="salida-1" subtotal_cop={4200} total_cop={5000} />);
+  act(() =>
+    useDashboardDrawerStore.getState().open('pago', 'anchor-x', null, {
+      uuid_ingreso: 'uuid-1',
+      uuid_salida: 'salida-1',
+      subtotal_cop: 4200,
+      total_cop: 5000,
+    }),
+  );
+}
+
+describe('<PagoSheet /> — bug #2: guardas anulación vs factura', () => {
+  it('P17: Cancelar mientras el pago está en vuelo NO anula la salida ni cierra', async () => {
+    mockTrigger.mockReturnValueOnce(new Promise(() => {})); // POST nunca resuelve
+    abrirPago();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-cancelar'));
+    });
+    expect(mockAnularTrigger).not.toHaveBeenCalled();
+    expect(useDashboardDrawerStore.getState().openDrawer).toBe('pago');
+  });
+
+  it('P18: Escape mientras el pago está en vuelo tampoco anula', async () => {
+    mockTrigger.mockReturnValueOnce(new Promise(() => {}));
+    abrirPago();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+    await act(async () => {
+      fireEvent.keyDown(screen.getByTestId('pago-sheet'), { key: 'Escape' });
+    });
+    expect(mockAnularTrigger).not.toHaveBeenCalled();
+    expect(useDashboardDrawerStore.getState().openDrawer).toBe('pago');
+  });
+
+  it('P19: POST rechazado con 409 salida_anulada -> mensaje específico, sin anular', async () => {
+    mockTrigger.mockRejectedValueOnce(httpError409('salida_anulada'));
+    abrirPago();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-confirmar'));
+    });
+    expect(screen.getByTestId('pago-error').textContent).toBe(
+      'facturacion:pago.error_salida_anulada',
+    );
+    expect(mockAnularTrigger).not.toHaveBeenCalled();
+  });
+
+  it('P20: anular rechazado con 409 salida_ya_pagada -> mensaje específico, el drawer sigue abierto', async () => {
+    mockAnularTrigger.mockRejectedValueOnce(httpError409('salida_ya_pagada'));
+    abrirPago();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pago-cancelar'));
+    });
+    expect(screen.getByTestId('pago-anular-error').textContent).toBe(
+      'facturacion:pago.anular_error_ya_pagada',
+    );
+    expect(useDashboardDrawerStore.getState().openDrawer).toBe('pago');
+  });
+});

@@ -40,6 +40,7 @@ import { validarIdentificacion, type TipoIdentificador } from '../../../lib/vali
 import { mensajeIdentificacion } from '../../../lib/validation/mensajesIdentificacion';
 import { formatCOP } from '../../../features/caja/lib/format';
 import { leerVoucherDuplicado } from '../lib/voucherDuplicado';
+import { leerErrorSalida409 } from '../lib/errorSalida409';
 
 /**
  * Placeholder de ejemplo por tipo de documento — puramente cosmético.
@@ -448,6 +449,16 @@ export function PagoModal({
           { type: 'server', message: voucherDuplicado.message },
           { shouldFocus: true },
         );
+        return;
+      }
+      if (leerErrorSalida409(err) === 'salida_anulada') {
+        form.setError('root.server', {
+          type: 'server',
+          message: t('facturacion:pago.error_salida_anulada', {
+            defaultValue:
+              'Esta salida fue cancelada y ya no se puede cobrar. Registra la salida de nuevo.',
+          }),
+        });
         return;
       }
       form.setError('root.server', {
