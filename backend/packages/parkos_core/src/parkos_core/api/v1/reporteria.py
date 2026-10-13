@@ -158,9 +158,14 @@ async def reporte_operacional(
     session: Annotated[AsyncSession, Depends(get_session)],
     _claims: Annotated[None, Depends(_admin_issuer_dep)],
     scope: Annotated[BranchScope, Depends(require_branch_scope)],
-    uuid_sucursal: uuid_lib.UUID = Query(  # noqa: B008
-        ...,
-        description="Branch to report on. Must be in the actor's permitted set.",
+    uuid_sucursal: uuid_lib.UUID | None = Query(  # noqa: B008
+        None,
+        description=(
+            "Branch to report on. Must be in the actor's permitted set. "
+            "Omit (or send null) to aggregate across every permitted branch "
+            "-- the 'Todas las sucursales' view in /reporteria (HU-F17.x "
+            "follow-up)."
+        ),
     ),
     fecha_desde: date | None = Query(  # noqa: B008
         None,
@@ -190,6 +195,15 @@ async def reporte_operacional(
     instead they get 400 ``missing_sucursal_context``, the same shape
     ``/operacion/ocupacion`` already returns (PR-A).
 
+    ``uuid_sucursal`` is now optional: omitting it returns the
+    cross-branch aggregate over every branch the actor is permitted
+    to see (the "Todas las sucursales" view in /reporteria, same
+    pattern ``reporte_ocupacion``/``reporte_fe`` already ship). Scope
+    is resolved fresh from ``usuarios_sucursal`` so the SQL can run
+    with an ``IN (...)`` predicate -- binding this endpoint to the
+    ``X-Sucursal-Context`` listener would silently narrow it to one
+    branch (the listener only ever narrows via AND).
+
     The SQL aggregates per UTC date (cast on ``created_at``), reusing
     the same bi-temporal ``vigente_*`` philosophy by counting the rows
     that are CURRENT at the moment of the read.
@@ -216,8 +230,21 @@ async def reporte_operacional(
             status_code=400,
             detail={"error": "missing_sucursal_context"},
         )
-    permitidas = scope.narrow(uuid_sucursal)
-    target = next(iter(permitidas))
+    permitidas_set = scope.narrow(uuid_sucursal) if uuid_sucursal is not None else set(scope.permitidas)
+    if uuid_sucursal is not None and not permitidas_set:
+        # Caller asked for a specific branch they are NOT permitted on.
+        # scope.narrow() already raised TenantScopeViolationError, but the
+        # bare `set(scope.permitidas)` path above does not -- defend the
+        # negative case explicitly.
+        raise TenantScopeViolationError()
+    if not permitidas_set:
+        # Cross-branch with zero permitted branches -- should not happen
+        # because the gate above raises, but belt-and-suspenders.
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "missing_sucursal_context"},
+        )
+    target_sucursales = frozenset(permitidas_set)
 
     # 3. SQL — three independent per-day rollups, then a UNION ALL
     # pattern joined on (fecha). This keeps every count and sum
@@ -239,7 +266,10 @@ async def reporte_operacional(
         0.0,
     )
 
-    # Activos: ingresos without a non-anulada salida.
+    # Activos: ingresos without a non-anulada salida. ``target_sucursales``
+    # is a frozenset of every branch in scope; single-branch callers
+    # pass a one-element set so the same ``.in_(...)`` predicate works
+    # for both modes (no SQL duplication).
     ingresos_activos_subq = (
         select(Ingreso.uuid.label("uuid"))
         .outerjoin(Salidas, Salidas.uuid_ingreso == Ingreso.uuid)
@@ -249,7 +279,7 @@ async def reporte_operacional(
             & (Anulaciones.tipo_anulable == "salida")
             & (Anulaciones.estado == "ejecutada"),
         )
-        .where(Ingreso.uuid_sucursal == target)
+        .where(Ingreso.uuid_sucursal.in_(target_sucursales))
         .where(Salidas.uuid.is_(None) | (Anulaciones.uuid.is_not(None)))
         .subquery()
     )
@@ -271,7 +301,7 @@ async def reporte_operacional(
             ingresos_activos_subq.c.uuid == Ingreso.uuid,
         )
         .outerjoin(Salidas, Salidas.uuid_ingreso == Ingreso.uuid)
-        .where(Ingreso.uuid_sucursal == target)
+        .where(Ingreso.uuid_sucursal.in_(target_sucursales))
         .where(func.date(Ingreso.created_at) >= fecha_desde)
         .where(func.date(Ingreso.created_at) <= fecha_hasta)
         .group_by(func.date(Ingreso.created_at))
@@ -287,7 +317,7 @@ async def reporte_operacional(
             func.coalesce(func.sum(Facturas.total), 0.0).label("monto_facturado_total"),
         )
         .select_from(Facturas)
-        .where(Facturas.uuid_sucursal == target)
+        .where(Facturas.uuid_sucursal.in_(target_sucursales))
         .where(Facturas.uuid_ingreso.is_not(None))
         .where(func.date(Facturas.created_at) >= fecha_desde)
         .where(func.date(Facturas.created_at) <= fecha_hasta)
@@ -303,7 +333,7 @@ async def reporte_operacional(
         )
         .select_from(FacturaPagos)
         .join(Facturas, Facturas.uuid == FacturaPagos.uuid_factura)
-        .where(Facturas.uuid_sucursal == target)
+        .where(Facturas.uuid_sucursal.in_(target_sucursales))
         .where(Facturas.uuid_ingreso.is_not(None))
         .where(func.date(FacturaPagos.created_at) >= fecha_desde)
         .where(func.date(FacturaPagos.created_at) <= fecha_hasta)
@@ -418,7 +448,7 @@ async def reporte_operacional(
             salida_no_anulada_subq,
             salida_no_anulada_subq.c.uuid_ingreso == Ingreso.uuid,
         )
-        .where(Ingreso.uuid_sucursal == target)
+        .where(Ingreso.uuid_sucursal.in_(target_sucursales))
         .where(Ingreso.fecha_ingreso.is_not(None))
         .where(func.date(Ingreso.fecha_ingreso) >= fecha_desde)
         .where(func.date(Ingreso.fecha_ingreso) <= fecha_hasta)
@@ -494,7 +524,7 @@ async def reporte_operacional(
             salida_no_anulada_subq,
             salida_no_anulada_subq.c.uuid_ingreso == Ingreso.uuid,
         )
-        .where(Ingreso.uuid_sucursal == target)
+        .where(Ingreso.uuid_sucursal.in_(target_sucursales))
         .where(Ingreso.fecha_ingreso.is_not(None))
         .where(func.date(Ingreso.fecha_ingreso) >= fecha_desde)
         .where(func.date(Ingreso.fecha_ingreso) <= fecha_hasta)
@@ -519,7 +549,14 @@ async def reporte_operacional(
     ]
 
     return ReporteOperacionalResponse(
-        uuid_sucursal=target,
+        # Single-branch callers pass a 1-element target_sucursales set;
+        # cross-branch ("Todas") callers get None so the schema stays
+        # honest about the absence of a single branch identity.
+        uuid_sucursal=(
+            next(iter(target_sucursales))
+            if uuid_sucursal is not None and len(target_sucursales) == 1
+            else None
+        ),
         fecha_desde=fecha_desde,
         fecha_hasta=fecha_hasta,
         items=items,
@@ -753,13 +790,15 @@ async def reporte_facturas(
     see, in both modes.
     """
     if uuid_sucursal is None and uuid_cliente is None:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "missing_filter",
-                "detail": "Debe especificar uuid_sucursal o uuid_cliente",
-            },
-        )
+        # BOTH omitted -> the 'Todas las sucursales' cross-branch
+        # view in /reporteria/financiera (HU-fix-reporteria-todas-
+        # sucursales). Scope is resolved fresh from ``usuarios_sucursal``
+        # below, the same way the HU-20.1 cross-branch-by-cliente
+        # path already works. The pre-HU-fix guard refused this shape
+        # with 422 ``missing_filter``; that guard is now moved into the
+        # explicit branch-by-cliente check further down (the cross-
+        # branch aggregate is a third valid path, not an error).
+        pass
 
     today = datetime.now(UTC).date()
     if hasta is None:
@@ -1055,9 +1094,14 @@ async def reporte_pagos(
     session: DbSession,
     _claims: Annotated[None, Depends(_admin_issuer_dep)],
     scope: Annotated[BranchScope, Depends(require_branch_scope)],
-    uuid_sucursal: uuid_lib.UUID = Query(  # noqa: B008
-        ...,
-        description="Branch to report on. Must be in the actor's permitted set.",
+    uuid_sucursal: uuid_lib.UUID | None = Query(  # noqa: B008
+        None,
+        description=(
+            "Branch to report on. Must be in the actor's permitted set. "
+            "Omit (or send null) to aggregate across every permitted "
+            "branch -- the 'Todas las sucursales' view in "
+            "/reporteria/financiera (HU-fix-reporteria-todas-sucursales)."
+        ),
     ),
     desde: date | None = Query(  # noqa: B008
         None,
@@ -1068,8 +1112,12 @@ async def reporte_pagos(
         description="Inclusive UTC end date. Defaults to today (UTC).",
     ),
 ) -> ReportePagosResponse:
-    """One branch's pagos, netted (pago - reverso) and grouped by
-    ``(fecha, medio_pago)`` (BR2).
+    """One branch's (or every permitted branch's) pagos, netted
+    (pago - reverso) and grouped by ``(fecha, medio_pago)`` (BR2).
+
+    ``uuid_sucursal`` is now optional: omitting it returns the
+    cross-branch aggregate over every branch the actor is permitted
+    to see, same pattern ``reporte_operacional`` ships.
 
     ``tipo_movimiento='reverso'`` rows are NEVER filtered out -- they
     subtract from the same day/medio bucket, same ``CASE`` aggregate
@@ -1096,8 +1144,15 @@ async def reporte_pagos(
             status_code=400,
             detail={"error": "missing_sucursal_context"},
         )
-    permitidas = scope.narrow(uuid_sucursal)
-    target = next(iter(permitidas))
+    target_sucursales = (
+        frozenset({uuid_sucursal}) if uuid_sucursal is not None else frozenset(scope.permitidas)
+    )
+    if uuid_sucursal is not None and not target_sucursales:
+        # scope.narrow() raises TenantScopeViolationError in the negative
+        # case; the bare-frozenset path above is a no-op there. Defend
+        # the negative case explicitly so an out-of-scope branch still
+        # rejects with the canonical 403 rather than a 200.
+        raise TenantScopeViolationError()
 
     medio_pago_expr = func.coalesce(FacturaPagos.medio_pago, "sin_especificar")
     monto_neto_expr = func.coalesce(
@@ -1118,7 +1173,7 @@ async def reporte_pagos(
         )
         .select_from(FacturaPagos)
         .join(Facturas, Facturas.uuid == FacturaPagos.uuid_factura)
-        .where(Facturas.uuid_sucursal == target)
+        .where(Facturas.uuid_sucursal.in_(target_sucursales))
         .where(func.date(FacturaPagos.created_at) >= desde)
         .where(func.date(FacturaPagos.created_at) <= hasta)
         .group_by(func.date(FacturaPagos.created_at), medio_pago_expr)
@@ -1135,7 +1190,15 @@ async def reporte_pagos(
     ]
 
     return ReportePagosResponse(
-        uuid_sucursal=target,
+        # Single-branch callers pass a 1-element set; cross-branch
+        # ("Todas") callers get None so the schema stays honest about
+        # the absence of a single branch identity (same shape as
+        # ReporteOperacionalResponse.uuid_sucursal).
+        uuid_sucursal=(
+            next(iter(target_sucursales))
+            if uuid_sucursal is not None and len(target_sucursales) == 1
+            else None
+        ),
         desde=desde,
         hasta=hasta,
         items=items,
