@@ -167,12 +167,20 @@ export function useAlertas(uuid_sucursal: string | null): UseAlertasResult {
       : alertaData
         ? alertaData
             .filter((a) => a.tipo_alerta !== null && BUSINESS_ALERT_CODES.has(a.tipo_alerta))
-            .map((a) => ({
-              ...a,
-              severidad: 'media' as const,
-              descripcion: a.tipo_alerta ?? '',
-              mensaje: a.tipo_alerta ?? '',
-            }))
+            .map((a) => {
+              // alert-types unavailable (error/loading): use the local
+              // per-code fallback for known codes instead of a blind
+              // 'media'. Codes without a local fallback keep the neutral
+              // 'media' + raw code (nothing better is known client-side).
+              const code = a.tipo_alerta ?? '';
+              const fallback = ALERT_CODE_FALLBACK[code];
+              return {
+                ...a,
+                severidad: fallback?.severidad ?? ('media' as const),
+                descripcion: fallback?.descripcion ?? code,
+                mensaje: fallback?.etiqueta ?? code,
+              };
+            })
         : [];
 
   const openAlertsCount = mergedAlertas.filter((a) => a.estado === 'abierta').length;

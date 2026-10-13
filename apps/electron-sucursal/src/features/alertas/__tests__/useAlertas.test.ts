@@ -62,6 +62,10 @@ const swrRegistry: Array<{
   options: Record<string, unknown>;
 }> = [];
 
+// Per-route canned SWR responses (reset in beforeEach). Lets a test drive
+// the "alerta ok / alert-types failed" combination.
+const swrResponses: { alerta?: { data?: unknown; error?: unknown }; types?: { data?: unknown; error?: unknown } } = {};
+
 vi.mock('swr', () => ({
   default: (
     key: string | null | undefined,
@@ -69,7 +73,16 @@ vi.mock('swr', () => ({
     options: Record<string, unknown>,
   ) => {
     swrRegistry.push({ key, options });
-    return { data: undefined, error: undefined, isLoading: false, mutate: vi.fn() };
+    const canned =
+      typeof key === 'string' && key.includes('/workflows/alert-types')
+        ? swrResponses.types
+        : swrResponses.alerta;
+    return {
+      data: canned?.data,
+      error: canned?.error,
+      isLoading: false,
+      mutate: vi.fn(),
+    };
   },
 }));
 
@@ -82,6 +95,8 @@ const VALID_UUID = '00000000-0000-0000-0000-000000000001';
 
 beforeEach(() => {
   swrRegistry.length = 0;
+  swrResponses.alerta = undefined;
+  swrResponses.types = undefined;
   useAuthStoreSelectorMock.mockReset();
   getStateClearMock.mockReset();
   dispatchEventSpy.mockClear();
@@ -243,5 +258,17 @@ describe('useAlertas — REQ-OPS-179 (HU-F11.2)', () => {
     const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
     expect(mergeAlertasWithAlertTypes([row('codigo_inventado')], [])).toEqual([]);
     debug.mockRestore();
+  });
+
+  it('U10: alert-types SWR error -> known codes use the local fallback (severidad/etiqueta), not a blind "media"', () => {
+    useAuthStoreSelectorMock.mockReturnValue('jwt-abc');
+    swrResponses.alerta = { data: [row('suscripcion_placa_quitada'), row('fe_emision_fallida')] };
+    swrResponses.types = { error: new Error('alert-types down') };
+    const { mergedAlertas } = useAlertas(VALID_UUID);
+    const byCode = Object.fromEntries(mergedAlertas.map((m) => [m.tipo_alerta, m]));
+    expect(byCode.suscripcion_placa_quitada?.severidad).toBe('baja');
+    expect(byCode.suscripcion_placa_quitada?.mensaje).toBe('Placa quitada de una suscripción');
+    expect(byCode.fe_emision_fallida?.severidad).toBe('media');
+    expect(byCode.fe_emision_fallida?.mensaje).not.toBe('fe_emision_fallida');
   });
 });
