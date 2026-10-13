@@ -60,3 +60,59 @@ async def test_observaciones_con_tildes_hacen_roundtrip_utf8_exacto(
     assert hex_utf8 == OBSERVACIONES.encode("utf-8").hex()
     # Los bytes Latin-1 de i/o/n con tilde NO deben aparecer como texto guardado.
     assert not any(c in texto for c in "Ý¾±")
+
+
+APELLIDO = "Peña Muñoz Ávila"
+
+
+async def test_apellido_de_cliente_hace_roundtrip_utf8_exacto(
+    pg_engine, mint_operador_jwt, client, pg_dsn
+) -> None:
+    from _seeds import ensure_usuario
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from test_workflows_anulaciones_integration import _grant_existing_permission
+
+    await _truncate(pg_dsn)
+    branch = uuid_lib.uuid4()
+    actor = uuid_lib.uuid4()
+    await ensure_usuario(pg_engine, actor)
+    await _seed_branch(pg_engine, uuid_sucursal=branch)
+    async with async_sessionmaker(pg_engine, expire_on_commit=False)() as session:
+        await _grant_existing_permission(
+            session, actor_uuid=actor, codigo="gestionar_clientes"
+        )
+
+    token = mint_operador_jwt(actor_uuid=actor, sucursal_uuid=branch)
+    headers = {"Authorization": f"Bearer {token}", "X-Sucursal-Context": str(branch)}
+    numero = f"utf8-{uuid_lib.uuid4().hex[:10]}"
+    creado = await client.post(
+        "/api/v1/clientes/clientes",
+        json={
+            "tipo_identificador": "CC",
+            "numero_identificacion": numero,
+            "nombre": "Zoë",
+            "apellido": APELLIDO,
+        },
+        headers=headers,
+    )
+    assert creado.status_code == 201, f"{creado.status_code}: {creado.text}"
+    assert creado.json()["apellido"] == APELLIDO
+
+    consultado = await client.get(
+        f"/api/v1/clientes/clientes/{creado.json()['uuid']}", headers=headers
+    )
+    assert consultado.status_code == 200, consultado.text
+    assert consultado.json()["apellido"] == APELLIDO
+
+    import psycopg
+
+    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT apellido, encode(convert_to(apellido, 'UTF8'), 'hex') "
+            "FROM prod.clientes WHERE numero_identificacion = %s",
+            (numero,),
+        )
+        texto, hex_utf8 = cur.fetchone()
+    assert texto == APELLIDO
+    assert hex_utf8 == APELLIDO.encode("utf-8").hex()
+    assert not any(c in texto for c in "Ý¾±")
