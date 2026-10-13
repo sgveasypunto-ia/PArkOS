@@ -39,6 +39,7 @@ import { Input } from '@/components/ui/input';
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { useArqueo } from '../hooks/useArqueo';
 import { useTipoArqueoPorCodigo } from '../hooks/useTipoArqueoPorCodigo';
+import { useSesionActiva } from '../hooks/useSesionActiva';
 import { useImprimirCierre } from '../hooks/useImprimirCierre';
 import {
   useArqueoResumenPorSesion,
@@ -97,6 +98,9 @@ export function CierreDiario(): JSX.Element {
   // The BE V2 schema needs the tipo_arqueo UUID, not the codigo string.
   const { uuid: uuidTipoCierreDia } = useTipoArqueoPorCodigo('cierre_dia');
   const { sucursal, sucursalesPermitidas } = useAuth();
+  // Sesión activa del usuario que cierra: el cierre diario solo procede si
+  // es la ÚNICA sesión abierta de la sucursal.
+  const { sesion: sesionActiva } = useSesionActiva();
 
   // Default the active branch to the operator's first permitida.
   const uuidSucursal = sucursal?.uuid ?? sucursalesPermitidas[0]?.uuid ?? null;
@@ -418,6 +422,7 @@ export function CierreDiario(): JSX.Element {
 
       <CierreDiarioForm
         sesiones={data?.sesiones ?? []}
+        uuidSesionPropia={sesionActiva?.uuid ?? null}
         totals={totals}
         cierreDiaExists={cierreDiaExists}
         isSubmitting={isSubmitting}

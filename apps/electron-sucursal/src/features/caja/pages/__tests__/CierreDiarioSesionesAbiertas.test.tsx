@@ -31,15 +31,24 @@ const CERRADA = {
   uuid_arqueo: 'cccccccc-dddd-4eee-8fff-111111111111',
 };
 
-function Host(props: { sesiones: Sesiones; reportado: number }): JSX.Element {
+const SESION_PROPIA = ABIERTA.uuid_sesion;
+const OTRO_USUARIO = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+function Host(props: {
+  sesiones: Sesiones;
+  reportado: number;
+  uuidSesionPropia?: string | null;
+  cierreDiaExists?: boolean;
+}): JSX.Element {
   const form = useForm({
     defaultValues: { valor_efectivo_reportado: 0, justificacion: '' },
   });
   return (
     <CierreDiarioForm
       sesiones={props.sesiones}
+      uuidSesionPropia={props.uuidSesionPropia ?? null}
       totals={{ valor_efectivo_reportado: props.reportado, diferencia: 0 }}
-      cierreDiaExists={false}
+      cierreDiaExists={props.cierreDiaExists ?? false}
       isSubmitting={false}
       fecha="2026-09-21"
       form={form as unknown as Parameters<typeof CierreDiarioForm>[0]['form']}
@@ -49,58 +58,116 @@ function Host(props: { sesiones: Sesiones; reportado: number }): JSX.Element {
   );
 }
 
-describe('CierreDiarioForm — sesiones abiertas (Caja bug 4)', () => {
-  it('1 sesión abierta: mensaje singular, botón deshabilitado y vinculado, Σ = 1/1', () => {
-    render(<Host sesiones={[ABIERTA]} reportado={0} />);
-    const msg = screen.getByTestId('cierre-diario-sesiones-abiertas');
-    expect(msg).toHaveTextContent(
-      'Hay 1 sesión abierta. Ciérrela antes de hacer el cierre diario.',
+describe('CierreDiarioForm — una única sesión abierta y propia (b-cd-sesion)', () => {
+  it('1 abierta propia: sin mensaje, botón habilitado, Σ = 1/1', () => {
+    render(
+      <Host
+        sesiones={[ABIERTA]}
+        reportado={50_000}
+        uuidSesionPropia={SESION_PROPIA}
+      />,
     );
-    expect(msg).toHaveAttribute('role', 'status');
+    expect(
+      screen.queryByTestId('cierre-diario-sesiones-abiertas'),
+    ).not.toBeInTheDocument();
     const btn = screen.getByTestId('cierre-diario-confirmar');
-    expect(btn).toBeDisabled();
-    expect(btn.getAttribute('aria-describedby')).toContain(msg.id);
+    expect(btn).toBeEnabled();
+    expect(btn.getAttribute('aria-describedby')).toBeNull();
     expect(screen.getByTestId('cierre-diario-totals')).toHaveTextContent(
       /Σ\s*1\/1/,
     );
   });
 
-  it('N sesiones abiertas: mensaje plural y Σ = N/total', () => {
+  it('1 abierta propia entre cerradas: habilitado', () => {
     render(
       <Host
-        sesiones={[
-          ABIERTA,
-          { ...ABIERTA, uuid_sesion: '55555555-5555-4666-8777-888888888888' },
-          CERRADA,
-        ]}
+        sesiones={[CERRADA, ABIERTA]}
         reportado={50_000}
+        uuidSesionPropia={SESION_PROPIA}
+      />,
+    );
+    expect(screen.getByTestId('cierre-diario-confirmar')).toBeEnabled();
+  });
+
+  it('0 abiertas: mensaje "sin sesión abierta" y botón deshabilitado', () => {
+    render(
+      <Host
+        sesiones={[CERRADA]}
+        reportado={50_000}
+        uuidSesionPropia={null}
+      />,
+    );
+    const msg = screen.getByTestId('cierre-diario-sesiones-abiertas');
+    expect(msg).toHaveAttribute('data-motivo', 'sin_sesion_abierta');
+    expect(msg).toHaveTextContent(/no hay ninguna sesión abierta/i);
+    expect(msg).toHaveAttribute('role', 'status');
+    const btn = screen.getByTestId('cierre-diario-confirmar');
+    expect(btn).toBeDisabled();
+    expect(btn.getAttribute('aria-describedby')).toContain(msg.id);
+    expect(screen.getByTestId('cierre-diario-totals')).toHaveTextContent(
+      /Σ\s*0\/1/,
+    );
+  });
+
+  it('1 abierta ajena: mensaje "sesión ajena" y botón deshabilitado', () => {
+    render(
+      <Host
+        sesiones={[{ ...ABIERTA, uuid_usuario: OTRO_USUARIO }]}
+        reportado={50_000}
+        uuidSesionPropia={null}
+      />,
+    );
+    const msg = screen.getByTestId('cierre-diario-sesiones-abiertas');
+    expect(msg).toHaveAttribute('data-motivo', 'sesion_ajena');
+    expect(msg).toHaveTextContent(/no es suya/i);
+    expect(screen.getByTestId('cierre-diario-confirmar')).toBeDisabled();
+  });
+
+  it('1 abierta ajena aunque el usuario tenga otra sesión activa: deshabilitado', () => {
+    render(
+      <Host
+        sesiones={[{ ...ABIERTA, uuid_usuario: OTRO_USUARIO }]}
+        reportado={50_000}
+        uuidSesionPropia="99999999-9999-4999-8999-999999999999"
       />,
     );
     expect(
       screen.getByTestId('cierre-diario-sesiones-abiertas'),
-    ).toHaveTextContent(
-      'Hay 2 sesiones abiertas. Ciérrelas antes de hacer el cierre diario.',
+    ).toHaveAttribute('data-motivo', 'sesion_ajena');
+    expect(screen.getByTestId('cierre-diario-confirmar')).toBeDisabled();
+  });
+
+  it('2+ abiertas (incluida la propia): mensaje "varias" con el conteo y deshabilitado', () => {
+    render(
+      <Host
+        sesiones={[
+          ABIERTA,
+          {
+            ...ABIERTA,
+            uuid_sesion: '55555555-5555-4666-8777-888888888888',
+            uuid_usuario: OTRO_USUARIO,
+          },
+          CERRADA,
+        ]}
+        reportado={50_000}
+        uuidSesionPropia={SESION_PROPIA}
+      />,
     );
+    const msg = screen.getByTestId('cierre-diario-sesiones-abiertas');
+    expect(msg).toHaveAttribute('data-motivo', 'varias_sesiones_abiertas');
+    expect(msg).toHaveTextContent(/hay 2 sesiones abiertas/i);
     expect(screen.getByTestId('cierre-diario-confirmar')).toBeDisabled();
     expect(screen.getByTestId('cierre-diario-totals')).toHaveTextContent(
       /Σ\s*2\/3/,
     );
   });
 
-  it('sin sesiones abiertas: sin mensaje, botón habilitado y Σ = 0/1', () => {
-    render(<Host sesiones={[CERRADA]} reportado={50_000} />);
+  it('con cierre diario ya existente no se muestra el aviso de sesión', () => {
+    render(<Host sesiones={[CERRADA]} reportado={50_000} cierreDiaExists />);
     expect(
       screen.queryByTestId('cierre-diario-sesiones-abiertas'),
     ).not.toBeInTheDocument();
-    expect(screen.getByTestId('cierre-diario-confirmar')).toBeEnabled();
-    expect(
-      screen.getByTestId('cierre-diario-confirmar').getAttribute(
-        'aria-describedby',
-      ),
-    ).toBeNull();
-    expect(screen.getByTestId('cierre-diario-totals')).toHaveTextContent(
-      /Σ\s*0\/1/,
-    );
+    expect(screen.getByTestId('cierre-diario-confirmar')).toBeDisabled();
   });
 
   it('la insignia de estado distingue cerrada de abierta con el estado real del backend', () => {

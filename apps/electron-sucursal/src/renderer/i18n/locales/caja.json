@@ -146,8 +146,9 @@
     "errorCierreDiaNoAceptaSesion": "Cierre diario ya registrado para hoy — consulte el reporte.",
     "errorPermisoInsuficiente": "No tiene permiso para cerrar esta sucursal — contacte al administrador del sistema.",
     "retry": "Reintentar",
-    "sesionesAbiertasUna": "Hay {{count}} sesión abierta. Ciérrela antes de hacer el cierre diario.",
-    "sesionesAbiertasVarias": "Hay {{count}} sesiones abiertas. Ciérrelas antes de hacer el cierre diario.",
+    "sinSesionAbierta": "No hay ninguna sesión abierta. Para hacer el cierre diario debe tener su propia sesión abierta.",
+    "sesionAjena": "La única sesión abierta no es suya. Solo quien la tiene abierta puede hacer el cierre diario.",
+    "sesionesAbiertasVarias": "Hay {{count}} sesiones abiertas. Para hacer el cierre diario debe quedar abierta solo la suya: pida que se cierren las demás.",
     "totalSesionesAbiertas": "{{abiertas}} abiertas de {{total}} sesiones",
     "tabla": {
       "caption": "Sesiones del día",
