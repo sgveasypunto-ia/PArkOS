@@ -31,6 +31,7 @@ import pytest  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 from parkos_core.api.v1.facturacion import (  # noqa: E402
     get_factura_electronica,
+    get_factura_electronica_by_factura,
     retry_envio_dian,
 )
 
@@ -201,17 +202,19 @@ async def test_get_factura_electronica_404_when_missing(
 
 
 # ---------------------------------------------------------------------------
-# T5.4 — HU-X.8 — GET resolves by parent uuid_factura (?uuid_factura=)
+# T5.4 — HU-X.8 — GET /factura-electronica/by-factura/{uuid_factura}
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_get_factura_electronica_resolves_by_parent_uuid_factura(
+async def test_get_factura_electronica_by_factura_happy_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """HU-X.8: ``?uuid_factura=`` looks up the FE by the parent factura,
-    bypassing the path param. The FE card on the admin drill-down page
-    uses this so it never has to know the FE uuid a priori.
+    """HU-X.8: separate endpoint at ``/by-factura/{uuid_factura}``
+    resolves the FE row by the parent ``prod.facturas.uuid``. The
+    drill-down page uses this so it never has to know the FE uuid a
+    priori. Distinct path from the path-based GET (T5) so the
+    existing ``{uuid}`` route stays backward-compatible.
     """
     import parkos_core.api.v1.facturacion as facturacion_mod
 
@@ -242,36 +245,24 @@ async def test_get_factura_electronica_resolves_by_parent_uuid_factura(
     response = MagicMock()
     response.headers = {}
 
-    # Path param ``{uuid}`` is intentionally a different uuid (legacy
-    # callers may pass the FE uuid here too; the new branch ignores
-    # it and uses the parent lookup).
-    result = await get_factura_electronica(
-        response,
-        uuid_lib.uuid4(),  # arbitrary path uuid
-        session,
-        ctx,
-        None,
-        uuid_factura=parent_factura_uuid,  # noqa: B008
+    result = await get_factura_electronica_by_factura(
+        response, parent_factura_uuid, session, ctx, None
     )
     assert result.uuid == fe_orm.uuid
     assert result.envio_actual.cufe == "abc-cufe-by-parent"
     # The parent-lookup repo was called with the parent uuid.
     buscar_call = facturacion_mod.repo_factura_electronica.buscar_factura_electronica_por_factura.await_args
     assert buscar_call.kwargs["uuid_factura"] == parent_factura_uuid
-    # The second read is by the resolved FE uuid (from the parent), not
-    # the path uuid.
+    # The second read is by the resolved FE uuid (from the parent).
     leer_call = facturacion_mod.repo_factura_electronica.leer_factura_electronica_con_envio_via_view.await_args
     assert leer_call.kwargs["uuid"] == fe_orm.uuid
 
 
 @pytest.mark.asyncio
-async def test_get_factura_electronica_404_when_parent_has_no_fe(
+async def test_get_factura_electronica_by_factura_404_when_parent_has_no_fe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """HU-X.8: ``?uuid_factura=<parent-without-fe>`` returns
-    ``factura_sin_fe`` 404, NOT ``factura_electronica_no_encontrada``.
-    The page uses this 404 to render the "FE no generada" card.
-    """
+    """HU-X.8: parent has no FE row → 404 ``factura_sin_fe``."""
     import parkos_core.api.v1.facturacion as facturacion_mod
 
     ctx = _make_ctx()
@@ -287,13 +278,8 @@ async def test_get_factura_electronica_404_when_parent_has_no_fe(
     response.headers = {}
 
     with pytest.raises(HTTPException) as exc_info:
-        await get_factura_electronica(
-            response,
-            uuid_lib.uuid4(),  # arbitrary path uuid
-            session,
-            ctx,
-            None,
-            uuid_factura=uuid_lib.uuid4(),  # noqa: B008
+        await get_factura_electronica_by_factura(
+            response, uuid_lib.uuid4(), session, ctx, None
         )
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail["error"] == "factura_sin_fe"

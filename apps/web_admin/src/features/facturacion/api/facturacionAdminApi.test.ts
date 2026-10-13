@@ -162,7 +162,7 @@ describe('facturacionAdminApi', () => {
     expect(calledUrl).toContain('limit=20');
   });
 
-  it('fetchFacturaElectronicaByFacturaUuid adds ?uuid_factura= to the query (HU-X.8)', async () => {
+  it('fetchFacturaElectronicaByFacturaUuid calls /by-factura/{uuid} (HU-X.8)', async () => {
     const FACTURA_UUID = 'd8c22ebb-948e-4745-aaa1-52e0a698124a';
     mockedFetch.mockResolvedValueOnce(
       ok({
@@ -177,7 +177,7 @@ describe('facturacionAdminApi', () => {
     expect(fe.estado_dian).toBe('aceptado');
     const calledUrl = mockedFetch.mock.calls[0][0] as string;
     expect(calledUrl).toContain(
-      `/api/v1/facturacion/factura-electronica?uuid_factura=${FACTURA_UUID}`,
+      `/api/v1/facturacion/factura-electronica/by-factura/${FACTURA_UUID}`,
     );
   });
 
