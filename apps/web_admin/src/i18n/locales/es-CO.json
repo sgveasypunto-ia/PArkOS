@@ -27,6 +27,8 @@
     "loadError": "No se pudo cargar el panel de la sucursal."
   },
   "reporteriaFinanciera": {
+    "subtitle": "Facturas, facturación electrónica (FE) y pagos.",
+    "subtitle.allBranches": "Facturación electrónica cross-branch y pagos agregados. Las facturas requieren una sucursal específica.",
     "facturas": {
       "numeroCompleto": "Número",
       "fecha": "Fecha",
@@ -82,6 +84,9 @@
   "reporteria": {
     "title": "Reportería operacional",
     "subtitle": "Ingresos, salidas y ocupación de la sucursal seleccionada.",
+    "subtitle.allBranches": "Vista agregada de todas las sucursales permitidas. Seleccioná una sucursal específica para ver KPIs operacionales, ingresos, salidas y ocupación.",
+    "allBranches": "Todas las sucursales",
+    "heatmapOnlyLabel": "Heatmap cross-branch",
     "noBranch": "Seleccioná una sucursal para ver la reportería.",
     "loading": "Cargando...",
     "empty": "No hay registros para la sucursal seleccionada.",
@@ -825,13 +830,17 @@
       "sucursalLabel": "Sucursal",
       "estadoLabel": "Estado",
       "todos": "Todos",
-      "todas": "Todas",
+      "todas": "Todas las sucursales",
       "sucursalCombobox": {
         "search": "Buscar por nombre, prefijo o UUID…",
         "none": "No hay sucursales disponibles.",
         "empty": "Sin resultados para la búsqueda.",
         "currentPrefix": "Actual:"
       }
+    },
+    "search": {
+      "label": "Buscar",
+      "placeholder": "Buscar por correo o nombre…"
     },
     "wizard": {
       "progressLabel": "Progreso del asistente",
