@@ -177,6 +177,33 @@ export async function fetchFacturaElectronicaByUuid(
   );
 }
 
+/**
+ * `fetchFacturaElectronicaByFacturaUuid(uuidFactura)` — HU-X.8: resolve
+ * the FE row from the parent `prod.facturas.uuid`.
+ *
+ * `GET /api/v1/facturacion/factura-electronica/by-factura/{uuid_factura}`
+ * — a separate endpoint (not a query param) so the page never has to
+ * know the FE uuid a priori. The path-based GET
+ * `GET /factura-electronica/{uuid}` is still exported for callers that
+ * already know the FE uuid (the initial FE create handler, the
+ * bitácora view, etc.).
+ *
+ * The admin drill-down page uses this so the FE card renders without
+ * needing to know the FE uuid a priori. Returns 404 with error
+ * `factura_sin_fe` when the parent has no FE row (distinct from
+ * `factura_electronica_no_encontrada` which the path-based variant
+ * returns for an unknown FE uuid).
+ */
+export async function fetchFacturaElectronicaByFacturaUuid(
+  uuidFactura: string,
+): Promise<FacturaElectronicaRead> {
+  return fetchJson<FacturaElectronicaRead>(
+    `/api/v1/facturacion/factura-electronica/by-factura/${encodeURIComponent(uuidFactura)}`,
+    { method: 'GET', headers: { Accept: 'application/json' } },
+    facturaElectronicaReadSchema,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Hash chain (header card)
 // ---------------------------------------------------------------------------

@@ -17,6 +17,8 @@
     "subtitle": "Métricas operativas de la sucursal seleccionada.",
     "ingresos": "Ingresos",
     "facturas": "Facturas",
+    "facturasEmpty": "Ninguna factura activa",
+    "verFacturas": "Ver facturas →",
     "alertas": "Alertas abiertas",
     "montoTotal": "Monto total (COP)",
     "lastSync": "Última sincronización",

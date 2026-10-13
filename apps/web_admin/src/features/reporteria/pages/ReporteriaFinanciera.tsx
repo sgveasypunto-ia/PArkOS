@@ -19,15 +19,28 @@
  * backend query params use — no `fecha_desde`/`fecha_hasta` remap needed
  * here, unlike `/admin/reporteria/operacional`).
  *
+ * HU-X.8: the header now includes a `<BranchPickerInline />` (with
+ * search) so the admin can switch branches from within the page
+ * (instead of going to the topbar). The subtitle also shows the
+ * current branch name in parens, matching the `Reporteria.tsx` style.
+ *
  * Branch context comes from `useSucursal()`, same as `<Reporteria />`.
  */
 import { useMemo, useState } from 'react';
+import useSWR from 'swr';
 import { useTranslation } from 'react-i18next';
 
+import { useAdminAuth } from '@parkos/ui-kit/hooks';
 import { useSucursal } from '@/lib/sucursal-context';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { exportToCsv } from '@/lib/export/csv';
+import { parkosFetchRaw } from '@/lib/fetch';
+
+import {
+  BranchPickerInline,
+  type SucursalPickerOption,
+} from '@/components/branch-selector/BranchPickerInline';
 
 import {
   useReporteriaFacturas,
@@ -56,12 +69,57 @@ const ESTADO_DIAN_OPTIONS = [
   'en_proceso',
 ] as const;
 
+const SUCURSALES_PATH = '/api/v1/sucursales';
+
+interface BranchSummary {
+  uuid: string;
+  nombre: string | null;
+  prefijo_nombre?: string | null;
+}
+
+async function fetchJson<T>(input: string): Promise<T> {
+  const res = await parkosFetchRaw(input, {
+    headers: { Accept: 'application/json' },
+  });
+  if (!res.ok) {
+    throw new Error(`fetch ${input} -> ${res.status}`);
+  }
+  return (await res.json()) as T;
+}
+
 export default function ReporteriaFinanciera() {
   const { t } = useTranslation();
-  const { selected } = useSucursal();
+  const { selected, setSelected } = useSucursal();
+  const { sucursalUuids: permitidas } = useAdminAuth();
   const [tab, setTab] = useState<'facturas' | 'fe' | 'pagos'>('facturas');
   const [range, setRange] = useState<DateRange>(() => defaultRange());
   const [estadoDian, setEstadoDian] = useState<string>('');
+
+  // HU-X.8: fetch the branch list once (same pattern as
+  // `Reporteria.tsx:101-105`) so the page can show the current branch
+  // name in the subtitle AND populate the inline picker.
+  const branches = useSWR<{ items: BranchSummary[] }>(
+    SUCURSALES_PATH,
+    () => fetchJson<{ items: BranchSummary[] }>(SUCURSALES_PATH),
+    { revalidateOnFocus: false },
+  );
+  const branchName = (() => {
+    const items = branches.data?.items ?? [];
+    const found = items.find((b) => b.uuid === selected);
+    return found?.nombre ?? null;
+  })();
+
+  const branchOptions: SucursalPickerOption[] = useMemo(() => {
+    const items = branches.data?.items ?? [];
+    const permitidasSet = new Set(permitidas);
+    return items
+      .filter((i) => permitidasSet.has(i.uuid))
+      .map((i) => ({
+        uuid: i.uuid,
+        nombre: i.nombre,
+        prefijo_nombre: i.prefijo_nombre,
+      }));
+  }, [branches.data, permitidas]);
 
   const facturasQuery = useMemo(() => {
     if (!selected) return null;
@@ -98,16 +156,32 @@ export default function ReporteriaFinanciera() {
       data-testid="page-reporteria-financiera"
     >
       <div className="mx-auto flex max-w-5xl flex-col gap-6">
-        <header className="border-b pb-4">
-          <h1 className="text-3xl font-bold tracking-tight">
-            {t('reporteriaFinanciera.title', 'Reportería financiera')}
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            {t(
-              'reporteriaFinanciera.subtitle',
-              'Facturas, facturación electrónica (FE) y pagos.',
-            )}
-          </p>
+        <header className="flex flex-col gap-4 border-b pb-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight">
+              {t('reporteriaFinanciera.title', 'Reportería financiera')}
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              {t(
+                'reporteriaFinanciera.subtitle',
+                'Facturas, facturación electrónica (FE) y pagos.',
+              )}
+              {branchName ? (
+                <span
+                  className="ml-2 font-medium"
+                  data-testid="reporteria-financiera-branch-name"
+                >
+                  ({branchName})
+                </span>
+              ) : null}
+            </p>
+          </div>
+          <BranchPickerInline
+            valueLabel={branchName}
+            options={branchOptions}
+            isLoading={branches.isLoading}
+            onSelect={setSelected}
+          />
         </header>
 
         <Tabs
