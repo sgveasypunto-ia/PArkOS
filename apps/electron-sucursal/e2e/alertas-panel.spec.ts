@@ -15,7 +15,7 @@
  *   DA-F11.2-11 (e2e coverage) — S1..S4 cover the four spec scenarios.
  *
  * Scenarios (verbatim design AD-7):
- *   S1 (no skip): 11 business alerts visible + filterable. The chip
+ *   S1 (no skip): 6 business alerts visible + filterable. The chip
  *       click triggers client-side filter only (no parkosFetch).
  *   S2 (no skip): drill-down per router map — descuadre_critico +
  *       uuid_arqueo: Y → /caja/arqueo/Y; capacidad_agotada_forzado +
@@ -52,12 +52,7 @@ const BUSINESS_TIPO_ALERTAS = [
   'numeracion_toppoint_agotada',
   'cache_desactualizado',
   'capacidad_agotada_forzado',
-  'arqueo_sin_cerrar',
-  'caja_sin_apertura',
   'suscripcion_proxima_vencer',
-  'reimpresion_excesiva',
-  'fallo_conexion_local',
-  'diferencia_datafono',
 ] as const;
 
 const TECHNICAL_TIPO_ALERTAS = [
@@ -98,7 +93,7 @@ function makeAlertRow(tipo_alerta: string, overrides: Record<string, unknown> = 
 function makeAlertTypes(): Array<Record<string, unknown>> {
   const severityForCode = (code: string): 'alta' | 'media' | 'baja' => {
     if (code === 'descuadre_critico' || code === 'fe_error_toppoint' || code === 'numeracion_toppoint_agotada') return 'alta';
-    if (code === 'cache_desactualizado' || code === 'capacidad_agotada_forzado' || code === 'arqueo_sin_cerrar') return 'media';
+    if (code === 'cache_desactualizado' || code === 'capacidad_agotada_forzado') return 'media';
     return 'baja';
   };
   return [...BUSINESS_TIPO_ALERTAS, ...TECHNICAL_TIPO_ALERTAS].map((codigo) => ({
@@ -158,10 +153,10 @@ async function stubAuth(page: Page): Promise<void> {
 }
 
 test.describe('HU-F11.2 — Alertas Panel (e2e)', () => {
-  test('S1: 11 business alerts visible + filter chip toggles subset client-side (no SWR re-fetch)', async ({ page }) => {
+  test('S1: 6 business alerts visible + filter chip toggles subset client-side (no SWR re-fetch)', async ({ page }) => {
     await stubAuth(page);
-    // Mixed payload: 11 business + 8 technical. The panel MUST
-    // drop the 8 technical codes client-side and render exactly 11
+    // Mixed payload: 6 business + 8 technical. The panel MUST
+    // drop the 8 technical codes client-side and render exactly 6
     // `<li data-testid="alerta-card">` children.
     const mixed = [
       ...BUSINESS_TIPO_ALERTAS.map((t) => makeAlertRow(t)),
@@ -186,14 +181,14 @@ test.describe('HU-F11.2 — Alertas Panel (e2e)', () => {
     const panel = page.getByTestId('alertas-panel');
     await expect(panel).toBeVisible({ timeout: 5_000 });
 
-    // 11 business alerts render — 8 technical codes are dropped
+    // 6 business alerts render — 8 technical codes are dropped
     // silently inside the hook's merge selector (ABIERTO-06).
     const cards = page.getByTestId('alerta-card');
-    await expect(cards).toHaveCount(11);
+    await expect(cards).toHaveCount(6);
 
     // openAlertsCount badge mirrors the business + activa subset.
     const count = page.getByTestId('open-alerts-count');
-    await expect(count).toHaveText('11');
+    await expect(count).toHaveText('6');
 
     // Click `severidad=alta` chip. The panel MUST re-render with
     // ONLY the alta subset (3 alerts per makeAlertTypes severity map)

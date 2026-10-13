@@ -14,6 +14,7 @@
 import { useTranslation } from 'react-i18next';
 
 import type { MergedAlerta } from '../../../lib/api/schemas/alertas';
+import type { Severidad } from '../../../lib/alertas/severity';
 
 import { DrillDownButton } from './DrillDownButton';
 import { ResolverAlertaButton } from './ResolverAlertaButton';
@@ -24,7 +25,7 @@ import { ResolverAlertaButton } from './ResolverAlertaButton';
 // `baja` ahora usan `--color-warning`/`--color-info` (tokens.css +
 // index.css), verificados AA en ambos modos — igual criterio que
 // `AlertaFilterChips.SEVERITY_PRESSED_CLASS`.
-const SEVERITY_VARIANT: Record<'alta' | 'media' | 'baja', string> = {
+const SEVERITY_VARIANT: Record<Severidad, string> = {
   alta: 'bg-destructive text-destructive-foreground',
   media: 'bg-warning text-warning-foreground',
   baja: 'bg-info text-info-foreground',

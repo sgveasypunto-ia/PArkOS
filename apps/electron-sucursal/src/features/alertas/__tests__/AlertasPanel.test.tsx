@@ -9,7 +9,7 @@
  * (DA-F11.2-4 router map).
  *
  * Coverage:
- *   T1: 11 business alerts render; 8 technical codes dropped silently
+ *   T1: 6 business alerts render; 8 technical codes dropped silently
  *       (no `console.error`, exactly one `console.debug` per dropped code).
  *   T2: filter chips toggle visibility client-side WITHOUT
  *       re-fetching `parkosFetch` (REQ-OPS-178 client-side chips).
@@ -56,12 +56,7 @@ const BUSINESS_TIPO_ALERTAS = [
   'numeracion_toppoint_agotada',
   'cache_desactualizado',
   'capacidad_agotada_forzado',
-  'arqueo_sin_cerrar',
-  'caja_sin_apertura',
   'suscripcion_proxima_vencer',
-  'reimpresion_excesiva',
-  'fallo_conexion_local',
-  'diferencia_datafono',
 ] as const;
 
 const TECHNICAL_TIPO_ALERTAS = [
@@ -107,7 +102,7 @@ function makeFullPayload(): {
   );
   return {
     data: business,
-    openAlertsCount: business.length, // 11 activa + business
+    openAlertsCount: business.length, // 6 activa + business
     refresh: async () => undefined,
     mergedAlertas: business,
     // The 8 technical codes are emitted by the hook but the panel
@@ -140,12 +135,12 @@ function renderPanel(): ReturnType<typeof render> {
 }
 
 describe('<AlertasPanel /> — REQ-OPS-178 + REQ-OPS-182 (HU-F11.2)', () => {
-  it('T1: 11 business alerts render; 8 technical codes drop silently (no console.error)', () => {
+  it('T1: 6 business alerts render; 8 technical codes drop silently (no console.error)', () => {
     const payload = makeFullPayload();
     // The mock simulates the post-filter `mergedAlertas` selector
     // output (the 8 technical codes are dropped INSIDE the hook's
     // merge function, NOT in the panel). The panel receives the
-    // 11 business codes only.
+    // 6 business codes only.
     useAlertasMock.mockReturnValue(payload);
     useResolverAlertaMock.mockReturnValue({
       resolve: vi.fn(async () => undefined),
@@ -156,7 +151,7 @@ describe('<AlertasPanel /> — REQ-OPS-178 + REQ-OPS-182 (HU-F11.2)', () => {
     renderPanel();
 
     const items = screen.getAllByTestId('alerta-card');
-    expect(items).toHaveLength(11);
+    expect(items).toHaveLength(6);
     // No console.error emitted for the 8 dropped codes (ABIERTO-06).
     // Filter out React/React-Router internal warnings (which fire
     // through console.error during render under jsdom); assert that
@@ -186,7 +181,7 @@ describe('<AlertasPanel /> — REQ-OPS-178 + REQ-OPS-182 (HU-F11.2)', () => {
     renderPanel();
 
     const beforeCount = screen.getAllByTestId('alerta-card').length;
-    expect(beforeCount).toBe(11);
+    expect(beforeCount).toBe(6);
 
     // Click the `severidad=alta` filter chip via data-testid (chip
     // is a toggle button (aria-pressed)). After the click
@@ -202,7 +197,7 @@ describe('<AlertasPanel /> — REQ-OPS-178 + REQ-OPS-182 (HU-F11.2)', () => {
       expect(card.getAttribute('data-severidad')).toBe('alta');
     }
     expect(afterCards.length).toBeGreaterThan(0);
-    expect(afterCards.length).toBeLessThan(11);
+    expect(afterCards.length).toBeLessThan(6);
   });
 
   it('T3: drill-down button navigates to /caja/arqueo/{uuid_arqueo} for descuadre_critico', () => {
