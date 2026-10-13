@@ -30,22 +30,36 @@
  * switch does NOT invalidate this list.
  *
  * Branch picker (HU-X.8 + HU-F9 follow-ups): the inline
- * `<SucursalFilterCombobox>` was moved to the page header (same row
- * as the search input and the "+ Nuevo usuario" button) so the layout
- * mirrors the reporteria surfaces (`/reporteria`, `/reporteria/financiera`).
- * The combobox writes through to the global `SucursalContext` (same
- * hook as the topbar BranchSelector and the same hook as
- * `/reporteria/financiera`, `/cupos`, `/tarifas`, `/reporteria`).
- * Picking a branch here ALSO changes the topbar selection -- that is
- * the intended write-through behaviour. The picker now offers a
- * "Todas las sucursales" pseudo-option (HU-F9) that sets
- * `selected = null` and shows every user across all permitted
- * branches.
+ * `<SucursalFilterCombobox>` lives in the page header (same row as
+ * the "+ Nuevo usuario" button) so the layout mirrors the reporteria
+ * surfaces (`/reporteria`, `/reporteria/financiera`). The combobox
+ * writes through to the global `SucursalContext` (same hook as the
+ * topbar BranchSelector and the same hook as `/reporteria/financiera`,
+ * `/cupos`, `/tarifas`, `/reporteria`). Picking a branch here ALSO
+ * changes the topbar selection -- that is the intended write-through
+ * behaviour. The picker now offers a "Todas las sucursales"
+ * pseudo-option (HU-F9) that sets `selected = null` and shows every
+ * user across all permitted branches.
  *
- * Search (HU-F9): a `<UsuarioSearchInput>` lives in the same header
- * cluster and filters the already-fetched list by `email`, `nombre`,
- * and `apellido` (case-insensitive `includes`). Clearing the search
- * is a no-op against the rest of the filters (rol / estado / branch).
+ * Search (HU-F9) + filter row (HU-fix-usuarios-alignment): the
+ * `<UsuarioSearchInput>` and the `rol` / `estado` selects are all
+ * peers inside a single flex cluster below the page header
+ * (`data-testid="admin-filtros"`), so the four filters are visually
+ * grouped (search, rol, estado) and the branch picker stays alone
+ * in the header next to the "+ Nuevo usuario" button. The search
+ * filters the already-fetched list by `email`, `nombre`, and
+ * `apellido` (case-insensitive `includes`). Clearing the search is
+ * a no-op against the rest of the filters (rol / estado / branch).
+ *
+ * HU-fix-usuarios-alignment: the "Actual: <nombre>" hint that used
+ * to render below the SucursalFilterCombobox's input was removed
+ * at the component source (one component, three call sites aligned
+ * at once). The hint was redundant with the input's own value and
+ * was breaking the vertical alignment of the page header's `flex
+ * items-end` cluster: the extra paragraph made the combobox column
+ * taller than the search input (label+input) and the "+ Nuevo
+ * usuario" button, so the input visually shifted upward. Removing
+ * it leaves the three columns at the same effective height.
  */
 import { useMemo, useState } from 'react';
 import * as React from 'react';
@@ -127,11 +141,6 @@ export default function UsuariosList(): JSX.Element {
         )}
         actions={
           <div className="flex flex-wrap items-end gap-3">
-            <UsuarioSearchInput
-              value={filtros.search}
-              onChange={(v) => setFiltros((f) => ({ ...f, search: v }))}
-              testId="admin-search-usuario"
-            />
             <SucursalFilterCombobox
               options={branchDirectory.sucursales.map((s) => ({
                 uuid: s.uuid,
@@ -180,6 +189,11 @@ export default function UsuariosList(): JSX.Element {
       )}
 
       <div className="flex flex-wrap items-end gap-3" data-testid="admin-filtros">
+        <UsuarioSearchInput
+          value={filtros.search}
+          onChange={(v) => setFiltros((f) => ({ ...f, search: v }))}
+          testId="admin-search-usuario"
+        />
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
           {t('gestionUsuarios.filtros.rolLabel', 'Rol')}
           <select

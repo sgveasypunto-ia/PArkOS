@@ -287,8 +287,7 @@ describe('<UsuariosList /> — filter bar wiring', () => {
     // Operator flow: admin is on /dashboard with SUC_NORTE selected,
     // clicks the "Usuarios" link in the sidebar. The page should
     // mount already filtered to SUC_NORTE — the operator does NOT
-    // need to pick the branch again. The prefijo_nombre is rendered
-    // under the current-branch hint below the combobox.
+    // need to pick the branch again.
     window.localStorage.setItem('parkos.lastSelectedSucursal', SUC_NORTE);
     render(<UsuariosList />, { wrapper: isolatedCache });
 
@@ -300,13 +299,23 @@ describe('<UsuariosList /> — filter bar wiring', () => {
       expect(screen.getByTestId(`admin-row-${UUID_ADMIN}`)).toBeInTheDocument();
       expect(screen.queryByTestId(`admin-row-${UUID_OPERADOR}`)).not.toBeInTheDocument();
     });
-    // The combobox's "current" hint is the active branch.
+    // HU-fix-usuarios-alignment: the legacy "Actual: <nombre>" hint
+    // paragraph under the combobox is gone (covered by the dedicated
+    // test below); here we only need to assert the combobox is mounted
+    // and bound to the active branch via the popup.
+    expect(screen.getByTestId('admin-filter-sucursal')).toBeInTheDocument();
+  });
+
+  it('HU-fix-usuarios-alignment: no "Actual: <nombre>" hint is rendered under the branch combobox when a branch is selected', async () => {
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUC_NORTE);
+    render(<UsuariosList />, { wrapper: isolatedCache });
+
     await waitFor(() => {
-      expect(screen.getByTestId('admin-filter-sucursal-selected')).toBeInTheDocument();
+      expect(screen.getByTestId('admin-filter-sucursal')).toBeInTheDocument();
     });
-    expect(
-      screen.getByTestId('admin-filter-sucursal-selected').textContent,
-    ).toMatch(/Norte/);
+    // The legacy data-testid must not be present (the hint paragraph
+    // that used to carry it was removed in SucursalFilterCombobox).
+    expect(screen.queryByTestId('admin-filter-sucursal-selected')).not.toBeInTheDocument();
   });
 
   it('HU-X.8: picking a different branch in the page combobox updates the global context and re-filters the table', async () => {
@@ -357,20 +366,29 @@ describe('<UsuariosList /> — filter bar wiring', () => {
     expect(screen.getByTestId(`admin-row-${UUID_OPERADOR}`)).toBeInTheDocument();
   });
 
-  it('HU-F9: the search input is wired to the header cluster next to the branch combobox', () => {
+  it('HU-fix-usuarios-alignment: search input lives next to the rol/estado selects in the filtros row; branch combobox + nuevo button live in the page header', () => {
     render(<UsuariosList />, { wrapper: isolatedCache });
 
-    // The search input and the branch combobox are siblings under
-    // the page-header-actions cluster, matching the reporteria pages
-    // where the picker sits in the same header.
+    // Filter row (admin-filtros) holds the three text/list filters that
+    // narrow the already-fetched list: search + rol + estado.
     const search = screen.getByTestId('admin-search-usuario');
+    const rol = screen.getByTestId('admin-filter-rol');
+    const estado = screen.getByTestId('admin-filter-estado');
+    const filtrosRow = search.closest('[data-testid="admin-filtros"]');
+    expect(filtrosRow).toBeInTheDocument();
+    expect(filtrosRow).toContainElement(rol);
+    expect(filtrosRow).toContainElement(estado);
+
+    // Page header actions cluster holds the global branch picker (which
+    // writes through to the topbar) and the create-user button. The
+    // search does NOT live here anymore.
     const combobox = screen.getByTestId('admin-filter-sucursal');
     const newButton = screen.getByTestId('admin-new');
     const headerActions = newButton.closest('[data-testid="page-header-actions"]');
     expect(headerActions).toBeInTheDocument();
-    expect(headerActions).toContainElement(search);
     expect(headerActions).toContainElement(combobox);
     expect(headerActions).toContainElement(newButton);
+    expect(headerActions).not.toContainElement(search);
   });
 
   it('HU-F9: "Todas las sucursales" option in the branch combobox clears the global selection and shows every user', async () => {

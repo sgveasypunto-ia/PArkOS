@@ -22,6 +22,19 @@
  *   - `onChange(uuid)` fires once per selection.
  *   - The `data-testid` on the input is the integration point for tests
  *     (kept on the `testId` prop so each call site can pass its own).
+ *
+ * HU-fix-usuarios-alignment: removed the "Actual: <nombre>" hint
+ * paragraph that used to render BELOW the input when a branch was
+ * selected and the popup was closed. The hint was redundant with the
+ * input's own value (the search input shows the selected branch's
+ * name when the popup is closed and after a selection) and was
+ * breaking the vertical alignment of every page header that uses the
+ * combobox in a `flex items-end` cluster with peers of different
+ * heights (the `+ Nuevo usuario` button in `/usuarios`, the page
+ * subtitle blocks in `/reporteria` and `/reporteria/financiera`): the
+ * extra paragraph made the combobox column taller than its siblings,
+ * so the input visually shifted upward. The fix lives at the source
+ * (this component) so all three call sites are aligned at once.
  */
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -200,18 +213,6 @@ export function SucursalFilterCombobox({
           className="pl-8 pr-2"
         />
       </div>
-
-      {selected !== null && !alwaysOpen && query === '' && (
-        <p
-          className="text-muted-foreground text-xs"
-          data-testid={`${testId ?? 'sucursal-combobox'}-selected`}
-        >
-          {t('gestionUsuarios.filtros.sucursalCombobox.currentPrefix', 'Actual:')}{' '}
-          <span className="font-medium text-foreground">
-            {selected.nombre ?? selected.uuid}
-          </span>
-        </p>
-      )}
 
       {showPopup && (
         <ul

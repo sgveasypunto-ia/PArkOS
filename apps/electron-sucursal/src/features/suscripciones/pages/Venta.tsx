@@ -45,7 +45,7 @@ import { Input } from '@/components/ui/input';
 import { formatCOP } from '../../caja/lib/format';
 import { PagoModal, type PagoFormValues } from '../../facturacion/components/PagoModal';
 import { FacturaDisplayModal } from '../../facturacion/components/FacturaDisplayModal';
-import { dispararImpresionFactura, type ImprimirFacturaFn } from '../../../lib/print/facturaPrint';
+import type { ImprimirFacturaFn } from '../../../lib/print/facturaPrint';
 import {
   ClienteIdentificacionFields,
   type ClienteIdentificacionValue,
@@ -607,13 +607,9 @@ export function Venta({
   };
 
   const handleFacturaDisplayClose = (): void => {
-    // DEC-SUC-27 order: the recibo print fires AFTER the operator
-    // dismisses the confirmation modal, same as `<PagoSheet />` /
-    // `<SalidaMensualidad />`. A printer failure (offline/disconnected)
-    // never blocks completing the sale (DEC-SUC-08).
-    if (facturaDisplay) {
-      dispararImpresionFactura(facturaDisplay, imprimirFactura);
-    }
+    // "Cerrar" only dismisses the confirmation modal and resets the wizard;
+    // it never prints. Printing is the explicit "Imprimir" action of
+    // `<FacturaDisplayModal />` (works with the modal still open).
     setFacturaDisplay(null);
     setFacturaElectronicaWarning(null);
     completeVenta();
@@ -1199,7 +1195,7 @@ export function Venta({
       )}
       {/*
         Post-pago confirmation -- full breakdown (mirrors HU-F8.4
-        `<FacturaDisplayModal />`) and the recibo print on dismiss. Mounted
+        `<FacturaDisplayModal />`); printing is the explicit "Imprimir" button. Mounted
         unconditionally so the close animation plays; renders nothing while
         `facturaDisplay` is `null`. Shows the FE state (emitted / pending).
       */}
@@ -1207,6 +1203,7 @@ export function Venta({
         factura={facturaDisplay}
         onClose={handleFacturaDisplayClose}
         warning={facturaElectronicaWarning}
+        imprimirFactura={imprimirFactura}
       />
     </div>
   );

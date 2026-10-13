@@ -254,7 +254,8 @@ describe('HU-F10.3 — <CierreDiarioForm /> (REQ-OPS-164, AD-4)', () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     render(
       <FormHost
-        sesiones={TRES_SESIONES.slice(0, 2)}
+        sesiones={TRES_SESIONES}
+        uuidSesionPropia={TRES_SESIONES[2]?.uuid_sesion ?? null}
         totals={TOTALS_NO_DIFF}
         cierreDiaExists={false}
         isSubmitting={false}

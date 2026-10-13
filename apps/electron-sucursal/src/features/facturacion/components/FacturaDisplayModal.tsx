@@ -48,7 +48,11 @@ import type { FacturaRead } from '../api/facturaApi';
 import { feEstadoLabel, feWarningMessage } from '../lib/feEstado';
 import { FacturaImpuestosDetalle } from './FacturaImpuestosDetalle';
 import { formatCOP, formatFechaHoraCorta } from '../../caja/lib/format';
-import { imprimirFactura, lineasEmpresaTicket } from '../../../lib/print/facturaPrint';
+import {
+  imprimirFactura as imprimirFacturaDefault,
+  lineasEmpresaTicket,
+  type ImprimirFacturaFn,
+} from '../../../lib/print/facturaPrint';
 import {
   conceptoLegible,
   etiquetaSemanticaLineas,
@@ -67,6 +71,11 @@ export interface FacturaDisplayModalProps {
    * callers (PagoSheet, SalidaMensualidad) are unaffected.
    */
   warning?: string | null;
+  /**
+   * Optional override of the explicit "Imprimir" action (defaults to the
+   * shared `imprimirFactura`). Lets a host inject its own print bridge.
+   */
+  imprimirFactura?: ImprimirFacturaFn;
 }
 
 /**
@@ -120,6 +129,7 @@ export function FacturaDisplayModal({
   factura,
   onClose,
   warning,
+  imprimirFactura = imprimirFacturaDefault,
 }: FacturaDisplayModalProps): JSX.Element {
   const { t } = useTranslation(['facturacion', 'common']);
 

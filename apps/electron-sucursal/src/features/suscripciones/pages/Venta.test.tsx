@@ -21,7 +21,7 @@
  * The PagoModal composition is stubbed: it only exposes its props.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, act, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 import type * as UseVentaSuscripcionModule from '../hooks/useVentaSuscripcion';
@@ -551,7 +551,7 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     expect(screen.getByTestId('pago-prefill-fe').textContent).toBe('false');
   });
 
-  it('T8: pago con cobro -> muestra <FacturaDisplayModal /> y solo completa/imprime al cerrarlo', async () => {
+  it('T8: pago con cobro -> muestra <FacturaDisplayModal /> y solo completa al cerrarlo (Cerrar NO imprime)', async () => {
     mockTrigger.mockResolvedValueOnce({
       uuid_subscripcion: '00000000-0000-0000-0000-0000000000b1',
       uuid_cliente: '00000000-0000-0000-0000-0000000000c1',
@@ -590,12 +590,44 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
       await Promise.resolve();
     });
 
-    expect(imprimir).toHaveBeenCalledTimes(1);
+    // "Cerrar" solo cierra y completa el wizard: NO imprime.
+    expect(imprimir).not.toHaveBeenCalled();
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+  });
+
+  it('T8b: "Imprimir" explicito del modal imprime el documento completo y no cierra ni completa', async () => {
+    mockTrigger.mockResolvedValueOnce({
+      uuid_subscripcion: '00000000-0000-0000-0000-0000000000b1',
+      uuid_cliente: '00000000-0000-0000-0000-0000000000c1',
+      uuid_vehiculos: ['00000000-0000-0000-0000-0000000000e1'],
+      uuid_factura: FACTURA_BASE.uuid,
+      monto_prorrateado: null,
+      factura: {
+        ...FACTURA_BASE,
+        impuestos: FACTURA_SUSCRIPCION_120000.impuestos,
+        factura_electronica_error: null,
+      },
+      factura_electronica_error: null,
+    });
+    const imprimir = instalarBridgeImprimir();
+    const onSuccess = vi.fn();
+
+    renderVenta({ onSuccess });
+    await hastaPago();
+    await click('pago-confirmar-stub');
+    expect(imprimir).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('factura-display-imprimir'));
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(imprimir).toHaveBeenCalledTimes(1));
     const texto = textoImpreso(imprimir);
     expectDetalleImpuestos(texto, FACTURA_BASE.numero_recibo);
-    expect(texto).toMatch(/IVA 19% \(base \$ ?[\d.]+,\d\d\)\s+\$ ?19\.159,66/);
     expect(texto).not.toMatch(/Base \$/);
-    expect(onSuccess).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('factura-display-modal')).toBeDefined();
+    expect(onSuccess).not.toHaveBeenCalled();
   });
 
   it('T9: FE pendiente -- la venta se muestra igual, con aviso no bloqueante "se reintenta sola"', async () => {

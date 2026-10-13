@@ -355,6 +355,31 @@ async def post_arqueo(
     # which made the close pick tomorrow's (empty) sessions.
     fecha_negocio = hoy_bogota()
     if tipo_arqueo.codigo == "cierre_dia":
+        # Regla de negocio: el cierre diario solo procede si existe UNA
+        # unica sesion abierta en la sucursal y es la de quien cierra.
+        # Se valida ANTES de insertar el arqueo y de cerrar sesiones en
+        # bulk (defensa en profundidad; el FE ya deshabilita el boton).
+        abiertas = await repo_arqueo.listar_sesiones_abiertas_del_dia(
+            session,
+            uuid_sucursal=target_sucursal,
+            fecha=fecha_negocio,
+        )
+        if len(abiertas) != 1 or abiertas[0].uuid_usuario != ctx.actor_uuid:
+            if not abiertas:
+                motivo = "sin_sesion_abierta"
+            elif len(abiertas) > 1:
+                motivo = "varias_sesiones_abiertas"
+            else:
+                motivo = "sesion_ajena"
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "cierre_dia_requiere_sesion_propia_unica",
+                    "motivo": motivo,
+                    "abiertas": len(abiertas),
+                },
+                headers=no_store,
+            )
         esperado_efectivo = (
             await repo_arqueo.calcular_esperado_cierre_dia(
                 session,
