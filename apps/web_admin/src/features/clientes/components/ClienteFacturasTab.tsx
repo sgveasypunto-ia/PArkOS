@@ -12,8 +12,14 @@
  * this tab never reads that top-level field, only the per-row
  * `ReporteFacturaItem.uuid_sucursal`, rendered as its own column since
  * rows here can come from different branches.
+ *
+ * HU-X.2: each row has a trailing "Detalle" `<Link>` (REQ-X-09) so the
+ * admin can drill into the per-factura page (HU-X.1b) without leaving
+ * the cliente context.
  */
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router-dom';
+import { ExternalLink } from 'lucide-react';
 import useSWR from 'swr';
 
 import {
@@ -102,6 +108,9 @@ export function ClienteFacturasTab({ uuidCliente }: ClienteFacturasTabProps): JS
           <TableHead scope="col">{t('clienteFacturas.iva', 'IVA')}</TableHead>
           <TableHead scope="col">{t('clienteFacturas.total', 'Total')}</TableHead>
           <TableHead scope="col">{t('clienteFacturas.estado', 'Estado')}</TableHead>
+          <TableHead scope="col" className="text-right">
+            {t('clienteFacturas.acciones', 'Detalle')}
+          </TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -123,6 +132,16 @@ export function ClienteFacturasTab({ uuidCliente }: ClienteFacturasTabProps): JS
                   ? t('clienteFacturas.estadoVigente', 'Vigente')
                   : t('clienteFacturas.estadoAnulada', 'Anulada')}
               </Badge>
+            </TableCell>
+            <TableCell className="text-right">
+              <Link
+                to={`/facturacion/${row.uuid}`}
+                className="inline-flex items-center gap-1 text-sm text-primary underline-offset-2 hover:underline"
+                data-testid={`cliente-factura-detalle-${row.uuid}`}
+              >
+                {t('clienteFacturas.verDetalle', 'Ver detalle')}
+                <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+              </Link>
             </TableCell>
           </TableRow>
         ))}
