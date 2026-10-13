@@ -189,7 +189,7 @@ describe('<AlertasPanel /> — REQ-OPS-178 + REQ-OPS-182 (HU-F11.2)', () => {
     expect(beforeCount).toBe(11);
 
     // Click the `severidad=alta` filter chip via data-testid (chip
-    // carries role="switch", not role="button"). After the click
+    // is a toggle button (aria-pressed)). After the click
     // the panel MUST re-render with ONLY the alta subset.
     const altaChip = screen.getByTestId('chip-severidad-alta');
     fireEvent.click(altaChip);

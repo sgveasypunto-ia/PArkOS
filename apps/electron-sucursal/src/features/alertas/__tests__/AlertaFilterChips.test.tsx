@@ -15,8 +15,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 
+const TRANSLATIONS: Record<string, string> = {
+  'alertas:tipo.suscripcion_placa_quitada': 'Placa quitada de una suscripción',
+  'alertas:tipo.descuadre_critico': 'Descuadre crítico',
+  'alertas:dashboard.filters.severidad': 'Severidad',
+  'alertas:dashboard.filters.tipo': 'Tipo',
+};
+
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    t: (key: string, opts?: { defaultValue?: string }) => TRANSLATIONS[key] ?? opts?.defaultValue ?? key,
+  }),
 }));
 
 import { AlertaFilterChips } from '../components/AlertaFilterChips';
@@ -109,5 +118,53 @@ describe('<AlertaFilterChips /> — REQ-OPS-178 + DA-F11.2-3 (HU-F11.2)', () => 
     expect(screen.getByTestId('chip-severidad-alta')).toBeInTheDocument();
     expect(screen.getByTestId('chip-severidad-media')).toBeInTheDocument();
     expect(screen.getByTestId('chip-severidad-baja')).toBeInTheDocument();
+  });
+
+  it('FC5: tipo chip shows the translated label, never the raw code', () => {
+    render(
+      <AlertaFilterChips
+        alerts={[makeAlert('suscripcion_placa_quitada', 'baja')]}
+        activeSeveridad={new Set()}
+        activeTipoAlerta={new Set()}
+        onToggleSeveridad={() => undefined}
+        onToggleTipoAlerta={() => undefined}
+      />,
+    );
+    const chip = screen.getByTestId('chip-tipo-suscripcion_placa_quitada');
+    expect(chip.textContent).toBe('Placa quitada de una suscripción');
+    expect(chip.textContent).not.toContain('suscripcion_placa_quitada');
+  });
+
+  it('FC6: chips are toggle buttons (aria-pressed), not role="switch"', () => {
+    render(
+      <AlertaFilterChips
+        alerts={[makeAlert('descuadre_critico', 'alta')]}
+        activeSeveridad={new Set()}
+        activeTipoAlerta={new Set()}
+        onToggleSeveridad={() => undefined}
+        onToggleTipoAlerta={() => undefined}
+      />,
+    );
+    expect(screen.queryAllByRole('switch')).toHaveLength(0);
+    expect(screen.getByTestId('chip-tipo-descuadre_critico').getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByTestId('chip-severidad-alta').getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('FC7: severity and tipo chips live in their own labelled groups', () => {
+    render(
+      <AlertaFilterChips
+        alerts={[makeAlert('descuadre_critico', 'alta')]}
+        activeSeveridad={new Set()}
+        activeTipoAlerta={new Set()}
+        onToggleSeveridad={() => undefined}
+        onToggleTipoAlerta={() => undefined}
+      />,
+    );
+    const tipoGroup = screen.getByRole('group', { name: 'Tipo' });
+    const sevGroup = screen.getByRole('group', { name: 'Severidad' });
+    expect(tipoGroup).toContainElement(screen.getByTestId('chip-tipo-descuadre_critico'));
+    expect(tipoGroup).not.toContainElement(screen.getByTestId('chip-severidad-alta'));
+    expect(sevGroup).toContainElement(screen.getByTestId('chip-severidad-alta'));
+    expect(screen.getByText('Tipo')).toBeInTheDocument();
   });
 });
