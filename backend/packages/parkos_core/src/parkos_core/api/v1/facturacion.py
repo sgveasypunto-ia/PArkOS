@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import uuid as uuid_lib
 from decimal import Decimal
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import select
@@ -1313,11 +1314,19 @@ async def create_factura_electronica(
     status_code=200,
     summary=(
         "HU-F1.10 / REQ-OPS-068: GET FE row + latest envio_dian chain tip "
-        "via prod.v_factura_electronica_acuse view."
+        "via prod.v_factura_electronica_acuse view. "
+        "HU-X.8: when ``?uuid_factura=`` is supplied, looks up the FE by "
+        "the parent ``prod.facturas.uuid`` so the admin drill-down page "
+        "can render the FE card without knowing the FE uuid a priori."
     ),
     responses={
         403: {"description": "tenant_scope_violation"},
-        404: {"description": "factura_electronica_no_encontrada (V1)"},
+        404: {
+            "description": (
+                "factura_electronica_no_encontrada (V1) | "
+                "factura_sin_fe (when ?uuid_factura= has no FE row)"
+            )
+        },
     },
 )
 async def get_factura_electronica(
@@ -1326,11 +1335,17 @@ async def get_factura_electronica(
     session: AsyncSession = Depends(get_session),  # noqa: B008
     ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
     _claims: None = Depends(_fe_issuer_dep),
+    uuid_factura: Annotated[uuid_lib.UUID | None, Query()] = None,
 ) -> FacturaElectronicaRead:
-    """REQ-OPS-068: 3-step GET chain.
+    """REQ-OPS-068: 3-step GET chain (HU-X.8: also resolve by parent uuid_factura).
 
     Sequence:
         1. KD-3 issuer claims + no_store headers (DI)
+        1b. HU-X.8: if ``?uuid_factura=`` is supplied, look up the FE row
+            by the parent ``prod.facturas.uuid`` (V2). If no FE row exists
+            for that parent, return 404 (the FE card renders "FE no
+            generada"). The path param ``{uuid}`` is ignored in this
+            case; the FE uuid is read from the lookup.
         2. V1 SELECT prod.factura_electronica by uuid (404 if None)
         3. Tenant scope post-V1 (403 if operador cross-branch)
         4. JOIN prod.v_factura_electronica_acuse → latest envio_dian
@@ -1339,6 +1354,25 @@ async def get_factura_electronica(
         6. DEC-FE-06: Cache-Control: no-store header
     """
     no_store = no_store_headers()
+
+    # --- Step 1b: HU-X.8 -- resolve by parent uuid_factura (if given). -
+    if uuid_factura is not None:
+        fe_row_by_parent = await repo_factura_electronica.buscar_factura_electronica_por_factura(
+            session, uuid_factura=uuid_factura
+        )
+        if fe_row_by_parent is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "factura_sin_fe",
+                    "uuid_factura": str(uuid_factura),
+                },
+                headers=no_store,
+            )
+        # Use the FE uuid resolved from the parent lookup for the rest
+        # of the chain. The path param ``{uuid}`` is intentionally
+        # ignored in this branch.
+        uuid = fe_row_by_parent.uuid
 
     # --- Step 2: V1 (FE row exists). -----------------------------------
     fe_row, ack_row = await repo_factura_electronica.leer_factura_electronica_con_envio_via_view(
