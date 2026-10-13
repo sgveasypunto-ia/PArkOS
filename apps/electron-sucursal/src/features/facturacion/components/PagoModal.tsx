@@ -365,7 +365,6 @@ export function PagoModal({
   // wipe what the operator is typing.
   useEffect(() => {
     form.reset(buildDefaults(total_cop));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [total_cop, form]);
 
   // PT-1: surface every edit so the host keeps it across a "Volver".
