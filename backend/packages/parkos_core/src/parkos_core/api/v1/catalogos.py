@@ -621,6 +621,7 @@ async def _count_subscripciones_vigentes_dependientes(
             Vehiculos.uuid_tipo_vehiculo == tipo_vehiculo_uuid,
             Vehiculos.vigente_hasta.is_(None),
             SubscripcionVehiculos.vigente_hasta.is_(None),
+            SubscripcionVehiculos.estado == "activo",
             SubscripcionesCliente.vigente_hasta.is_(None),
         )
     )

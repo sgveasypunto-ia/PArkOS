@@ -1390,6 +1390,7 @@ async def resolve_active_subscription_for_exit(
             SubscripcionesCliente.uuid_sucursal == uuid_sucursal,  # R22 defense in depth
             SubscripcionesCliente.vigente_hasta.is_(None),
             SubscripcionVehiculos.vigente_hasta.is_(None),
+            SubscripcionVehiculos.estado == "activo",
             Vehiculos.vigente_hasta.is_(None),
             Vehiculos.placa == placa,
         )

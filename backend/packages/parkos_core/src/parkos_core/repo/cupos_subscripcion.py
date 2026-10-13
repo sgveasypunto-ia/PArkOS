@@ -347,15 +347,11 @@ async def quitar_vehiculo_de_subscripcion(
     actor_uuid: uuid_lib.UUID,
     uuid_sucursal: uuid_lib.UUID,
 ) -> SubscripcionVehiculos:
-    """Da de baja un vehículo inscrito -- ``close_and_insert`` bi-temporal
-    con ``estado='inactivo'`` (nunca DELETE).
+    """Da de baja un vehículo inscrito -- ``versioned.close_only`` (cierra la
+    fila vigente con ``estado='inactivo'``, sin fila de reemplazo; nunca DELETE).
 
-    Solo pasa ``new_attrs={"estado": "inactivo"}`` -- ``close_and_insert``
-    carga el resto de columnas (``uuid_subscripcion_cliente``,
-    ``uuid_vehiculo``) desde la fila vigente que cierra (ver
-    ``repo/versioned.py``), así que no hace falta resenviarlas. Se pasa
-    ``log_tx=False`` porque el log genérico no incluye la placa: acá se
-    escribe UNA fila de ``log_transaccional`` con ``datos_nuevos`` completos
+    El log genérico no incluye la placa: acá se escribe UNA fila de
+    ``log_transaccional`` con ``datos_nuevos`` completos
     (:func:`registrar_cambio_placa`) más la alerta info, en la misma
     transacción. Sin cobro ni reembolso.
 
@@ -389,13 +385,29 @@ async def quitar_vehiculo_de_subscripcion(
             f"subscripcion_vehiculos {uuid_subscripcion_vehiculo} not found in sucursal"
         )
 
-    cerrado = await versioned.close_and_insert(
+    # Baja SIN version de reemplazo: ``close_and_insert`` siempre inserta una
+    # fila nueva con ``vigente_hasta IS NULL`` (quedaria abierta e inactiva y
+    # los lectores que filtran solo por vigencia la verian como inscrita).
+    # ``close_only`` cierra (vigente_hasta=now, estado='inactivo') y listo.
+    cerrado = (
+        await session.execute(
+            select(SubscripcionVehiculos).where(
+                SubscripcionVehiculos.uuid == uuid_subscripcion_vehiculo,
+                SubscripcionVehiculos.vigente_hasta.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if cerrado is None:
+        raise versioned.RowNotFoundError(
+            f"subscripcion_vehiculos {uuid_subscripcion_vehiculo} not found"
+        )
+    uuid_sub_cliente = cerrado.uuid_subscripcion_cliente
+    uuid_vehiculo = cerrado.uuid_vehiculo
+    await versioned.close_only(
         session,
         SubscripcionVehiculos,
-        current_uuid=uuid_subscripcion_vehiculo,
-        new_attrs={"estado": "inactivo"},
+        uuid_subscripcion_vehiculo,
         actor_uuid=actor_uuid,
-        log_tx=False,
     )
     # Cualquier version del vehiculo sirve para recuperar la placa (si el
     # vehiculo fue versionado despues de inscribirse, la placa no cambia de
@@ -404,7 +416,7 @@ async def quitar_vehiculo_de_subscripcion(
         (
             await session.execute(
                 select(Vehiculos)
-                .where(Vehiculos.uuid == cerrado.uuid_vehiculo)
+                .where(Vehiculos.uuid == uuid_vehiculo)
                 .order_by(Vehiculos.vigente_desde.desc())
                 .limit(1)
             )
@@ -416,9 +428,9 @@ async def quitar_vehiculo_de_subscripcion(
         session,
         accion="quitar",
         uuid_sucursal=uuid_sucursal,
-        uuid_subscripcion_cliente=cerrado.uuid_subscripcion_cliente,
-        uuid_subscripcion_vehiculo=cerrado.uuid,
-        uuid_vehiculo=cerrado.uuid_vehiculo,
+        uuid_subscripcion_cliente=uuid_sub_cliente,
+        uuid_subscripcion_vehiculo=uuid_subscripcion_vehiculo,
+        uuid_vehiculo=uuid_vehiculo,
         placa=vehiculo.placa if vehiculo is not None else None,
         actor_uuid=actor_uuid,
     )
