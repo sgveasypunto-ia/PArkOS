@@ -99,6 +99,20 @@ describe('reporteOperacionalResponseSchema (HU-F17.2 additions)', () => {
     });
     expect(r.success).toBe(true);
   });
+
+  // HU-fix-reporteria-todas-sucursales: pinning the "Todas las
+  // sucursales" cross-branch response shape. The backend returns
+  // ``uuid_sucursal: null`` for the cross-branch aggregate
+  // (``ReporteOperacionalResponse.uuid_sucursal: UUID | None``), so
+  // the schema must accept it -- otherwise Zod raises
+  // ``invalid_type`` and the UI shows the bogus error alert.
+  it('accepts the cross-branch payload with uuid_sucursal=null', () => {
+    const r = reporteOperacionalResponseSchema.safeParse({
+      ...BASE_OPERACIONAL,
+      uuid_sucursal: null,
+    });
+    expect(r.success).toBe(true);
+  });
 });
 
 describe('reporteOcupacionHeatmapResponseSchema (HU-F17.2)', () => {
