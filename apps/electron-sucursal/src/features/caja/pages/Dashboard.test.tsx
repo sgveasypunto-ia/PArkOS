@@ -719,3 +719,27 @@ describe('<PlacaInputHero /> — placa con formato inválido (C)', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });
+
+describe('<Dashboard /> — panel de alertas alcanzable (D)', () => {
+  it('D1: dashboard-section-alertas NO vive bajo aria-hidden ni sr-only (controles enfocables alcanzables)', () => {
+    mockUseSesionActiva.mockReturnValue({
+      sesion: baseSesion,
+      isLoading: false,
+      error: undefined,
+      refresh: mockRefresh,
+    });
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>,
+    );
+
+    const seccion = screen.getByTestId('dashboard-section-alertas');
+    expect(seccion.closest('[aria-hidden="true"]')).toBeNull();
+    expect(seccion.closest('.sr-only')).toBeNull();
+    // Vive dentro de una Card visible del hub, junto a "Vehículos dentro".
+    expect(within(screen.getByTestId('alertas-card')).getByTestId('dashboard-section-alertas')).toBe(
+      seccion,
+    );
+  });
+});
