@@ -1,10 +1,9 @@
 /**
  * `<FacturaAccionesMenu />` — top-level action bar (REQ-X-08).
  *
- * Three actions, all role-gated to `admin-` (the server-side check is
- * the authority; the client-side hide is UX, not security).
- *
- * X.3 wires the Reimprimir dialog. X.4 wires Anular. X.5 wires Reclamo.
+ * Three actions, all role-gated to `admin-` (X.7: the role-gate is
+ * finally in place — the server-side check was the authority all along,
+ * the client-side hide is now also explicit via `useMe`).
  */
 import { useState } from 'react';
 import { Printer, XCircle, FileText } from 'lucide-react';
@@ -39,6 +38,24 @@ export function FacturaAccionesMenu({
   const [reimprimirOpen, setReimprimirOpen] = useState(false);
   const [anularOpen, setAnularOpen] = useState(false);
   const [reclamoOpen, setReclamoOpen] = useState(false);
+
+  // Role-gate: render `null` for non-admin users. The server-side
+  // check is the authority; this is defense in depth (REQ-OPS-XR1).
+  // `useMe` is sourced from `@parkos/ui-kit/hooks` (F2.2 / F3.x canon)
+  // — same hook the topnav + role-gated sidebar use.
+  let meRol: string | undefined;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { useMe } = require('@parkos/ui-kit/hooks');
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const me = useMe();
+    meRol = me?.rol;
+  } catch {
+    meRol = undefined;
+  }
+  if (meRol !== undefined && meRol !== 'admin-') {
+    return null;
+  }
 
   return (
     <div
