@@ -302,7 +302,7 @@ export default function Cupos(): JSX.Element {
       }));
   }, [sucursales, permitidas]);
 
-  const { cupos, refresh, isLoading, error } = useCantidadList();
+  const { cupos, refresh, isLoading, error } = useCantidadList(selectedSucursal);
   const { tipos: tiposVehiculo, refresh: refreshTipos } = useTiposVehiculo();
   const { mutate: globalMutate } = useSWRConfig();
   const [editing, setEditing] = useState<Cupo | null>(null);

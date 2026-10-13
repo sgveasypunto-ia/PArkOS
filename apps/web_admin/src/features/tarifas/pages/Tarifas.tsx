@@ -331,7 +331,7 @@ export default function Tarifas(): JSX.Element {
       }));
   }, [sucursales, permitidas]);
 
-  const { tarifas, refresh, isLoading, error } = useTarifasList(null);
+  const { tarifas, refresh, isLoading, error } = useTarifasList(selectedSucursal);
   const { tipos: tiposVehiculo } = useTiposVehiculo();
   const { mutate: globalMutate } = useSWRConfig();
   const [editingGrupo, setEditingGrupo] = useState<TarifaAgrupada | null>(null);
