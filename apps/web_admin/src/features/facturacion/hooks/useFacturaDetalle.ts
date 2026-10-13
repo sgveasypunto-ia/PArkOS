@@ -7,7 +7,7 @@
  *   - `detalle`   — `GET /facturacion/factura-detalle?uuid_factura=...`
  *   - `impuestos` — `GET /facturacion/factura-impuestos?uuid_factura=...`
  *   - `pagos`     — `GET /facturacion/factura-pagos?uuid_factura=...` (X.1a fix)
- *   - `fe`        — `GET /facturacion/factura-electronica/{uuid}` (optional)
+ *   - `fe`        — `GET /facturacion/factura-electronica?uuid_factura=...` (HU-X.8)
  *   - `hash`      — `GET /admin/log-transaccional?tabla_afectada=factura&limit=20`
  *                   (filtered client-side for the matching `uuid_referencia`)
  *
@@ -26,7 +26,7 @@ import useSWR from 'swr';
 import {
   fetchFacturaByUuid,
   fetchFacturaDetalle,
-  fetchFacturaElectronicaByUuid,
+  fetchFacturaElectronicaByFacturaUuid,
   fetchFacturaHash,
   fetchFacturaImpuestos,
   fetchFacturaPagos,
@@ -107,15 +107,13 @@ export function useFacturaDetalle(uuid: string | null): {
     () => fetchFacturaPagos(uuid as string),
     STALE,
   );
-  // FE only fires when header loaded and points to a real FE uuid. The
-  // GET /factura-electronica/{uuid} endpoint takes the FE uuid (NOT the
-  // factura uuid). The shape `uuid_factura_electronica` is OPTIONAL in
-  // the display — when the factura has no FE row, the SWR key is null
-  // and the page renders the "FE no generada" card.
-  const feUuid = header.data?.uuid as string | undefined;
+  // FE only fires when the header is loaded (we need the FACTURA uuid to
+  // resolve the FE row via the `?uuid_factura=` query param, HU-X.8). The
+  // path-based endpoint `GET /factura-electronica/{uuid}` is still
+  // exported for backwards-compat but is NOT used here.
   const fe = useSWR<FacturaElectronicaRead>(
-    feUuid ? facturaFeKey(feUuid) : null,
-    () => fetchFacturaElectronicaByUuid(feUuid as string),
+    header.data ? facturaFeKey(header.data.uuid) : null,
+    () => fetchFacturaElectronicaByFacturaUuid(header.data?.uuid as string),
     STALE,
   );
   const hash = useSWR<LogTransaccionalList>(

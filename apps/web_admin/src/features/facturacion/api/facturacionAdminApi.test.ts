@@ -1,13 +1,16 @@
 /**
  * `facturacionAdminApi.test.ts` — unit tests for the HU-X API client.
  *
- * Pure unit tests (no DB, no MSW). The 4 scenarios mirror the wire
+ * Pure unit tests (no DB, no MSW). The scenarios mirror the wire
  * drift cases the schema is designed to catch:
  *
  *   1. `fetchFacturaByUuid` parses BE response (Decimal as string).
  *   2. `fetchFacturaPagos` adds `?uuid_factura=...` to the query.
  *   3. `fetchFacturaElectronicaByUuid` throws `FacturacionHttpError` on 404.
  *   4. `findHashForFactura` matches the right `uuid_referencia` from a list.
+ *   5. HU-X.8: `fetchFacturaElectronicaByFacturaUuid` adds
+ *      `?uuid_factura=...` (replaces the broken X.1a pass that used the
+ *      FACTURA uuid on the FE path-based endpoint, producing 404 noise).
  *
  * Mocks `parkosFetchRaw` (from `@/lib/fetch`) so the test stays
  * synchronous on the network and we can exercise both the happy path
@@ -31,6 +34,7 @@ import {
   FacturacionHttpError,
   fetchFacturaByUuid,
   fetchFacturaDetalle,
+  fetchFacturaElectronicaByFacturaUuid,
   fetchFacturaElectronicaByUuid,
   fetchFacturaImpuestos,
   fetchFacturaPagos,
@@ -156,6 +160,25 @@ describe('facturacionAdminApi', () => {
     expect(calledUrl).toContain('/admin/log-transaccional');
     expect(calledUrl).toContain('tabla_afectada=factura');
     expect(calledUrl).toContain('limit=20');
+  });
+
+  it('fetchFacturaElectronicaByFacturaUuid adds ?uuid_factura= to the query (HU-X.8)', async () => {
+    const FACTURA_UUID = 'd8c22ebb-948e-4745-aaa1-52e0a698124a';
+    mockedFetch.mockResolvedValueOnce(
+      ok({
+        uuid: '55555555-5555-5555-5555-555555555555',
+        prefijo: 'SETP',
+        consecutivo: 42,
+        estado_dian: 'aceptado',
+        cufe: 'abc-cufe-by-parent',
+      }),
+    );
+    const fe = await fetchFacturaElectronicaByFacturaUuid(FACTURA_UUID);
+    expect(fe.estado_dian).toBe('aceptado');
+    const calledUrl = mockedFetch.mock.calls[0][0] as string;
+    expect(calledUrl).toContain(
+      `/api/v1/facturacion/factura-electronica?uuid_factura=${FACTURA_UUID}`,
+    );
   });
 
   it('findHashForFactura matches the right uuid_referencia', () => {
