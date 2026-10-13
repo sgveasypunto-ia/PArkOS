@@ -41,7 +41,8 @@ from __future__ import annotations
 import uuid as uuid_lib
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth.tenancy import TenantContext, get_tenant_ctx
@@ -57,6 +58,10 @@ from ...repo import factura as repo_factura
 from ...repo.factura_detalle import crear_factura_detalle_bulk
 from ...repo.fe_emision import emitir_fe_para_pago, es_despliegue_nube
 from ...repo.impuestos import desglosar_iva_incluido, obtener_iva_vigente
+from ...repo.pagination import Cursor as _Cursor
+from ...repo.pagination import InvalidCursorError
+from ...repo.pagination import decode as _cursor_decode
+from ...repo.pagination import encode as _cursor_encode
 from ...repo.sesion_activa import resolver_sesion_de_pago
 from ...schemas.facturacion import (
     FacturaCreate,
@@ -74,10 +79,8 @@ from ...schemas.facturacion import (
     FacturaOtrosCobrosUpdate,
     FacturaPagoAdicionalCreate,
     FacturaPagoRead,
-    FacturaPagosCreate,
     FacturaPagosRead,
     FacturaPagosReadList,
-    FacturaPagosUpdate,
     FacturaRead,
     FacturasCreate,
     FacturaServicioCreate,
@@ -86,7 +89,7 @@ from ...schemas.facturacion import (
     FacturasUpdate,
 )
 from ..deps import requires_issuer
-from ..router_factory import make_router
+from ..router_factory import _parse_cursor_timestamp, make_router
 from ._factura_display import build_display_factura
 from ._helpers import apply_no_store_header, no_store_headers, voucher_duplicado_http
 
@@ -167,14 +170,21 @@ _mount_factura(
     create_schema=FacturaOtrosCobrosCreate,
     update_schema=FacturaOtrosCobrosUpdate,
 )
-_mount_factura(
-    resource="factura-pagos",
-    model_cls=FacturaPagos,
-    read_schema=FacturaPagosRead,
-    read_list_schema=FacturaPagosReadList,
-    create_schema=FacturaPagosCreate,
-    update_schema=FacturaPagosUpdate,
-)
+# NOTE: ``factura-pagos`` does NOT use ``make_router`` (HU-X.1a /
+# REQ-OPS-203). The factory defines ``list_endpoint(cursor, limit, ...)``
+# without a ``Query('uuid_factura', ...)`` param, so FastAPI silently
+# discards any ``?uuid_factura=...`` the client sends — the filter is
+# applied to the URL but never to the SQL. To keep the surface
+# contract-driven (and the diff small), we mount TWO custom handlers
+# (list + single-read) AFTER the ``_facturacion_issuer_dep`` declaration
+# below. They re-implement the factory's behaviour and add the missing
+# ``uuid_factura`` filter. Verified with 4 curl scenarios (see
+# ``openspec/changes/hu-x-facturacion-admin/exploration.md`` §2.4).
+# Tenant scope: ``do_orm_execute`` listener auto-filters by
+# ``uuid_sucursal`` because ``FacturaPagos`` carries its own
+# ``uuid_sucursal`` column (the listener in ``db/tenancy.py`` matches
+# any model with that column).
+
 
 # ---------------------------------------------------------------------------
 # HU-F1.9 — custom write endpoints (POST /factura + POST /factura-pagos).
@@ -190,6 +200,115 @@ _mount_factura(
 # KD-3: issuer chain. Operador (cajero role) emits facturas; admin may
 # cross-branch. Aligned with the PR6 CRUD mount (operador-,admin-).
 _facturacion_issuer_dep = requires_issuer("operador-", "admin-")
+
+
+# ---------------------------------------------------------------------------
+# HU-X.1a — custom list + read handlers for ``factura-pagos`` (REQ-OPS-203).
+# Mounted here so the ``_facturacion_issuer_dep`` symbol is in scope at
+# the default-arg evaluation time (Python's late binding for default
+# args). Equivalent to what the factory's ``list_endpoint`` does, with
+# ONE addition: ``?uuid_factura=`` is honoured.
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/factura-pagos",
+    response_model=FacturaPagosReadList,
+    summary="HU-X.1a / REQ-OPS-203: list ``prod.factura_pagos`` rows, optional ``?uuid_factura=`` filter.",
+    responses={
+        400: {"description": "invalid_cursor"},
+    },
+)
+async def list_factura_pagos(
+    cursor: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    uuid_factura: uuid_lib.UUID | None = Query(None),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_facturacion_issuer_dep),
+) -> FacturaPagosReadList:
+    """List ``prod.factura_pagos`` rows.
+
+    Filters and pagination mirror the generic ``make_router`` list
+    endpoint, with ONE addition: ``?uuid_factura=`` is honoured
+    (factory silently drops it because the param is not declared).
+
+    The filter is applied BEFORE the cursor pagination so the cursor
+    stays consistent within the filtered set (REQ-OPS-203 #4).
+    Tenant scope is enforced by ``do_orm_execute`` (``uuid_sucursal``
+    on ``FacturaPagos``).
+    """
+    try:
+        decoded = _cursor_decode(cursor) if cursor else None
+    except InvalidCursorError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_cursor", "detail": str(exc)},
+        ) from exc
+
+    stmt = select(FacturaPagos).order_by(
+        FacturaPagos.created_at.asc(), FacturaPagos.uuid.asc()
+    )
+    if uuid_factura is not None:
+        stmt = stmt.where(FacturaPagos.uuid_factura == uuid_factura)
+    if decoded is not None:
+        # ``created_at`` is the cursor field for [A] tables (the factory
+        # uses ``_order_key`` which falls back to ``created_at`` when
+        # ``vigente_desde`` is absent — same here).
+        cursor_ts = _parse_cursor_timestamp(decoded.created_at)  # type: ignore[attr-defined]
+        stmt = stmt.where(
+            (FacturaPagos.created_at < cursor_ts)
+            | (
+                (FacturaPagos.created_at == cursor_ts)
+                & (FacturaPagos.uuid > uuid_lib.UUID(decoded.uuid))  # type: ignore[attr-defined]
+            )
+        )
+    stmt = stmt.limit(limit + 1)
+
+    result = await session.execute(stmt)
+    rows = list(result.scalars().all())
+
+    next_cursor: str | None = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1]
+        next_cursor = _cursor_encode(
+            _Cursor(
+                created_at=last.created_at.isoformat(),
+                uuid=str(last.uuid),
+            )
+        )
+
+    items = [FacturaPagosRead.model_validate(row) for row in rows]
+    return FacturaPagosReadList(items=items, next_cursor=next_cursor)
+
+
+@router.get(
+    "/factura-pagos/{uuid}",
+    response_model=FacturaPagosRead,
+    summary="HU-X.1a: single-row read of ``prod.factura_pagos`` (REQ-OPS-203 backward-compat).",
+    responses={404: {"description": "not_found"}},
+)
+async def get_factura_pago(
+    uuid: uuid_lib.UUID,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_facturacion_issuer_dep),
+) -> FacturaPagosRead:
+    """Single-row read by uuid. Same contract as the factory's ``/{uuid}``.
+
+    Tenant scope enforced by ``do_orm_execute`` (uuid_sucursal column).
+    """
+    result = await session.execute(
+        select(FacturaPagos).where(FacturaPagos.uuid == uuid).limit(1)
+    )
+    row = result.scalars().first()
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "not_found", "uuid": str(uuid)},
+        )
+    return FacturaPagosRead.model_validate(row)
 
 
 @router.post(

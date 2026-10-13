@@ -89,16 +89,32 @@ def test_post_factura_registered_with_correct_response_model() -> None:
 
 
 def test_post_factura_pagos_registered_with_correct_response_model() -> None:
-    """RED: ``POST /factura-pagos`` route is registered with status_code=201."""
+    """RED: ``POST /factura-pagos`` route is registered with status_code=201.
+
+    HU-X.1a: ``GET /facturacion/factura-pagos`` was previously mounted by
+    the ``make_router`` factory (which also added the list endpoint to
+    the same path). The factory mount is replaced by a custom handler
+    that honours ``?uuid_factura=...`` (REQ-OPS-203). The POST endpoint
+    here is the F1.9 ``create_factura_pago`` handler (custom, line ~650
+    in ``facturacion.py``) which stays mounted. The assertion looks for
+    the POST specifically — the GET is a separate route added by the
+    same module's custom handler.
+    """
     from fastapi.routing import APIRoute
     from parkos_core.schemas.facturacion import FacturaPagoRead
 
     mod = _load_handler_module()
     routes = [r for r in mod.router.routes if isinstance(r, APIRoute)]
-    pagos_routes = [r for r in routes if r.path == "/facturacion/factura-pagos"]
-    assert pagos_routes, "POST /facturacion/factura-pagos route not registered"
-    assert pagos_routes[0].status_code == 201
-    assert pagos_routes[0].response_model is FacturaPagoRead
+    # Find the POST specifically — the same path also has a GET list
+    # (custom, X.1a). Both live at ``/facturacion/factura-pagos``.
+    post_routes = [
+        r
+        for r in routes
+        if r.path == "/facturacion/factura-pagos" and "POST" in r.methods
+    ]
+    assert post_routes, "POST /facturacion/factura-pagos route not registered"
+    assert post_routes[0].status_code == 201
+    assert post_routes[0].response_model is FacturaPagoRead
 
 
 def test_create_factura_includes_all_12_step_markers() -> None:
