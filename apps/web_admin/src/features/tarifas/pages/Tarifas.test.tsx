@@ -583,8 +583,9 @@ describe('Tarifas page', () => {
     // ``Cupos.test.tsx::CP16``): after editing a tarifa and
     // reopening the "Ver histórico" panel, the panel kept showing
     // the pre-edit chain. Root cause: ``useTarifasList::refresh``
-    // only invalidates the 'tarifas-list' key, not the 4-way
-    // by-key fan-out (one cache per ``TIPO_TARIFA_UUIDS``). The
+    // only invalidates the list SWR cache (branch-scoped since the
+    // 2026-10-13 fix, key ``['tarifas-list', sucursal]``), not the
+    // 4-way by-key fan-out (one cache per ``TIPO_TARIFA_UUIDS``). The
     // fix (``Tarifas.tsx::invalidateByKey``) explicitly mutates
     // all 4 by-key keys after a successful write.
     //
@@ -1284,5 +1285,92 @@ describe('Tarifas page', () => {
     expect(window.localStorage.getItem('parkos.lastSelectedSucursal')).toBe(
       SUCURSAL_2,
     );
+  });
+
+  it('TP21: switching the active branch re-fetches the list and shows rows for the new branch (no F5)', async () => {
+    // Operator-reported bug (2026-10-13): on /dashboard, the
+    // "TARIFAS VIGENTES" quick-link showed 0 (or the wrong number)
+    // for the freshly-picked branch, and only updated after a hard
+    // refresh. Same symptom inside /tarifas: changing the inline
+    // branch picker left the list showing rows for the previous
+    // branch (or empty if the BE filtered them out), forcing an F5.
+    //
+    // Root cause: ``useTarifasList`` used a static SWR key
+    // ``'tarifas-list'`` but the BE filters the list by
+    // ``X-Sucursal-Context`` (HU-F15.1 BR4 + tenant listener). The
+    // static key meant SWR served the previous branch's data within
+    // the 5-minute deduping interval.
+    //
+    // Fix: branch-scoped SWR key ``['tarifas-list', sucursal]`` so
+    // each branch has its own cache entry and changing the active
+    // branch triggers a fresh fetch.
+    //
+    // Regression assertions:
+    //   1. The list mock is called TWICE (once per branch selection).
+    //   2. The grouped list for SUCURSAL_1 only shows the SUCURSAL_1
+    //      grupo (1 row per (sucursal, tipo_vehiculo)).
+    //   3. After switching to SUCURSAL_2, the list mock's second
+    //      response (SUCURSAL_2 grupo) is what renders — not a stale
+    //      SUCURSAL_1 row.
+    const SUCURSAL_2_TIPO_TARIFA = '00000000-0000-0000-0000-0000000000b1';
+    const SUCURSAL_2_TIPO_VEHICULO = '00000000-0000-0000-0000-000000000002';
+    const SUCURSAL_1_TARIFA = {
+      ...SAMPLE_TARIFA,
+      uuid: 'aaaaaaaa-1111-1111-1111-111111111111',
+      uuid_sucursal: SUCURSAL_1,
+      uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000001',
+      uuid_tipo_tarifa: SAMPLE_TARIFA.uuid_tipo_tarifa,
+    };
+    const SUCURSAL_2_TARIFA = {
+      ...SAMPLE_TARIFA,
+      uuid: 'ccccccc1-2222-2222-2222-222222222222',
+      uuid_sucursal: SUCURSAL_2,
+      uuid_tipo_vehiculo: SUCURSAL_2_TIPO_VEHICULO,
+      uuid_tipo_tarifa: SUCURSAL_2_TIPO_TARIFA,
+      vigente_desde: '2026-09-15T00:00:00',
+    };
+    const SUCURSAL_2_GRUPO_KEY = grupoKeyFor(
+      SUCURSAL_2,
+      SUCURSAL_2_TIPO_VEHICULO,
+      SUCURSAL_2_TARIFA.vigente_desde,
+    );
+    mockedListSucursales.mockResolvedValue([
+      { uuid: SUCURSAL_1, nombre: 'Sucursal Centro', prefijo_nombre: 'CEN' },
+      { uuid: SUCURSAL_2, nombre: 'Sucursal Norte', prefijo_nombre: 'NOR' },
+    ]);
+    // First list call (SUCURSAL_1 mount): one tarifa row.
+    // Second list call (after switching to SUCURSAL_2): one tarifa row
+    // for SUCURSAL_2.
+    mockedListTarifas
+      .mockResolvedValueOnce([SUCURSAL_1_TARIFA])
+      .mockResolvedValueOnce([SUCURSAL_2_TARIFA]);
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    const user = userEvent.setup();
+    render(<Tarifas />, { wrapper: fullWrapper });
+    // (1) Initial mount fetched for SUCURSAL_1.
+    await waitFor(() =>
+      expect(screen.getByTestId(`tarifa-row-${SAMPLE_GRUPO_KEY}`)).toBeInTheDocument(),
+    );
+    expect(mockedListTarifas).toHaveBeenCalledTimes(1);
+    // (2) Switch the active branch via the inline combobox.
+    const input = screen.getByTestId('tarifas-branch-combobox');
+    await user.click(input);
+    const newOption = await screen.findByTestId(
+      `tarifas-branch-combobox-option-${SUCURSAL_2}`,
+    );
+    await user.click(newOption);
+    // (3) The branch-scoped SWR key change triggers a refetch — the
+    // mock must be called a second time (NOT served from the stale
+    // SUCURSAL_1 cache).
+    await waitFor(() => expect(mockedListTarifas).toHaveBeenCalledTimes(2));
+    // (4) The list shows the SUCURSAL_2 grupo, NOT the SUCURSAL_1 row.
+    await waitFor(() =>
+      expect(
+        screen.getByTestId(`tarifa-row-${SUCURSAL_2_GRUPO_KEY}`),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByTestId(`tarifa-row-${SAMPLE_GRUPO_KEY}`),
+    ).not.toBeInTheDocument();
   });
 });
