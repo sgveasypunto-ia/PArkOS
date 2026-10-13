@@ -39,6 +39,7 @@ import {
   Building2,
   FolderTree,
   Landmark,
+  Receipt,
   Send,
   Users,
 } from 'lucide-react';
@@ -66,6 +67,7 @@ export interface HubCard {
     | 'arqueos'
     | 'alertas'
     | 'dian'
+    | 'facturacion'
     | 'auditoria';
   path: string;
   icon: LucideIcon;
@@ -151,6 +153,18 @@ export const HUB_CARDS: readonly HubCard[] = [
     descriptionKey: 'homeHub.dian.description',
     permission: null,
     testId: 'home-hub-card-dian',
+  },
+  {
+    // HU-X.6: entry point for the admin facturacion surface. Routes
+    // to the reporteria financiera tab (the list) — the drill-down
+    // link in each row takes the admin to the per-factura page (HU-X.1b).
+    key: 'facturacion',
+    path: '/reporteria/financiera',
+    icon: Receipt,
+    labelKey: 'homeHub.facturacion.label',
+    descriptionKey: 'homeHub.facturacion.description',
+    permission: 'emitir_factura',
+    testId: 'home-hub-card-facturacion',
   },
   {
     key: 'auditoria',
