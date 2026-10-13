@@ -56,7 +56,7 @@ from ..runtime.tiempo import hoy_bogota
 from . import hash_chain
 from . import placa as repo_placa
 from . import versioned
-from .tipo_persona import resolve_uuid_tipo_persona
+from .tipo_persona import _tipo_persona_catalogo, resolve_uuid_tipo_persona
 
 __all__ = [
     "CantidadMaximaExcedidaError",
@@ -69,6 +69,7 @@ __all__ = [
     "TipoSubscripcionNoEncontradoError",
     "TipoSubscripcionNoVigenteError",
     "TipoVehiculoIncompatibleError",
+    "PlanTipoClienteIncompatibleError",
     "TipoVehiculoPlanIncompatibleError",
     "buscar_cliente_por_uuid_o_crear",
     "buscar_cliente_por_uuid_o_crear_existente",
@@ -87,6 +88,7 @@ __all__ = [
     "validar_placas_mismo_tipo_vehiculo",
     "validar_placas_no_duplicadas",
     "PlacaDuplicadaEnVentaError",
+    "validar_tipo_cliente_del_plan",
     "validar_tipo_vehiculo_del_plan",
 ]
 
@@ -229,6 +231,18 @@ class TipoVehiculoPlanIncompatibleError(TipoVehiculoIncompatibleError):
     ) -> None:
         self.tipo_plan = tipo_plan
         super().__init__(tipos_encontrados=tipos_encontrados)
+
+
+class PlanTipoClienteIncompatibleError(Exception):
+    """#14 -- the cliente type does not match ``plan.tipo_cliente_permitido`` (422)."""
+
+    def __init__(self, *, tipo_cliente_permitido: str, tipo_cliente: str) -> None:
+        self.tipo_cliente_permitido = tipo_cliente_permitido
+        self.tipo_cliente = tipo_cliente
+        super().__init__(
+            "plan_tipo_cliente_incompatible: "
+            f"permitido={tipo_cliente_permitido}, cliente={tipo_cliente}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -421,6 +435,24 @@ def validar_tipo_vehiculo_del_plan(
         raise TipoVehiculoPlanIncompatibleError(
             tipo_plan=tipo_plan,
             tipos_encontrados=sorted(str(t) for t in tipos),
+        )
+
+
+def validar_tipo_cliente_del_plan(*, plan: TipoSubscripciones, cliente: object) -> None:
+    """#14: the cliente's persona type must match ``plan.tipo_cliente_permitido``.
+
+    ``NULL`` means "any client". The persona type is derived from
+    ``cliente.tipo_identificador`` with the same rule as
+    :func:`repo.tipo_persona.resolve_uuid_tipo_persona` (NIT -> juridica,
+    otherwise natural). Raises :class:`PlanTipoClienteIncompatibleError`.
+    """
+    permitido = getattr(plan, "tipo_cliente_permitido", None)
+    if not isinstance(permitido, str) or not permitido:
+        return
+    tipo = _tipo_persona_catalogo(getattr(cliente, "tipo_identificador", None))
+    if tipo != permitido:
+        raise PlanTipoClienteIncompatibleError(
+            tipo_cliente_permitido=permitido, tipo_cliente=tipo
         )
 
 

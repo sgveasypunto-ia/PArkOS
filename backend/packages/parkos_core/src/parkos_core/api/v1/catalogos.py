@@ -42,6 +42,7 @@ factory sub-router and therefore still require ``X-Sucursal-Context`` for
 from __future__ import annotations
 
 import uuid as uuid_lib
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import func, select
@@ -192,6 +193,13 @@ def _register_global_catalog_reads(
                 "tipo de vehiculo MAS los planes sin tipo (NULL = cualquier tipo)."
             ),
         ),
+        tipo_cliente: Literal["natural", "juridica"] | None = Query(
+            None,
+            description=(
+                "Solo ``tipo-subscripciones`` (#14): devuelve los planes cuyo "
+                "``tipo_cliente_permitido`` coincide MAS los planes sin restriccion (NULL)."
+            ),
+        ),
         session: AsyncSession = Depends(get_session),
         _claims: None = Depends(_catalog_reads_issuer_dep),
     ):
@@ -205,6 +213,19 @@ def _register_global_catalog_reads(
         stmt = select(model_cls)
         if hasattr(model_cls, "vigente_hasta"):
             stmt = stmt.where(model_cls.vigente_hasta.is_(None))
+        if model_cls is TipoSubscripciones:
+            # #12: a closed/inactive plan must never be sold.
+            stmt = stmt.where(TipoSubscripciones.estado == "activo")
+        if tipo_cliente is not None:
+            if model_cls is not TipoSubscripciones:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"error": "filter_not_supported", "detail": "tipo_cliente"},
+                )
+            stmt = stmt.where(
+                (TipoSubscripciones.tipo_cliente_permitido == tipo_cliente)
+                | TipoSubscripciones.tipo_cliente_permitido.is_(None)
+            )
         if uuid_tipo_vehiculo is not None:
             if model_cls is not TipoSubscripciones:
                 raise HTTPException(

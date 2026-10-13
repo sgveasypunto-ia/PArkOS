@@ -59,6 +59,7 @@ import {
   VentaSuscripcionTipoIncompatibleError,
   VentaSuscripcionCantidadMaximaError,
   VentaSuscripcionFechaFinError,
+  VentaSuscripcionPlanTipoClienteError,
   VentaSuscripcionValidationError,
   type VentaSuscripcionCreate,
 } from '../hooks/useVentaSuscripcion';
@@ -73,6 +74,7 @@ import { calcularFechaFinCobertura, validarFechaFin } from '../lib/vigencia';
 import { buildClienteVentaPayload } from '../lib/clienteVentaPayload';
 import { validarIdentificacion } from '../../../lib/validation/identificacion';
 import { validarNitModulo11 } from '../../../lib/validation/nit';
+import { PLACEHOLDER_PLACA_AUTO, PLACEHOLDER_PLACA_MOTO } from '../../../lib/validation/placa';
 import { mensajeIdentificacion } from '../../../lib/validation/mensajesIdentificacion';
 
 /**
@@ -151,14 +153,16 @@ const clienteSchema = z
     } else {
       const dv = values.dv.trim();
       if (dv) {
-        if (
-          !/^[0-9]$/.test(dv) ||
-          !validarNitModulo11(values.numero_identificacion, dv).ok
-        ) {
+        const nit = /^[0-9]$/.test(dv)
+          ? validarNitModulo11(values.numero_identificacion, dv)
+          : null;
+        if (!nit?.ok) {
+          // `dv_invalido:<dv>` deja que el mensaje diga cuál es el DV correcto.
+          const dvEsperado = nit && !nit.ok ? nit.dvEsperado : undefined;
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['dv'],
-            message: 'dv_invalido',
+            message: dvEsperado !== undefined ? `dv_invalido:${dvEsperado}` : 'dv_invalido',
           });
         }
       }
@@ -263,6 +267,8 @@ export function Venta({
   const [planInput, setPlanInput] = useState('');
   const [cantidadError, setCantidadError] = useState<string | null>(null);
   const [cantidadInput, setCantidadInput] = useState('1');
+  // #14: the server rejected the plan for this client type -> shown at step 3.
+  const [planTipoClienteError, setPlanTipoClienteError] = useState(false);
   const [placasError, setPlacasError] = useState<string | null>(null);
   // Per-placa input draft state. Preserved across "Volver" (PT-1): going
   // back never discards what the operator already typed.
@@ -305,7 +311,14 @@ export function Venta({
     data: planes,
     error: planesError,
     isLoading: planesLoading,
-  } = useTiposSubscripciones(uuid_sucursal, state.uuid_tipo_vehiculo ?? null);
+  } = useTiposSubscripciones(
+    uuid_sucursal,
+    state.uuid_tipo_vehiculo ?? null,
+    // #14: el tipo de cliente se conoce desde el paso 1; el backend excluye
+    // los planes restringidos al otro tipo (p. ej. MENSUAL_EMPRESA a persona natural).
+    state.cliente ? (state.cliente.tipo_persona === 'empresa' ? 'juridica' : 'natural') : null,
+  );
+
 
   // El precio del plan INCLUYE el IVA: el backend cobra exactamente
   // `plan.valor` (clientes_venta.py: total == plan.valor) y el IVA es un
@@ -319,6 +332,15 @@ export function Venta({
       planes.find((p) => p.uuid === state.uuid_tipo_subscripcion) ?? null
     );
   }, [planes, state.uuid_tipo_subscripcion]);
+
+  // #15: validación al escribir; el chequeo de "Siguiente" queda de respaldo.
+  const cantidadLiveError = useMemo((): string | null => {
+    if (!selectedPlan || cantidadInput === '') return null;
+    const r = buildCantidadSchema(selectedPlan.cantidad_maxima_vehiculos).safeParse({
+      cantidad_vehiculos: cantidadInput,
+    });
+    return r.success ? null : (r.error.issues[0]?.message ?? 'invalid');
+  }, [selectedPlan, cantidadInput]);
   const totalPlan = selectedPlan?.valor ?? PLAN_PREVIEW_VALOR;
   const fechaInicioVenta = state.fecha_inicio_cobertura ?? hoyBogotaISO();
   // Fin que cubre el plan: tope de la fecha editable (solo se puede acortar).
@@ -393,7 +415,25 @@ export function Venta({
       return;
     }
     setClienteErrors({});
-    setState((s) => ({ ...s, paso: 2, cliente: parsed.data }));
+    // #14: si cambia el tipo de cliente, el plan elegido puede no ser válido
+    // para el nuevo tipo; se descarta todo lo que depende de él.
+    const tipoCambio =
+      state.cliente !== undefined && state.cliente.tipo_persona !== parsed.data.tipo_persona;
+    if (tipoCambio) {
+      setPlanInput('');
+      setCantidadInput('1');
+      setPlacasInputs([]);
+      setPagoDraft(null);
+      setPlanTipoClienteError(false);
+    }
+    setState((s) => ({
+      ...s,
+      paso: 2,
+      cliente: parsed.data,
+      ...(tipoCambio
+        ? { uuid_tipo_subscripcion: undefined, cantidad_vehiculos: undefined, placas: undefined }
+        : {}),
+    }));
   };
 
   const handlePaso2Siguiente = (): void => {
@@ -431,6 +471,7 @@ export function Venta({
       return;
     }
     const changed = parsed.data.uuid_tipo_subscripcion !== state.uuid_tipo_subscripcion;
+    setPlanTipoClienteError(false);
     if (changed) {
       setCantidadInput('1');
       setPlacasInputs([]);
@@ -619,6 +660,22 @@ export function Venta({
             }),
         );
         setFechaFinFoco((n) => n + 1);
+        return;
+      }
+      if (err instanceof VentaSuscripcionPlanTipoClienteError) {
+        // El plan no corresponde al tipo de cliente: se vuelve a elegir plan.
+        setPlanInput('');
+        setCantidadInput('1');
+        setPlacasInputs([]);
+        setPagoDraft(null);
+        setPlanTipoClienteError(true);
+        setState((s) => ({
+          ...s,
+          paso: 3,
+          uuid_tipo_subscripcion: undefined,
+          cantidad_vehiculos: undefined,
+          placas: undefined,
+        }));
         return;
       }
       if (
@@ -831,6 +888,17 @@ export function Venta({
               })}
             </p>
           )}
+          {planTipoClienteError && (
+            <p
+              role="alert"
+              className="text-sm text-destructive"
+              data-testid="venta-paso-3-plan-tipo-cliente-error"
+            >
+              {t('suscripciones:venta.errors.plan_tipo_cliente_incompatible', {
+                defaultValue: 'El plan elegido no está disponible para este tipo de cliente. Elegí otro plan.',
+              })}
+            </p>
+          )}
           {planesError && (
             <p
               role="alert"
@@ -951,20 +1019,20 @@ export function Venta({
             }}
             placeholder="1"
           />
-          {cantidadError && (
+          {(cantidadError ?? cantidadLiveError) && (
             <span
               data-testid="venta-cantidad-error"
               className="text-sm text-destructive"
               role="alert"
             >
-              {mensajeIdentificacion(cantidadError)}
+              {mensajeIdentificacion(cantidadError ?? cantidadLiveError)}
             </span>
           )}
           <Button
             type="button"
             data-testid="venta-paso-4-siguiente"
             onClick={handlePaso4Siguiente}
-            disabled={cantidadInput === '' || !selectedPlan}
+            disabled={cantidadInput === '' || !selectedPlan || cantidadLiveError !== null}
           >
             {t('suscripciones:venta.siguiente', { defaultValue: 'Siguiente' })}
           </Button>
@@ -1023,7 +1091,11 @@ export function Venta({
                       setPlacaFieldError((cur) => (cur?.indices.includes(i) ? null : cur));
                     }
                   }}
-                  placeholder="ABC123"
+                  placeholder={
+                    selectedTipoVehiculo?.tipo.trim().toLowerCase() === 'moto'
+                      ? PLACEHOLDER_PLACA_MOTO
+                      : PLACEHOLDER_PLACA_AUTO
+                  }
                 />
                 {placaFieldError?.indices.includes(i) && (
                   <p

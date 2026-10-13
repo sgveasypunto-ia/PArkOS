@@ -38,5 +38,10 @@ export function mensajeIdentificacion(
   codigo: string | null | undefined,
 ): string | undefined {
   if (!codigo) return undefined;
+  // `dv_invalido:<dv>` lleva el DV correcto calculado por el algoritmo DIAN.
+  const dvEsperado = /^dv_invalido:([0-9])$/.exec(codigo)?.[1];
+  if (dvEsperado !== undefined) {
+    return `${MENSAJES.dv_invalido} DV esperado: ${dvEsperado}`;
+  }
   return MENSAJES[codigo] ?? codigo;
 }

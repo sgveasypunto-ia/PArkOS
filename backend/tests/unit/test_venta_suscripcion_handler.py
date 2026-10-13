@@ -675,3 +675,37 @@ async def test_venta_suscripcion_422_placa_duplicada_en_la_venta(
     assert excinfo.value.headers == {"Cache-Control": "no-store"}
     assert crear_vehiculo.await_count == 0
     assert session.commit.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_venta_plan_juridica_a_cliente_natural_422() -> None:
+    """#14: MENSUAL_EMPRESA (juridica) sold to a natural client -> 422."""
+    from parkos_core.api.v1 import clientes_venta as handler_mod
+
+    payload = _build_payload(with_cliente=False, placas=["ABC123"])
+    plan = _make_plan()
+    plan.tipo_cliente_permitido = "juridica"
+    cliente_row = MagicMock()
+    cliente_row.uuid = uuid_lib.uuid4()
+    cliente_row.tipo_identificador = "CC"
+    session = MagicMock()
+    session.commit = AsyncMock()
+
+    with patch.object(
+        handler_mod.repo_venta, "buscar_tipo_subscripcion_vigente_por_uuid",
+        new=AsyncMock(return_value=plan),
+    ), patch.object(
+        handler_mod.repo_venta, "buscar_cliente_por_uuid_o_crear",
+        new=AsyncMock(return_value=cliente_row),
+    ):
+        with pytest.raises(HTTPException) as excinfo:
+            await handler_mod.venta_suscripcion(
+                response=_new_response(),
+                payload=payload,
+                session=session,
+                ctx=_make_ctx(),
+                _claims=None,
+            )
+    assert excinfo.value.status_code == 422
+    assert excinfo.value.detail["error"] == "plan_tipo_cliente_incompatible"
+    assert session.commit.await_count == 0
