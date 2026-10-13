@@ -66,6 +66,31 @@ class SalidaNoEncontrada(Exception):
     """
 
 
+class SalidaYaPagada(Exception):
+    """409 -- the salida already has a ``prod.facturas`` row.
+
+    Raised by ``anular_salida_no_pagada``: a billed salida can no longer
+    be annulled as "not paid" (fiscal integrity). Maps to HTTP 409
+    ``salida_ya_pagada`` by the handler.
+    """
+
+
+async def bloquear_salida(
+    session: AsyncSession, *, uuid_salida: uuid_lib.UUID
+) -> None:
+    """Serialize anular-no-pagada vs. facturar for the SAME salida.
+
+    ``pg_advisory_xact_lock`` (not ``FOR UPDATE``: ``prod.salidas`` is
+    ``[A]`` and ``rol_app`` has no UPDATE privilege). Held until the
+    caller's commit/rollback; both flows take it before their check, so
+    whichever runs second observes the other's committed row.
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+        {"k": f"salida:{uuid_salida}"},
+    )
+
+
 async def buscar_ingreso_activo_por_uuid(
     session: AsyncSession, *, uuid_ingreso: uuid_lib.UUID
 ) -> Ingreso | None:
@@ -248,6 +273,7 @@ async def anular_salida_no_pagada(
     # composite PK (uuid, fecha_retencion_hasta) so `session.get()`
     # would require both values — `select().where(uuid==...)` is the
     # idiomatic one-column lookup.
+    await bloquear_salida(session, uuid_salida=uuid_salida)
     stmt = select(Salidas).where(Salidas.uuid == uuid_salida)
     salida_row = (await session.execute(stmt)).scalar_one_or_none()
     if salida_row is None:
@@ -270,6 +296,20 @@ async def anular_salida_no_pagada(
     ).first()
     if already is not None:
         raise SalidaYaAnulada(str(uuid_salida))
+
+    # V3: not billed. A factura on this salida means the cobro happened;
+    # annulling it would leave a factura over an annulled salida.
+    billed = (
+        await session.execute(
+            text(
+                "SELECT 1 FROM prod.facturas f "
+                "WHERE f.uuid_salida = :uuid_salida LIMIT 1"
+            ),
+            {"uuid_salida": str(uuid_salida)},
+        )
+    ).first()
+    if billed is not None:
+        raise SalidaYaPagada(str(uuid_salida))
 
     # INSERT the annulment row. ``estado='ejecutada'`` is the
     # terminal state that the view's ``LEFT JOIN ... WHERE
@@ -297,6 +337,8 @@ __all__ = [
     "SalidaDuplicada",
     "SalidaNoEncontrada",
     "SalidaYaAnulada",
+    "SalidaYaPagada",
+    "bloquear_salida",
     "anular_salida_no_pagada",
     "buscar_ingreso_activo_por_uuid",
     "cotizar_para_salida",

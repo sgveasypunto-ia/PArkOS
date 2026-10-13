@@ -333,7 +333,12 @@ async def get_factura_pago(
                 "salida_no_encontrada (V1) | cliente_no_encontrado (V2)"
             )
         },
-        409: {"description": "factura_duplicada (one_factura_per_salida)"},
+        409: {
+            "description": (
+                "factura_duplicada (one_factura_per_salida) | "
+                "salida_anulada (anulacion ejecutada)"
+            )
+        },
         422: {
             "description": (
                 "nit_invalido (V5) | email_invalido | "
@@ -386,9 +391,19 @@ async def create_factura(
     # Resolved via dependency injection.
 
     # --- Step 2: V1 (salida existe y es facturable). -------------------
-    salida = await repo_factura.buscar_salida_facturable(
-        session, uuid_salida=payload.uuid_salida
-    )
+    try:
+        salida = await repo_factura.buscar_salida_facturable(
+            session, uuid_salida=payload.uuid_salida
+        )
+    except repo_factura.SalidaAnuladaError:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "salida_anulada",
+                "uuid_salida": str(payload.uuid_salida),
+            },
+            headers=no_store,
+        ) from None
     if salida is None:
         raise HTTPException(
             status_code=404,
