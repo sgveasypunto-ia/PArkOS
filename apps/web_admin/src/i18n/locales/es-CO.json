@@ -276,6 +276,94 @@
     "subtitle": "{{branches}} sucursal(es) autorizada(s) · {{alertas}} alertas · lag máximo {{lag}}.",
     "accessTitle": "Accesos rápidos"
   },
+  "facturacionAdmin": {
+    "header": {
+      "title": "Detalle de factura",
+      "subtitle": "Investigación transaccional y acciones de admin.",
+      "uuidLabel": "UUID",
+      "fechaLabel": "Fecha de emisión",
+      "subtotalLabel": "Subtotal",
+      "descuentoLabel": "Descuento",
+      "totalLabel": "Total",
+      "estadoLabel": "Estado",
+      "estadoVigente": "Vigente",
+      "estadoAnulada": "Anulada",
+      "numeroCompletoLabel": "Número",
+      "hashLabel": "Hash actual",
+      "copyTooltip": "Copiar",
+      "notFound": "Factura no encontrada",
+      "notFoundBackLink": "Volver a reportería financiera"
+    },
+    "cliente": {
+      "title": "Cliente",
+      "consumidorFinal": "Consumidor final"
+    },
+    "items": {
+      "title": "Líneas de la factura",
+      "concepto": "Concepto",
+      "cantidad": "Cantidad",
+      "valorUnitario": "Valor unitario",
+      "subtotal": "Subtotal"
+    },
+    "impuestos": {
+      "title": "Impuestos",
+      "nombre": "Impuesto",
+      "porcentaje": "%",
+      "baseCalculo": "Base",
+      "valor": "Valor"
+    },
+    "pagos": {
+      "title": "Pagos",
+      "timestamp": "Fecha",
+      "medioPago": "Medio",
+      "valor": "Valor",
+      "referencia": "Referencia",
+      "tipoMovimiento": "Tipo",
+      "tipoPago": "Pago",
+      "tipoReverso": "Reverso",
+      "tipoAjuste": "Ajuste",
+      "empty": "Sin pagos registrados."
+    },
+    "fe": {
+      "title": "Factura electrónica",
+      "prefijo": "Prefijo",
+      "consecutivo": "Consecutivo",
+      "estado": "Estado DIAN",
+      "estadoPendiente": "Pendiente",
+      "estadoEnviado": "Enviado",
+      "estadoAceptado": "Aceptado",
+      "estadoRechazado": "Rechazado",
+      "cufe": "CUFE",
+      "reintentar": "Reintentar envío",
+      "noGenerada": "Esta factura no tiene factura electrónica generada.",
+      "retrying": "Reintentando…"
+    },
+    "acciones": {
+      "reimprimir": "Reimprimir",
+      "anular": "Anular",
+      "reclamo": "Crear reclamo"
+    },
+    "dialogs": {
+      "motivoLabel": "Motivo",
+      "motivoPlaceholder": "Explicá el motivo (mínimo 10 caracteres)",
+      "motivoMinLength": "Mínimo 10 caracteres",
+      "descripcionLabel": "Descripción",
+      "descripcionPlaceholder": "Detalle adicional (mínimo 20 caracteres si la incluís)",
+      "cancelar": "Cancelar",
+      "confirmar": "Confirmar"
+    },
+    "errors": {
+      "headerFail": "No se pudo cargar la factura.",
+      "sectionFail": "No se pudo cargar esta sección.",
+      "retry": "Reintentar",
+      "actionFail": "No se pudo completar la acción."
+    },
+    "toasts": {
+      "reimpresionExitosa": "Reimpresión registrada: ",
+      "anulacionExitosa": "Anulación registrada: ",
+      "reclamoExitoso": "Reclamo registrado: "
+    }
+  },
   "catalogos": {
     "title": "Catálogos",
     "subtitle": "Editá los catálogos globales. \"Nueva versión\" publica un cambio sin perder la versión anterior.",
