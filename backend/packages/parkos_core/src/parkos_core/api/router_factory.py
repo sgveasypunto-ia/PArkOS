@@ -131,6 +131,7 @@ def make_router(
     write_enabled: bool = True,
     transition_states: list[str] | None = None,
     tenant_scoped: bool = True,
+    include_reads_in_schema: bool = True,
     after_update: Callable[..., Awaitable[None]] | None = None,
 ) -> APIRouter:
     """Build the C+Q+U router for ``model_cls``.
@@ -166,6 +167,11 @@ def make_router(
             rows matching the active branch (dropping the global row and
             every other branch's override), and editing a row outside that
             branch raised ``RowNotFoundError`` -> 500.
+        include_reads_in_schema: Whether the 3 GET routes appear in the OpenAPI
+            schema. Set ``False`` when another router registered earlier already
+            serves the same GET paths (``catalogos.py`` tenant-free reads), so
+            the duplicate operation does not overwrite the served one in
+            ``/openapi.json``. Routing is unaffected.
     """
     # ``after_update(session, old_uuid=..., new_row=..., actor_uuid=...)`` runs
     # inside the SAME transaction as the close+insert of a PUT (before the
@@ -186,7 +192,11 @@ def make_router(
     perm_dependency = require_permission(permission_required) if permission_required else None
 
     # --- READ: list with cursor pagination ---
-    @router.get("", response_model=read_list_schema)
+    @router.get(
+        "",
+        response_model=read_list_schema,
+        include_in_schema=include_reads_in_schema,
+    )
     async def list_endpoint(
         cursor: str | None = Query(None),
         limit: int = Query(50, ge=1, le=200),
@@ -255,7 +265,11 @@ def make_router(
         return read_list_schema(items=items, next_cursor=next_cursor)
 
     # --- READ: current single row ---
-    @router.get("/{uuid}", response_model=read_schema)
+    @router.get(
+        "/{uuid}",
+        response_model=read_schema,
+        include_in_schema=include_reads_in_schema,
+    )
     async def get_endpoint(
         uuid: uuid_lib.UUID = Path(...),
         session: AsyncSession = Depends(get_session),
@@ -283,7 +297,11 @@ def make_router(
     # --- READ: full history (all versions for the same business identity) ---
     if hasattr(model_cls, "vigente_hasta"):
 
-        @router.get("/{uuid}/history", response_model=list[read_schema])
+        @router.get(
+            "/{uuid}/history",
+            response_model=list[read_schema],
+            include_in_schema=include_reads_in_schema,
+        )
         async def history_endpoint(
             uuid: uuid_lib.UUID = Path(...),
             session: AsyncSession = Depends(get_session),
