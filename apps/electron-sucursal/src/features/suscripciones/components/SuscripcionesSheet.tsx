@@ -163,8 +163,9 @@ export function SuscripcionesSheet(): JSX.Element {
     // Por nombre (o identificación parcial) la lista ya cargada decide:
     // 1 coincidencia -> abre sus cupos; varias -> se elige en la lista.
     if (listaFiltrada.length > 1) return;
-    if (listaFiltrada.length === 1) {
-      handleVerCupos(listaFiltrada[0]);
+    const [unica] = listaFiltrada;
+    if (listaFiltrada.length === 1 && unica) {
+      handleVerCupos(unica);
       return;
     }
     try {

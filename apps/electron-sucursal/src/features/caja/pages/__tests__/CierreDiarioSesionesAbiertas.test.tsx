@@ -106,8 +106,8 @@ describe('CierreDiarioForm — sesiones abiertas (Caja bug 4)', () => {
   it('la insignia de estado distingue cerrada de abierta con el estado real del backend', () => {
     render(<Host sesiones={[ABIERTA, CERRADA]} reportado={50_000} />);
     const filas = screen.getAllByTestId('cierre-diario-sesion-row');
-    expect(filas[0].querySelector('span')?.className).toContain('bg-warning');
-    expect(filas[1].querySelector('span')?.className).toContain('bg-success');
+    expect(filas[0]?.querySelector('span')?.className).toContain('bg-warning');
+    expect(filas[1]?.querySelector('span')?.className).toContain('bg-success');
   });
 
   it('el encabezado de la columna de hora dice "Apertura", no "Base"', () => {

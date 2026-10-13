@@ -21,7 +21,7 @@ describe('errores de ingreso: ningún código crudo llega a la UI', () => {
   const codigos = new Set<string>();
   for (const archivo of ARCHIVOS) {
     const fuente = readFileSync(join(RAIZ, archivo), 'utf-8');
-    for (const m of fuente.matchAll(/setSubmitError\('([a-z0-9_]+)'\)/g)) codigos.add(m[1]);
+    for (const m of fuente.matchAll(/setSubmitError\('([a-z0-9_]+)'\)/g)) if (m[1]) codigos.add(m[1]);
   }
 
   it('encuentra los códigos usados por los formularios', () => {
@@ -29,7 +29,7 @@ describe('errores de ingreso: ningún código crudo llega a la UI', () => {
   });
 
   it.each([...codigos])('error_%s tiene traducción en español', (codigo) => {
-    const texto = (operacion as Record<string, string>)[`error_${codigo}`];
+    const texto = (operacion as unknown as Record<string, string>)[`error_${codigo}`];
     expect(texto, `falta error_${codigo} en operacion.json`).toBeTruthy();
     expect(texto).not.toMatch(/^[a-z0-9_]+$/);
   });

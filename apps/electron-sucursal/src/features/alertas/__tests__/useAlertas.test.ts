@@ -271,4 +271,44 @@ describe('useAlertas — REQ-OPS-179 (HU-F11.2)', () => {
     expect(byCode.fe_emision_fallida?.severidad).toBe('media');
     expect(byCode.fe_emision_fallida?.mensaje).not.toBe('fe_emision_fallida');
   });
+
+  // Severidad real del backend (prod.alert_types, migraciones 0031/0025/0032):
+  // critical -> alta, warning -> media, info -> baja (repo/alert_types.py).
+  const SEVERIDAD_BACKEND: Record<string, 'alta' | 'media' | 'baja'> = {
+    descuadre_critico: 'alta', // critical
+    fe_error_toppoint: 'alta', // critical
+    numeracion_toppoint_agotada: 'alta', // critical
+    cache_desactualizado: 'baja', // info
+    capacidad_agotada_forzado: 'media', // warning
+    suscripcion_proxima_vencer: 'media', // warning
+  };
+
+  it('U11: con alert-types en error, los codigos originales con mapeo en el backend conservan su severidad real y una etiqueta legible', () => {
+    useAuthStoreSelectorMock.mockReturnValue('jwt-abc');
+    const codigos = Object.keys(SEVERIDAD_BACKEND);
+    swrResponses.alerta = { data: codigos.map((c) => row(c)) };
+    swrResponses.types = { error: new Error('alert-types down') };
+    const { mergedAlertas } = useAlertas(VALID_UUID);
+    expect(mergedAlertas).toHaveLength(codigos.length);
+    for (const m of mergedAlertas) {
+      expect(m.severidad, m.tipo_alerta ?? '').toBe(SEVERIDAD_BACKEND[m.tipo_alerta ?? '']);
+      expect(m.mensaje).not.toBe(m.tipo_alerta);
+      expect(m.descripcion).not.toBe(m.tipo_alerta);
+    }
+  });
+
+  it('U12: los 5 codigos originales sin fila en alert_types del backend conservan el neutro "media" (no se inventa severidad)', () => {
+    useAuthStoreSelectorMock.mockReturnValue('jwt-abc');
+    const sinMapeo = [
+      'arqueo_sin_cerrar',
+      'caja_sin_apertura',
+      'reimpresion_excesiva',
+      'fallo_conexion_local',
+      'diferencia_datafono',
+    ];
+    swrResponses.alerta = { data: sinMapeo.map((c) => row(c)) };
+    swrResponses.types = { error: new Error('alert-types down') };
+    const { mergedAlertas } = useAlertas(VALID_UUID);
+    expect(mergedAlertas.map((m) => m.severidad)).toEqual(sinMapeo.map(() => 'media'));
+  });
 });
