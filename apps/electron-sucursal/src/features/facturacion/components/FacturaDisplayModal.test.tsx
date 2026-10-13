@@ -148,7 +148,7 @@ describe('<FacturaDisplayModal /> — HU-F8.4', () => {
       const lineas = screen.getAllByTestId('factura-display-empresa-linea').map((l) => l.textContent ?? '');
       expect(lineas.length).toBeGreaterThan(1);
       for (const l of lineas) expect(l.length).toBeLessThanOrEqual(48);
-      expect(lineas[0].startsWith('Empresa: ')).toBe(true);
+      expect(lineas[0]?.startsWith('Empresa: ')).toBe(true);
       expect(lineas.slice(1).every((l) => l.startsWith('  '))).toBe(true);
       expect(lineas.join('').replace(/\s+/g, '')).toBe('Empresa:' + largo.replace(/\s+/g, ''));
     });

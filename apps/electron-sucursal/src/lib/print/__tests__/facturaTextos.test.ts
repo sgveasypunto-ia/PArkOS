@@ -133,12 +133,12 @@ describe('AUD2: factura con descuento y IVA sobre el neto', () => {
     const f = SALIDA_MENSUALIDAD_NETA(1500, 0, 0, 0);
     expect(descuentoEnBase(f)).toBe(1260.5);
     // subtotal - descuento + IVA == total
-    expect(f.subtotal - descuentoEnBase(f) + f.impuestos[0].valor).toBeCloseTo(f.total, 2);
+    expect(f.subtotal - descuentoEnBase(f) + (f.impuestos?.[0]?.valor ?? 0)).toBeCloseTo(f.total, 2);
   });
   it('descuento parcial: 1500 - 500 -> base 840,34 + IVA 159,66 = 1.000', () => {
     const f = SALIDA_MENSUALIDAD_NETA(500, 1000, 840.34, 159.66);
     expect(descuentoEnBase(f)).toBeCloseTo(420.16, 2);
-    expect(f.subtotal - descuentoEnBase(f) + f.impuestos[0].valor).toBeCloseTo(f.total, 2);
+    expect(f.subtotal - descuentoEnBase(f) + (f.impuestos?.[0]?.valor ?? 0)).toBeCloseTo(f.total, 2);
   });
   it('factura historica (IVA sobre el bruto) conserva el descuento persistido', () => {
     const f = factura({
