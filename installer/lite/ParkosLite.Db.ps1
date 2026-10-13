@@ -137,7 +137,8 @@ function Initialize-ParkosLitePgData {
         # se crea despues en Initialize-ParkosLiteRoles. Locale C + UTF8: no
         # depende de que exista un locale de Windows concreto.
         $r = Invoke-ParkosLiteNative -FilePath (Get-ParkosLitePgBin -PgRoot $PgRoot -Name 'initdb') -Arguments @(
-            '-D', $PgData, '-U', 'postgres', '--encoding=UTF8', '--locale=C', '--auth=scram-sha-256', "--pwfile=$pwFile")
+            '-D', $PgData, '-U', 'postgres', '--encoding=UTF8', '--locale=C', '--auth=scram-sha-256', "--pwfile=$pwFile") `
+            -WorkingDirectory ([IO.Path]::GetTempPath())
         if ($r.ExitCode -ne 0) {
             throw "initdb fallo (exit $($r.ExitCode)): $($r.Output -join ' ')"
         }
