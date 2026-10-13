@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from sqlalchemy import exists, func, select
+from sqlalchemy import exists, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,6 +47,14 @@ class SalidaNoFacturableError(Exception):
 
     Returns ``None`` when the lookup misses; raised by handler with
     ``detail={"error": "salida_no_facturable", "uuid_salida": ...}``.
+    """
+
+
+class SalidaAnuladaError(Exception):
+    """409 — the salida has an ``ejecutada`` annulment (anular-no-pagada).
+
+    Billing an annulled salida would leave a factura over a salida the
+    views already report as open. Maps to ``salida_anulada``.
     """
 
 
@@ -131,8 +139,29 @@ async def buscar_salida_facturable(
     """
     from ..models.A.salidas import Salidas  # local import to avoid cycles
 
+    from .salida import bloquear_salida  # local import to avoid cycles
+
+    # Same per-salida lock as anular_salida_no_pagada: whichever flow runs
+    # second sees the other's committed row (held until the handler commit).
+    await bloquear_salida(session, uuid_salida=uuid_salida)
     stmt = select(Salidas).where(Salidas.uuid == uuid_salida)
-    return (await session.execute(stmt)).scalar_one_or_none()
+    salida = (await session.execute(stmt)).scalar_one_or_none()
+    if salida is None:
+        return None
+    anulada = (
+        await session.execute(
+            text(
+                "SELECT 1 FROM prod.anulaciones a "
+                "WHERE a.uuid_salida = :uuid_salida "
+                "AND a.tipo_anulable = 'salida' AND a.estado = 'ejecutada' "
+                "LIMIT 1"
+            ),
+            {"uuid_salida": str(uuid_salida)},
+        )
+    ).first()
+    if anulada is not None:
+        raise SalidaAnuladaError(str(uuid_salida))
+    return salida
 
 
 async def buscar_o_crear_cliente_por_nit(
@@ -590,6 +619,7 @@ __all__ = [
     "FacturaDuplicadaError",
     "NitInvalidoError",
     "PagoDuplicadoError",
+    "SalidaAnuladaError",
     "SalidaNoFacturableError",
     "TotalNoCoherenteError",
     "VoucherDatafonoDuplicadoError",

@@ -45,6 +45,7 @@ import {
 import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { useRegistrarPago } from '../hooks/useRegistrarPago';
 import { useAnularSalidaNoPagada } from '../hooks/useAnularSalidaNoPagada';
+import { leerErrorSalida409 } from '../lib/errorSalida409';
 import { PagoModal, type PagoFormValues } from './PagoModal';
 import { buildClienteFePayload } from '../lib/clienteFePayload';
 import { useInvalidateConteosOperacion } from '../../operacion/hooks/useInvalidateConteosOperacion';
@@ -140,6 +141,15 @@ export function PagoSheet({
   // permission). The drawer stays open with this notice; a second "Cancelar"
   // closes anyway.
   const [anulacionFallida, setAnulacionFallida] = useState(false);
+  // Bug #2: 409 `salida_ya_pagada` -> la salida ya tiene factura; mensaje propio.
+  const [anulacionYaPagada, setAnulacionYaPagada] = useState(false);
+
+  // Bug #2: mientras el POST de la factura está en vuelo, cerrar el drawer
+  // dispararía anular-no-pagada y podría anular una salida que se está
+  // cobrando (factura sobre salida anulada). Ref para que `handleClose` lo lea
+  // de forma síncrona; el estado solo deshabilita el botón Cancelar.
+  const pagandoRef = useRef(false);
+  const [pagando, setPagando] = useState(false);
 
   // Focus restore per REQ-OPS-138 §Esc.
   useEffect(() => {
@@ -167,6 +177,8 @@ export function PagoSheet({
   // don't block the next cobro, but we DO leave a trail for the
   // session-end audit hook).
   const handleClose = useCallback((): void => {
+    // Bug #2: ignora Cancelar / X / Esc / overlay con el pago en vuelo.
+    if (pagandoRef.current) return;
     if (pagadoRef.current) {
       // Happy path: pago confirmado, no annulment needed.
       close();
@@ -185,6 +197,7 @@ export function PagoSheet({
             '[PagoSheet] auto-annul failed (the ingreso will stay cerrado; manual recovery required):',
             err,
           );
+          setAnulacionYaPagada(leerErrorSalida409(err) === 'salida_ya_pagada');
           setAnulacionFallida(true);
         },
       );
@@ -255,7 +268,15 @@ export function PagoSheet({
             uuid_sesion: sesion?.uuid ?? null,
             ...feDatos,
           };
-      const result = await trigger(post);
+      pagandoRef.current = true;
+      setPagando(true);
+      let result: FacturaRead;
+      try {
+        result = await trigger(post);
+      } finally {
+        pagandoRef.current = false;
+        setPagando(false);
+      }
       // F8.1-b: mark `pagadoRef = true` BEFORE close so the
       // auto-annul branch in `handleClose` is skipped. We set this
       // AFTER the `await` resolves — if the POST failed the form
@@ -330,10 +351,15 @@ export function PagoSheet({
             data-testid="pago-anular-error"
             className="rounded border border-destructive/50 px-3 py-2 text-sm text-destructive"
           >
-            {t('facturacion:pago.anular_error', {
-              defaultValue:
-                'No se pudo anular la salida: el vehículo quedó con salida registrada sin pago. Avisa a un administrador antes de cerrar. Presiona Cancelar de nuevo para cerrar de todos modos.',
-            })}
+            {anulacionYaPagada
+              ? t('facturacion:pago.anular_error_ya_pagada', {
+                  defaultValue:
+                    'Esta salida ya fue cobrada y facturada, no se puede cancelar. Presiona Cancelar de nuevo para cerrar.',
+                })
+              : t('facturacion:pago.anular_error', {
+                  defaultValue:
+                    'No se pudo anular la salida: el vehículo quedó con salida registrada sin pago. Avisa a un administrador antes de cerrar. Presiona Cancelar de nuevo para cerrar de todos modos.',
+                })}
           </p>
         )}
 
@@ -342,6 +368,7 @@ export function PagoSheet({
             type="button"
             variant="outline"
             onClick={() => handleClose()}
+            disabled={pagando}
             data-testid="pago-cancelar"
           >
             {t('common:cancel', { defaultValue: 'Cancelar' })}

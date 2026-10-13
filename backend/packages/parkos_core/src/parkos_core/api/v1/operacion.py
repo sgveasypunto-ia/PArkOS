@@ -84,6 +84,7 @@ from ...repo.salida import (
     SalidaDuplicada,
     SalidaNoEncontrada,
     SalidaYaAnulada,
+    SalidaYaPagada,
     anular_salida_no_pagada,
     buscar_ingreso_activo_por_uuid,
     cotizar_para_salida,
@@ -915,6 +916,15 @@ async def anular_salida_no_pagada_endpoint(
             status_code=409,
             detail={
                 "error": "salida_ya_anulada",
+                "uuid_salida": str(uuid_salida),
+            },
+            headers=no_store,
+        ) from None
+    except SalidaYaPagada:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "salida_ya_pagada",
                 "uuid_salida": str(uuid_salida),
             },
             headers=no_store,
