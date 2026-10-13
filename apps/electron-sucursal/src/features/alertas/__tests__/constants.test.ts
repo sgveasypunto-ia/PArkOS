@@ -4,8 +4,8 @@
  * REQ-OPS-182 + DA-F11.2-5).
  *
  * Coverage:
- *   C1: 14 business codes (the original 11 + fe_emision_fallida and
- *       suscripcion_placa_agregada/_quitada) + 8 technical codes.
+ *   C1: 9 business codes + 8 technical codes (the 5 orphan codes without
+ *       backend emitter were retired).
  *   C2: disjoint sets — no overlap (defense against future typos).
  *   C3: O(1) `Set.has` membership — array `.includes()` would be
  *       O(n) and is forbidden per the spec §REQ-OPS-182 scenario.
@@ -22,8 +22,8 @@ import {
 } from '../constants';
 
 describe('constants — REQ-OPS-182 (HU-F11.2)', () => {
-  it('C1: 14 business codes + 8 technical codes', () => {
-    expect(BUSINESS_ALERT_CODES.size).toBe(14);
+  it('C1: 9 business codes + 8 technical codes', () => {
+    expect(BUSINESS_ALERT_CODES.size).toBe(9);
     expect(TECHNICAL_ALERT_CODES.size).toBe(8);
   });
 
