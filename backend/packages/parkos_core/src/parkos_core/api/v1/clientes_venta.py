@@ -210,6 +210,20 @@ async def venta_suscripcion(
             headers=no_store,
         ) from exc
 
+    # --- Step 3b: #14 plan.tipo_cliente_permitido vs. cliente. ---------
+    try:
+        repo_venta.validar_tipo_cliente_del_plan(plan=plan, cliente=cliente)
+    except repo_venta.PlanTipoClienteIncompatibleError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "plan_tipo_cliente_incompatible",
+                "tipo_cliente_permitido": exc.tipo_cliente_permitido,
+                "tipo_cliente": exc.tipo_cliente,
+            },
+            headers=no_store,
+        ) from exc
+
     # --- Step 4: V3 per-placa lookup-or-create. ------------------------
     vehiculos: list = []
     for placa in payload.placas:

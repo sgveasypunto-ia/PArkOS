@@ -474,3 +474,55 @@ def test_validar_placas_no_duplicadas_rechaza_repetida_normalizada(
     with pytest.raises(repo_venta.PlacaDuplicadaEnVentaError) as exc:
         repo_venta.validar_placas_no_duplicadas(placas=placas)
     assert exc.value.placa == "ABC123"
+
+
+# ---------------------------------------------------------------------------
+# #14 -- validar_tipo_cliente_del_plan (tipo_cliente_permitido)
+# ---------------------------------------------------------------------------
+
+
+def _plan_cliente(permitido: str | None) -> MagicMock:
+    plan = MagicMock()
+    plan.tipo_cliente_permitido = permitido
+    return plan
+
+
+def _cliente(tipo_identificador: str | None) -> MagicMock:
+    c = MagicMock()
+    c.tipo_identificador = tipo_identificador
+    return c
+
+
+def test_plan_juridica_rechaza_cliente_natural() -> None:
+    from parkos_core.repo import venta_suscripcion as repo_venta
+
+    with pytest.raises(repo_venta.PlanTipoClienteIncompatibleError) as excinfo:
+        repo_venta.validar_tipo_cliente_del_plan(
+            plan=_plan_cliente("juridica"), cliente=_cliente("CC")
+        )
+    assert excinfo.value.tipo_cliente_permitido == "juridica"
+    assert excinfo.value.tipo_cliente == "natural"
+
+
+def test_plan_juridica_acepta_cliente_nit() -> None:
+    from parkos_core.repo import venta_suscripcion as repo_venta
+
+    repo_venta.validar_tipo_cliente_del_plan(
+        plan=_plan_cliente("juridica"), cliente=_cliente("NIT")
+    )
+
+
+def test_plan_natural_rechaza_cliente_nit() -> None:
+    from parkos_core.repo import venta_suscripcion as repo_venta
+
+    with pytest.raises(repo_venta.PlanTipoClienteIncompatibleError):
+        repo_venta.validar_tipo_cliente_del_plan(
+            plan=_plan_cliente("natural"), cliente=_cliente("NIT")
+        )
+
+
+def test_plan_sin_restriccion_acepta_cualquiera() -> None:
+    from parkos_core.repo import venta_suscripcion as repo_venta
+
+    repo_venta.validar_tipo_cliente_del_plan(plan=_plan_cliente(None), cliente=_cliente("NIT"))
+    repo_venta.validar_tipo_cliente_del_plan(plan=_plan_cliente(None), cliente=_cliente("CC"))
