@@ -685,3 +685,37 @@ describe('<VehiculosDentroList /> — click en un ítem abre la salida (B)', () 
     expect(state.initialUuidIngreso).toBeNull();
   });
 });
+
+describe('<PlacaInputHero /> — placa con formato inválido (C)', () => {
+  it('C1: "AB-12!" + Enter → role=alert con el mensaje de formato y NO abre drawer ni consulta', async () => {
+    mockUseSesionActiva.mockReturnValue({
+      sesion: baseSesion,
+      isLoading: false,
+      error: undefined,
+      refresh: mockRefresh,
+    });
+    mockUseIngresosActivos.mockReturnValue([]);
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>,
+    );
+
+    const input = screen.getByTestId('placa-hero-input');
+    await userEvent.type(input, 'AB-12!');
+    await userEvent.keyboard('{Enter}');
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/placa no coincide/i);
+    expect(useDashboardDrawerStore.getState().openDrawer).toBeNull();
+    expect(mockGetIngresosByPlaca).not.toHaveBeenCalled();
+    expect(mockGetIngresosByConsecutivo).not.toHaveBeenCalled();
+    // El input referencia el mensaje de error (aria-describedby válido).
+    const describedBy = input.getAttribute('aria-describedby');
+    expect(describedBy).not.toBeNull();
+    expect(document.getElementById(describedBy as string)).toHaveTextContent(/placa no coincide/i);
+
+    // Al seguir tipeando el error se limpia.
+    await userEvent.type(input, 'X');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+});

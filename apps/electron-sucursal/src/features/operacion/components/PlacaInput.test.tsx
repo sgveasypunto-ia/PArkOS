@@ -79,4 +79,27 @@ describe('PlacaInput', () => {
       expect(onValidSubmit).toHaveBeenLastCalledWith('ABC12E'),
     );
   });
+
+  it('initialValue inválido: muestra el error de formato en vez de descartarlo en silencio', async () => {
+    const onChange = vi.fn();
+    render(<PlacaInput onValidSubmit={vi.fn()} onChange={onChange} initialValue="AB-12!" />);
+    const input = screen.getByLabelText(/placa/i) as HTMLInputElement;
+    expect(
+      await screen.findByText(/placa no coincide con ningún formato conocido/i),
+    ).toBeInTheDocument();
+    expect(input.value).toBe('AB-12!');
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('aria-describedby referencia el mensaje de error real (sin "placa-help" huérfano)', async () => {
+    render(<PlacaInput onValidSubmit={vi.fn()} initialValue="AB-12!" />);
+    const input = screen.getByLabelText(/placa/i) as HTMLInputElement;
+    await screen.findByText(/placa no coincide con ningún formato conocido/i);
+    const ids = (input.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean);
+    expect(ids).not.toContain('placa-help');
+    const mensajes = ids
+      .map((id) => document.getElementById(id))
+      .filter((el): el is HTMLElement => el !== null);
+    expect(mensajes.some((el) => /placa no coincide/i.test(el.textContent ?? ''))).toBe(true);
+  });
 });

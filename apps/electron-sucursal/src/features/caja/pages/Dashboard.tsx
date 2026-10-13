@@ -858,6 +858,18 @@ function PlacaInputHero({
       return;
     }
 
+    // Ni placa válida ni consecutivo: no abrir ningún drawer (IngresoPanel
+    // descartaba en silencio el valor inválido) — avisar al operador.
+    if (!esPlacaValida) {
+      setError(
+        t('errors:validation.placa_formato_invalido', {
+          defaultValue:
+            'Placa no coincide con ningún formato conocido (Auto: ABC123, Moto: ABC12D)',
+        }),
+      );
+      return;
+    }
+
     // ── Fallback: smart-routing por placa ──
     setSubmitting(true);
     try {
@@ -930,6 +942,8 @@ function PlacaInputHero({
           onKeyDown={onKeyDown}
           onBlur={() => setSuggestionsClosed(true)}
           aria-label={t('caja:dashboard.placaLabel', { defaultValue: 'Placa del vehículo' })}
+          aria-describedby={error !== null ? 'placa-hero-error' : undefined}
+          aria-invalid={error !== null}
           role="combobox"
           aria-expanded={isSuggestionsOpen}
           aria-controls={listboxId}
