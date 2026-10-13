@@ -19,10 +19,11 @@
  * backend query params use — no `fecha_desde`/`fecha_hasta` remap needed
  * here, unlike `/admin/reporteria/operacional`).
  *
- * HU-X.8: the header now includes a `<BranchPickerInline />` (with
- * search) so the admin can switch branches from within the page
- * (instead of going to the topbar). The subtitle also shows the
- * current branch name in parens, matching the `Reporteria.tsx` style.
+ * HU-X.8.1: the header now includes a `<SucursalFilterCombobox />` (a
+ * simple searchable single-select — input + filterable listbox) so the
+ * admin can switch branches from within the page (instead of going to
+ * the topbar). The subtitle also shows the current branch name in
+ * parens, matching the `Reporteria.tsx` style.
  *
  * Branch context comes from `useSucursal()`, same as `<Reporteria />`.
  */
@@ -38,9 +39,9 @@ import { exportToCsv } from '@/lib/export/csv';
 import { parkosFetchRaw } from '@/lib/fetch';
 
 import {
-  BranchPickerInline,
-  type SucursalPickerOption,
-} from '@/components/branch-selector/BranchPickerInline';
+  SucursalFilterCombobox,
+  type SucursalFilterComboboxOption,
+} from '@/features/admin/components/SucursalFilterCombobox';
 
 import {
   useReporteriaFacturas,
@@ -109,7 +110,7 @@ export default function ReporteriaFinanciera() {
     return found?.nombre ?? null;
   })();
 
-  const branchOptions: SucursalPickerOption[] = useMemo(() => {
+  const branchOptions: SucursalFilterComboboxOption[] = useMemo(() => {
     const items = branches.data?.items ?? [];
     const permitidasSet = new Set(permitidas);
     return items
@@ -176,11 +177,14 @@ export default function ReporteriaFinanciera() {
               ) : null}
             </p>
           </div>
-          <BranchPickerInline
-            valueLabel={branchName}
+          <SucursalFilterCombobox
+            label={t('branchSelector.label', 'Seleccionar sucursal')}
             options={branchOptions}
-            isLoading={branches.isLoading}
-            onSelect={setSelected}
+            value={selected ?? ''}
+            onChange={(uuid) => setSelected(uuid)}
+            placeholder={t('sucursalPicker.search', 'Buscar por nombre o prefijo…')}
+            disabled={branches.isLoading}
+            testId="reporteria-financiera-branch-combobox"
           />
         </header>
 
