@@ -7,12 +7,11 @@
  *     permitidas` (`useAdminAuth().sucursalUuids`); the container passes
  *     only those as `options.sucursalOptions`. Empty = all permitted
  *     branches.
- *   - `tipo_alerta` -- free-text filter. No `GET /workflows/alert-types`
- *     catalog dropdown here on purpose: that endpoint's own schema
- *     docblock (`schemas/workflows.py::AlertTypeRead`) says it "was
- *     never mounted on the backend (404 in production)" as of this
- *     writing -- wiring a dropdown to a 404 would be worse than a text
- *     filter.
+ *   - `tipo_alerta` -- free-text filter. `GET /workflows/alert-types` is
+ *     mounted on the backend now (it was a 404 until HU-F11.2 fix,
+ *     2026-09-24), but this filter stays free-text on purpose: the
+ *     catalog is not wired here and a dropdown would need its own
+ *     loading/error handling. Follow-up if a catalog dropdown is wanted.
  *   - `estado` / `severidad` -- closed-enum dropdowns (FE-known
  *     vocabularies, `ALERTA_ESTADOS` / `ALERTA_SEVERITIES`).
  *   - `desde` / `hasta` -- inclusive date range.
