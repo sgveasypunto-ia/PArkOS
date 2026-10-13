@@ -122,8 +122,8 @@ export default function Dashboard(): JSX.Element {
       : null,
   );
 
-  const { cupos } = useCantidadList();
-  const { tarifas } = useTarifasList(null);
+  const { cupos } = useCantidadList(selected);
+  const { tarifas } = useTarifasList(selected);
   const { usuarios } = useAdminUsuarios();
 
   const cuposCount = useMemo(

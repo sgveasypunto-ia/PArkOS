@@ -631,7 +631,8 @@ describe('Cupos page', () => {
     // "Ver histórico" panel on the same (sucursal, tipo_vehiculo) cell,
     // the panel kept showing the pre-edit chain — the operator had to
     // F5 to see the new version. Root cause: the page only invalidated
-    // the ``'cupos-list'`` cache (``useCantidadList::refresh``) and
+    // the list SWR cache (``useCantidadList::refresh`` — branch-scoped
+    // since the 2026-10-13 fix, key ``['cupos-list', sucursal]``) and
     // not the by-key cache used by ``useCantidadByKey``; the SWR
     // ``dedupingInterval: 5min`` returned the stale chain.
     //
@@ -833,5 +834,93 @@ describe('Cupos page', () => {
     expect(window.localStorage.getItem('parkos.lastSelectedSucursal')).toBe(
       SUCURSAL_2,
     );
+  });
+
+  it('CP21: switching the active branch re-fetches the list and shows rows for the new branch (no F5)', async () => {
+    // Operator-reported bug (2026-10-13): on /dashboard, the
+    // "CUPOS VIGENTES" quick-link showed 0 (or the wrong number)
+    // for the freshly-picked branch, and only updated after a hard
+    // refresh. Same symptom inside /cupos: changing the inline
+    // branch picker left the list showing rows for the previous
+    // branch (or empty if the BE filtered them out), forcing an F5.
+    //
+    // Root cause: ``useCantidadList`` used a static SWR key
+    // ``'cupos-list'`` but the BE filters the list by
+    // ``X-Sucursal-Context`` (HU-F15.1 BR4 + tenant listener). The
+    // static key meant SWR served the previous branch's data within
+    // the 5-minute deduping interval.
+    //
+    // Fix: branch-scoped SWR key ``['cupos-list', sucursal]`` so
+    // each branch has its own cache entry and changing the active
+    // branch triggers a fresh fetch.
+    //
+    // Regression assertions:
+    //   1. The list mock is called TWICE (once per branch selection).
+    //   2. The rendered table for SUCURSAL_1 only shows the SUCURSAL_1
+    //      rows.
+    //   3. After switching to SUCURSAL_2, the list mock's second
+    //      response (SUCURSAL_2 rows) is what renders — not a stale
+    //      SUCURSAL_1 row.
+    const SUCURSAL_2 = '22222222-2222-2222-2222-222222222222';
+    const SUCURSAL_1_ROW = {
+      ...SAMPLE_CUPO,
+      uuid: 'aaaaaaaa-1111-1111-1111-111111111111',
+      uuid_sucursal: SUCURSAL_1,
+      cantidad: 10,
+    };
+    const SUCURSAL_2_ROW_A = {
+      ...SAMPLE_CUPO,
+      uuid: 'ccccccc1-2222-2222-2222-222222222222',
+      uuid_sucursal: SUCURSAL_2,
+      cantidad: 20,
+    };
+    const SUCURSAL_2_ROW_B = {
+      ...SAMPLE_CUPO,
+      uuid: 'ccccccc2-2222-2222-2222-222222222222',
+      uuid_sucursal: SUCURSAL_2,
+      cantidad: 30,
+    };
+    mockedListSucursales.mockResolvedValue([
+      { uuid: SUCURSAL_1, nombre: 'Sucursal Centro', prefijo_nombre: 'CEN' },
+      { uuid: SUCURSAL_2, nombre: 'Sucursal Norte', prefijo_nombre: 'NOR' },
+    ]);
+    // First list call (SUCURSAL_1 mount): one row.
+    // Second list call (after switching to SUCURSAL_2): two rows.
+    mockedListCupos
+      .mockResolvedValueOnce([SUCURSAL_1_ROW])
+      .mockResolvedValueOnce([SUCURSAL_2_ROW_A, SUCURSAL_2_ROW_B]);
+    window.localStorage.setItem('parkos.lastSelectedSucursal', SUCURSAL_1);
+    const user = userEvent.setup();
+    render(<Cupos />, { wrapper: fullWrapper });
+    // (1) Initial mount fetched for SUCURSAL_1.
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('cupo-row-aaaaaaaa-1111-1111-1111-111111111111'),
+      ).toBeInTheDocument(),
+    );
+    expect(mockedListCupos).toHaveBeenCalledTimes(1);
+    // (2) Switch the active branch via the inline combobox.
+    const input = screen.getByTestId('cupos-branch-combobox');
+    await user.click(input);
+    const newOption = await screen.findByTestId(
+      `cupos-branch-combobox-option-${SUCURSAL_2}`,
+    );
+    await user.click(newOption);
+    // (3) The branch-scoped SWR key change triggers a refetch — the
+    // mock must be called a second time (NOT served from the stale
+    // SUCURSAL_1 cache).
+    await waitFor(() => expect(mockedListCupos).toHaveBeenCalledTimes(2));
+    // (4) The list shows the SUCURSAL_2 rows, NOT the SUCURSAL_1 row.
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('cupo-row-ccccccc1-2222-2222-2222-222222222222'),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByTestId('cupo-row-ccccccc2-2222-2222-2222-222222222222'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('cupo-row-aaaaaaaa-1111-1111-1111-111111111111'),
+    ).not.toBeInTheDocument();
   });
 });
