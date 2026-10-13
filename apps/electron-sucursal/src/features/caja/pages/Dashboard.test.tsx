@@ -111,11 +111,13 @@ vi.mock('../../operacion/hooks/useIngresosActivos', () => ({
 }));
 
 const mockGetIngresosByPlaca = vi.fn();
+const mockGetIngresosByConsecutivo = vi.fn();
 vi.mock('../../operacion/api/ingresoActivoApi', async (importOriginal) => {
   const actual = await importOriginal<typeof IngresoActivoApiModule>();
   return {
     ...actual,
     getIngresosByPlaca: (...args: unknown[]) => mockGetIngresosByPlaca(...args),
+    getIngresosByConsecutivo: (...args: unknown[]) => mockGetIngresosByConsecutivo(...args),
   };
 });
 
@@ -176,6 +178,7 @@ beforeEach(() => {
   });
   mockUseIngresosActivos.mockReturnValue([]);
   mockGetIngresosByPlaca.mockResolvedValue([]);
+  mockGetIngresosByConsecutivo.mockResolvedValue([]);
   useDashboardDrawerStore.getState().close();
   useResumenCierrePendiente.getState().setPendiente(false);
 });
@@ -529,5 +532,214 @@ describe('<PlacaInputHero /> — HU-F7.1 búsqueda sin placa (T5) autocomplete',
     });
     expect(useDashboardDrawerStore.getState().initialPlaca).toBe('ZZZ999');
     expect(mockGetIngresosByPlaca).toHaveBeenCalledWith('ZZZ999', { soloActivos: true });
+  });
+});
+
+describe('<PlacaInputHero /> — salida por consecutivo escrito + Enter (sin sugerencia resaltada)', () => {
+  const CONSECUTIVO = 'PATINETA-000003-34a24bae';
+  const ITEM_PATINETA = {
+    uuid: 'uuid-ingreso-patineta',
+    placa: null,
+    fecha_ingreso: '2026-09-19T10:00:00Z',
+    consecutivo: CONSECUTIVO,
+    created_at: '2026-09-19T10:00:00Z',
+    uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000002',
+    uuid_sucursal: 'suc-uuid-1',
+  };
+
+  function renderConSesion(): void {
+    mockUseSesionActiva.mockReturnValue({
+      sesion: baseSesion,
+      isLoading: false,
+      error: undefined,
+      refresh: mockRefresh,
+    });
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>,
+    );
+  }
+
+  it('A1: consecutivo exacto presente en la lista + Enter → salida con uuid, nunca ingreso', async () => {
+    mockUseIngresosActivos.mockReturnValue([ITEM_PATINETA]);
+    renderConSesion();
+
+    const input = screen.getByTestId('placa-hero-input');
+    await userEvent.type(input, CONSECUTIVO);
+    await userEvent.keyboard('{Escape}{Enter}');
+
+    await waitFor(() => {
+      expect(useDashboardDrawerStore.getState().openDrawer).toBe('salida');
+    });
+    const state = useDashboardDrawerStore.getState();
+    expect(state.initialUuidIngreso).toBe('uuid-ingreso-patineta');
+    expect(state.initialPlaca).toBeNull();
+    expect(mockGetIngresosByPlaca).not.toHaveBeenCalled();
+  });
+
+  it('A2: un único candidato por consecutivo parcial + Enter → salida con uuid', async () => {
+    mockUseIngresosActivos.mockReturnValue([ITEM_PATINETA]);
+    renderConSesion();
+
+    await userEvent.type(screen.getByTestId('placa-hero-input'), '000003');
+    await userEvent.keyboard('{Escape}{Enter}');
+
+    await waitFor(() => {
+      expect(useDashboardDrawerStore.getState().openDrawer).toBe('salida');
+    });
+    expect(useDashboardDrawerStore.getState().initialUuidIngreso).toBe('uuid-ingreso-patineta');
+    expect(mockGetIngresosByPlaca).not.toHaveBeenCalled();
+  });
+
+  it('A3: lista no cargada (null) + consecutivo + Enter → consulta ?consecutivo=&activo=true y abre salida', async () => {
+    mockUseIngresosActivos.mockReturnValue(null);
+    mockGetIngresosByConsecutivo.mockResolvedValue([ITEM_PATINETA]);
+    renderConSesion();
+
+    await userEvent.type(screen.getByTestId('placa-hero-input'), CONSECUTIVO);
+    await userEvent.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(useDashboardDrawerStore.getState().openDrawer).toBe('salida');
+    });
+    expect(mockGetIngresosByConsecutivo).toHaveBeenCalledWith(CONSECUTIVO, { soloActivos: true });
+    expect(useDashboardDrawerStore.getState().initialUuidIngreso).toBe('uuid-ingreso-patineta');
+    expect(mockGetIngresosByPlaca).not.toHaveBeenCalled();
+  });
+
+  it('A4: consecutivo que no resuelve → alerta "consecutivo no encontrado" y NO abre ningún drawer', async () => {
+    mockUseIngresosActivos.mockReturnValue([]);
+    mockGetIngresosByConsecutivo.mockResolvedValue([]);
+    renderConSesion();
+
+    await userEvent.type(screen.getByTestId('placa-hero-input'), 'PATINETA-000009-deadbeef');
+    await userEvent.keyboard('{Enter}');
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/consecutivo.*no encontrado/i);
+    expect(useDashboardDrawerStore.getState().openDrawer).toBeNull();
+    expect(mockGetIngresosByPlaca).not.toHaveBeenCalled();
+  });
+});
+
+describe('<VehiculosDentroList /> — click en un ítem abre la salida (B)', () => {
+  const ITEM_CON_PLACA = {
+    uuid: 'uuid-ingreso-abc123',
+    placa: 'ABC123',
+    fecha_ingreso: '2026-09-19T10:00:00Z',
+    consecutivo: null,
+    created_at: '2026-09-19T10:00:00Z',
+    uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000001',
+    uuid_sucursal: 'suc-uuid-1',
+  };
+  const ITEM_SIN_PLACA = {
+    uuid: 'uuid-ingreso-patineta',
+    placa: null,
+    fecha_ingreso: '2026-09-19T10:00:00Z',
+    consecutivo: 'PATINETA-000003-34a24bae',
+    created_at: '2026-09-19T10:00:00Z',
+    uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000002',
+    uuid_sucursal: 'suc-uuid-1',
+  };
+
+  function renderConSesion(): void {
+    mockUseSesionActiva.mockReturnValue({
+      sesion: baseSesion,
+      isLoading: false,
+      error: undefined,
+      refresh: mockRefresh,
+    });
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>,
+    );
+  }
+
+  it('B1: ítem sin placa → botón accesible que abre salida con initialUuidIngreso', async () => {
+    mockUseIngresosActivos.mockReturnValue([ITEM_SIN_PLACA]);
+    renderConSesion();
+
+    const li = screen.getByTestId('vehiculos-item-uuid-ingreso-patineta');
+    const boton = within(li).getByRole('button', { name: /PATINETA-000003-34a24bae/ });
+    await userEvent.click(boton);
+
+    const state = useDashboardDrawerStore.getState();
+    expect(state.openDrawer).toBe('salida');
+    expect(state.initialPlaca).toBeNull();
+    expect(state.initialUuidIngreso).toBe('uuid-ingreso-patineta');
+  });
+
+  it('B2: ítem con placa → abre salida con esa placa; activable por teclado (Enter)', async () => {
+    mockUseIngresosActivos.mockReturnValue([ITEM_CON_PLACA]);
+    renderConSesion();
+
+    const li = screen.getByTestId('vehiculos-item-uuid-ingreso-abc123');
+    const boton = within(li).getByRole('button', { name: /ABC123/ });
+    boton.focus();
+    await userEvent.keyboard('{Enter}');
+
+    const state = useDashboardDrawerStore.getState();
+    expect(state.openDrawer).toBe('salida');
+    expect(state.initialPlaca).toBe('ABC123');
+    expect(state.initialUuidIngreso).toBeNull();
+  });
+});
+
+describe('<PlacaInputHero /> — placa con formato inválido (C)', () => {
+  it('C1: "AB-12!" + Enter → role=alert con el mensaje de formato y NO abre drawer ni consulta', async () => {
+    mockUseSesionActiva.mockReturnValue({
+      sesion: baseSesion,
+      isLoading: false,
+      error: undefined,
+      refresh: mockRefresh,
+    });
+    mockUseIngresosActivos.mockReturnValue([]);
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>,
+    );
+
+    const input = screen.getByTestId('placa-hero-input');
+    await userEvent.type(input, 'AB-12!');
+    await userEvent.keyboard('{Enter}');
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/placa no coincide/i);
+    expect(useDashboardDrawerStore.getState().openDrawer).toBeNull();
+    expect(mockGetIngresosByPlaca).not.toHaveBeenCalled();
+    expect(mockGetIngresosByConsecutivo).not.toHaveBeenCalled();
+    // El input referencia el mensaje de error (aria-describedby válido).
+    const describedBy = input.getAttribute('aria-describedby');
+    expect(describedBy).not.toBeNull();
+    expect(document.getElementById(describedBy as string)).toHaveTextContent(/placa no coincide/i);
+
+    // Al seguir tipeando el error se limpia.
+    await userEvent.type(input, 'X');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+});
+
+describe('<Dashboard /> — panel de alertas alcanzable (D)', () => {
+  it('D1: dashboard-section-alertas NO vive bajo aria-hidden ni sr-only (controles enfocables alcanzables)', () => {
+    mockUseSesionActiva.mockReturnValue({
+      sesion: baseSesion,
+      isLoading: false,
+      error: undefined,
+      refresh: mockRefresh,
+    });
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>,
+    );
+
+    const seccion = screen.getByTestId('dashboard-section-alertas');
+    expect(seccion.closest('[aria-hidden="true"]')).toBeNull();
+    expect(seccion.closest('.sr-only')).toBeNull();
+    // Vive dentro de una Card visible del hub, junto a "Vehículos dentro".
+    expect(within(screen.getByTestId('alertas-card')).getByTestId('dashboard-section-alertas')).toBe(
+      seccion,
+    );
   });
 });

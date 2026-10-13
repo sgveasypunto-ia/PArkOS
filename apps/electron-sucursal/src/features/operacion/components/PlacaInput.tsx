@@ -135,7 +135,18 @@ export function PlacaInput({
   // submit on the operator's behalf — they must confirm.
   useEffect(() => {
     if (!initialValue) return;
-    if (!REGEX_AUTO.test(initialValue) && !REGEX_MOTO.test(initialValue)) return;
+    if (!REGEX_AUTO.test(initialValue) && !REGEX_MOTO.test(initialValue)) {
+      // Antes se descartaba en silencio y el operador veía el campo vacío
+      // sin saber por qué. Se muestra lo recibido + el error de formato
+      // (mismo mensaje que el submit inválido). No se notifica al padre:
+      // un valor inválido no debe disparar la detección de tipo.
+      form.setValue('placa', initialValue.toUpperCase().replace(/\s+/g, ''), {
+        shouldValidate: false,
+      });
+      form.setError('placa', { type: 'validate', message: 'validation.placa_formato_invalido' });
+      inputRef.current?.focus();
+      return;
+    }
     form.setValue('placa', initialValue, { shouldValidate: false });
     // REQ-OPS-200 (HU-F11.x): also notify the parent on pre-fill so
     // the tipo detectado + override dropdown render immediately when
@@ -198,7 +209,6 @@ export function PlacaInput({
                   inputMode="text"
                   maxLength={8}
                   disabled={disabled}
-                  aria-describedby="placa-help"
                 />
               </FormControl>
               <FormMessage />

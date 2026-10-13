@@ -93,7 +93,11 @@ import { SyncStatusBadge } from '../../sync/components/SyncStatusBadge';
 import { AlertasPanel } from '../../../components/AlertasPanel';
 import { useIngresoActivo } from '../../operacion/hooks/useIngresoActivo';
 import { useIngresosActivos } from '../../operacion/hooks/useIngresosActivos';
-import { getIngresosByPlaca } from '../../operacion/api/ingresoActivoApi';
+import {
+  getIngresosByConsecutivo,
+  getIngresosByPlaca,
+} from '../../operacion/api/ingresoActivoApi';
+import { REGEX_AUTO, REGEX_MOTO } from '../../../lib/validation/placa';
 import {
   matchVehiculos,
   vehiculoSuggestionOptionId,
@@ -624,20 +628,22 @@ export function Dashboard(): JSX.Element | null {
             </CardContent>
           </Card>
 
-          {/* Hidden: legacy section panels for compatibility with the F4.4
-              `OcupacionStrip` removal. The ingreso/salida panels now live
-              inside DrawerHost (via IngresoSheet / SalidaSheet) so they
-              no longer need an `sr-only` anchor here. The `sync` section
-              anchor was removed in F11.1's navbar realineation — the
-              indicator now lives in the header as `<SyncStatusBadge />`
-              (real UI, not an sr-only test anchor). The remaining panel
-              stays because it is referenced by tests via
-              `data-testid="dashboard-section-..."`. */}
-          <div aria-hidden className="sr-only">
-            <section data-testid="dashboard-section-alertas">
-              <AlertasPanel uuid_sucursal={uuid_sucursal} />
-            </section>
-          </div>
+          {/* Alertas de la sucursal — panel VISIBLE del hub. Antes vivía en un
+              `<div aria-hidden className="sr-only">` (1x1px recortado con
+              controles enfocables dentro de aria-hidden): "Marcar revisada"
+              y los chips de filtro eran inalcanzables para el operador. El
+              `data-testid="dashboard-section-alertas"` se conserva; el panel
+              trae su propio <h2> y no necesita CardHeader. */}
+          <Card data-testid="alertas-card" className="overflow-hidden">
+            <CardContent className="p-5">
+              <section data-testid="dashboard-section-alertas">
+                <AlertasPanel uuid_sucursal={uuid_sucursal} />
+              </section>
+            </CardContent>
+          </Card>
+
+          {/* Hidden: legacy section panel kept for tests via
+              `data-testid="dashboard-section-fe-retry"`. */}
           <div aria-hidden className="sr-only">
             <section data-testid="dashboard-section-fe-retry">
               <FacturaElectronicaRetryPanel uuid_fe={null} />
@@ -672,18 +678,41 @@ const PLACA_SHAPE_REGEX = /^[A-Za-z0-9\s]*$/;
 /** Generous cap — long enough for a full consecutivo, short of unbounded. */
 const PLACA_HERO_MAX_LEN = 30;
 
+/** Forma de un consecutivo impreso en el tiquete: `<TIPO>-NNNNNN-<uuid8>`. */
+const CONSECUTIVO_SHAPE_REGEX = /^[A-Z]+-\d{6}-[0-9a-f]{8}$/i;
+
+/**
+ * Abre el drawer de salida para un ingreso activo ya resuelto — helper
+ * compartido por la búsqueda del hero (sugerencia / consecutivo) y por el
+ * click en "Vehículos dentro". Con placa se entrega la placa; sin placa
+ * (bici/patineta) se entrega el `uuid_ingreso` directo, porque no hay
+ * texto de placa que re-buscar (`<SalidaPanel initialUuidIngreso>`).
+ */
+function openSalidaDeIngreso(
+  openDrawer: ReturnType<typeof useDashboardDrawerStore.getState>['open'],
+  anchorId: string,
+  ingreso: { uuid: string; placa: string | null },
+): void {
+  if (ingreso.placa) {
+    openDrawer('salida', anchorId, ingreso.placa);
+  } else {
+    openDrawer('salida', anchorId, null, null, ingreso.uuid);
+  }
+}
+
 function PlacaInputHero({
   uuid_sucursal,
 }: {
   uuid_sucursal: string | null;
 }): JSX.Element {
-  const { t } = useTranslation('caja');
+  const { t } = useTranslation(['caja', 'common', 'errors']);
   const openDrawer = useDashboardDrawerStore((s) => s.open);
 
   // Controlled input so the typed plate can drive `useIngresoActivo`
   // and be passed to the drawer (REQ-OPS-136 smart routing).
   const [value, setValue] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const normalized = value.trim().toUpperCase().replace(/\s+/g, '');
   // Only probe for an active ingreso once the typed plate is at least
   // 5 chars and shaped like a vehicle plate — avoids spamming SWR for
@@ -714,28 +743,20 @@ function PlacaInputHero({
       ? raw.toUpperCase().replace(/\s+/g, '').slice(0, PLACA_HERO_MAX_LEN)
       : raw.slice(0, PLACA_HERO_MAX_LEN);
     setValue(next);
+    setError(null);
     setActiveIndex(-1);
     setSuggestionsClosed(false);
   }
 
   /** Selecting a suggestion (click or Enter-on-highlighted) — shared by both paths. */
   function selectCandidate(candidate: VehiculoMatch): void {
-    const { ingreso } = candidate;
     setValue('');
     setActiveIndex(-1);
     setSuggestionsClosed(true);
-    if (ingreso.placa) {
-      // Every candidate here comes from the active-ingresos snapshot, so
-      // it is ALWAYS currently inside — same exact routing as the
-      // legacy placa-found fallback below.
-      openDrawer('salida', 'placa-hero-input', ingreso.placa);
-    } else {
-      // No placa (consecutivo-only, ej. bici/patineta) — hand off the
-      // resolved uuid_ingreso directly; there is no placa text to
-      // re-search. `<SalidaPanel>` re-runs the estado-guard before
-      // trusting it (point 5/7 of the DoD).
-      openDrawer('salida', 'placa-hero-input', null, null, ingreso.uuid);
-    }
+    // Every candidate comes from the active-ingresos snapshot, so it is
+    // ALWAYS currently inside. `<SalidaPanel>` re-runs the estado-guard
+    // before trusting a uuid handoff (point 5/7 of the DoD).
+    openSalidaDeIngreso(openDrawer, 'placa-hero-input', candidate.ingreso);
   }
 
   // REGRESSION fix (2026-09-22, directiva del operador): el smart
@@ -791,11 +812,67 @@ function PlacaInputHero({
       }
     }
 
-    // ── Fallback: legacy smart-routing path (verbatim, unchanged) ──
     const placa = value.trim();
     if (placa === '') return;
     e.preventDefault();
     if (submitting) return;
+
+    // ── Salida por consecutivo (vehículo sin placa) ──────────────────
+    // `getIngresosByPlaca` consulta `?placa=` y NUNCA resuelve un
+    // consecutivo (devuelve `[]` → abría Ingreso por error). Antes de
+    // caer a la ruta por placa se resuelve el texto como consecutivo.
+    const lower = placa.toLowerCase();
+    const exacto = (items ?? []).find((it) => it.consecutivo?.toLowerCase() === lower);
+    if (exacto) {
+      selectCandidate({ ingreso: exacto, matchedOn: 'consecutivo' });
+      return;
+    }
+    const esPlacaValida = REGEX_AUTO.test(normalized) || REGEX_MOTO.test(normalized);
+    const esConsecutivo = CONSECUTIVO_SHAPE_REGEX.test(placa);
+    const unicoCandidato = candidates.length === 1 ? candidates[0] : undefined;
+    if (!esPlacaValida && !esConsecutivo && unicoCandidato?.matchedOn === 'consecutivo') {
+      selectCandidate(unicoCandidato);
+      return;
+    }
+    if (esConsecutivo) {
+      // La lista puede no haber cargado (o estar a un poll de distancia):
+      // el backend resuelve `?consecutivo=<x>&activo=true`.
+      setSubmitting(true);
+      try {
+        const rows = await getIngresosByConsecutivo(placa, { soloActivos: true });
+        const row = rows[0];
+        if (row) {
+          setError(null);
+          setValue('');
+          openSalidaDeIngreso(openDrawer, 'placa-hero-input', row);
+        } else {
+          setError(
+            t('caja:dashboard.consecutivoNoEncontrado', {
+              defaultValue: 'Consecutivo no encontrado entre los vehículos dentro.',
+            }),
+          );
+        }
+      } catch {
+        setError(t('common:error'));
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
+    // Ni placa válida ni consecutivo: no abrir ningún drawer (IngresoPanel
+    // descartaba en silencio el valor inválido) — avisar al operador.
+    if (!esPlacaValida) {
+      setError(
+        t('errors:validation.placa_formato_invalido', {
+          defaultValue:
+            'Placa no coincide con ningún formato conocido (Auto: ABC123, Moto: ABC12D)',
+        }),
+      );
+      return;
+    }
+
+    // ── Fallback: smart-routing por placa ──
     setSubmitting(true);
     try {
       // Fetch directo bloqueante para que la decisión sea autoritativa
@@ -867,6 +944,8 @@ function PlacaInputHero({
           onKeyDown={onKeyDown}
           onBlur={() => setSuggestionsClosed(true)}
           aria-label={t('caja:dashboard.placaLabel', { defaultValue: 'Placa del vehículo' })}
+          aria-describedby={error !== null ? 'placa-hero-error' : undefined}
+          aria-invalid={error !== null}
           role="combobox"
           aria-expanded={isSuggestionsOpen}
           aria-controls={listboxId}
@@ -886,6 +965,16 @@ function PlacaInputHero({
           onSelect={selectCandidate}
         />
       </div>
+      {error !== null && (
+        <p
+          id="placa-hero-error"
+          data-testid="placa-hero-error"
+          role="alert"
+          className="text-center text-sm font-medium text-destructive"
+        >
+          {error}
+        </p>
+      )}
     </div>
   );
 }
@@ -904,6 +993,7 @@ function VehiculosDentroList({
   uuid_sucursal: string | null;
 }): JSX.Element {
   const { t } = useTranslation('caja');
+  const openDrawer = useDashboardDrawerStore((s) => s.open);
   const items = useIngresosActivos(uuid_sucursal);
   // items is IngresoActivo[] | null. null = loading; [] = empty; >0 = lista.
   // Defensive: if the hook ever returned undefined, treat as loading.
@@ -983,9 +1073,20 @@ function VehiculosDentroList({
           return (
             <li
               key={it.uuid}
-              className="group flex items-center justify-between rounded-xl px-3 py-2 hover:bg-accent/40 transition-colors"
               data-testid={`vehiculos-item-${it.uuid}`}
             >
+              {/* Fila accionable: click/Enter/Espacio abre la salida del
+                  vehículo (mismo helper que la búsqueda del hero). */}
+              <button
+                type="button"
+                data-testid={`vehiculos-item-action-${it.uuid}`}
+                aria-label={t('caja:dashboard.registrarSalidaDe', {
+                  defaultValue: `Registrar salida de ${idVisible}`,
+                  id: idVisible,
+                })}
+                onClick={() => openSalidaDeIngreso(openDrawer, 'vehiculos-item', it)}
+                className="group flex w-full items-center justify-between rounded-xl px-3 py-2 text-left hover:bg-accent/40 focus-ring-apple transition-colors"
+              >
               <span className="font-mono text-sm font-medium uppercase tracking-wide" title={it.uuid}>
                 {idVisible}
               </span>
@@ -1005,6 +1106,7 @@ function VehiculosDentroList({
                   {formatHoraCorta(horaIso)}
                 </span>
               </div>
+              </button>
             </li>
           );
         })}
