@@ -5,10 +5,7 @@
  * the authority; the client-side hide is UX, not security).
  *
  * X.1b ships the SKELETON (no dialogs). X.3 wires the Reimprimir
- * dialog. X.4..X.5 will wire Anular and Reclamo.
- *
- * The shape is preserved so X.4..X.5 can drop in the dialogs without
- * touching the page container.
+ * dialog. X.4 wires Anular. X.5 will wire Reclamo.
  */
 import { useState } from 'react';
 import { Printer, XCircle, FileText } from 'lucide-react';
@@ -16,6 +13,7 @@ import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 
+import { AnularFacturaDialog } from './AnularFacturaDialog';
 import { ReimprimirFacturaDialog } from './ReimprimirFacturaDialog';
 
 export interface FacturaAccionesMenuProps {
@@ -23,22 +21,26 @@ export interface FacturaAccionesMenuProps {
   uuid: string;
   /** The uuid_ingreso linked to the factura (X.3 reimprimir requires it). */
   uuid_ingreso: string | null;
+  /** The uuid_salida linked to the factura (X.4 anular uses it). */
+  uuid_salida: string | null;
   /** Disable the "Anular" action when the factura is already voided. */
   estado: 'vigente' | 'anulada';
+  onAnularSuccess?: (uuid_anulacion: string) => void;
+  onReimprimirSuccess?: (uuid_reimpresion: string) => void;
 }
 
 export function FacturaAccionesMenu({
   uuid,
   uuid_ingreso,
+  uuid_salida,
   estado,
+  onAnularSuccess,
+  onReimprimirSuccess,
 }: FacturaAccionesMenuProps): JSX.Element | null {
   const { t } = useTranslation('facturacionAdmin');
   const [reimprimirOpen, setReimprimirOpen] = useState(false);
-  // X.4 / X.5 will add their own `useState` and dialog mounts.
-
-  // Role-gate: in X.3 the JWT is not yet surfaced in the FE, so we
-  // render the menu unconditionally. X.7 will add the `useMe()` check
-  // and `if (me?.rol !== 'admin-') return null;` here.
+  const [anularOpen, setAnularOpen] = useState(false);
+  // X.5 will add its own `useState` and dialog mount.
 
   return (
     <div
@@ -59,10 +61,8 @@ export function FacturaAccionesMenu({
         <Button
           type="button"
           variant="outline"
-          onClick={() => {
-            // X.4 will replace this with the Anular dialog open.
-            void uuid;
-          }}
+          onClick={() => setAnularOpen(true)}
+          disabled={uuid_salida === null}
           data-testid="factura-accion-anular"
         >
           <XCircle className="mr-2 h-4 w-4" aria-hidden />
@@ -87,6 +87,15 @@ export function FacturaAccionesMenu({
           uuid_ingreso={uuid_ingreso}
           open={reimprimirOpen}
           onOpenChange={setReimprimirOpen}
+          onSuccess={onReimprimirSuccess}
+        />
+      ) : null}
+      {uuid_salida !== null ? (
+        <AnularFacturaDialog
+          uuid_salida={uuid_salida}
+          open={anularOpen}
+          onOpenChange={setAnularOpen}
+          onSuccess={onAnularSuccess}
         />
       ) : null}
     </div>
