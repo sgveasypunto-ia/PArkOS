@@ -216,6 +216,12 @@ async def crear_subscripcion_vehiculo(
         ) from exc
 
     # --- 5: V6 cantidad_maxima_vehiculos (reused pure check). ------------
+    # Lock de la suscripcion y RECONTEO bajo el lock: el `detalle` de arriba
+    # pudo quedar viejo frente a un alta concurrente (carrera de cupo).
+    await repo_venta.bloquear_subscripcion(session, payload.uuid_subscripcion_cliente)
+    detalle = await repo_cupos.buscar_subscripcion_con_vehiculos_por_uuid(
+        session, uuid_subscripcion_cliente=payload.uuid_subscripcion_cliente
+    )
     try:
         repo_venta.validar_cantidad_maxima_vehiculos(
             plan=detalle.plan, n_placas=len(detalle.vehiculos) + 1

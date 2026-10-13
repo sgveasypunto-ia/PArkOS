@@ -81,6 +81,7 @@ __all__ = [
     "crear_subscripcion_cliente",
     "crear_subscripcion_vehiculos_bulk",
     "validar_cantidad_maxima_vehiculos",
+    "bloquear_subscripcion",
     "validar_placa_duplicada_subscripcion",
     "validar_mismo_tipo_vehiculos",
     "validar_placas_mismo_tipo_vehiculo",
@@ -710,6 +711,22 @@ async def crear_subscripcion_cliente(
     )
 
 
+async def bloquear_subscripcion(
+    session: AsyncSession, uuid_subscripcion_cliente: uuid_lib.UUID
+) -> None:
+    """Toma ``pg_advisory_xact_lock`` de la suscripcion (reentrante en la tx).
+
+    Los handlers que validan cupo (V6) deben llamarlo ANTES de contar las
+    placas inscritas y volver a contar bajo el lock: si no, dos altas
+    concurrentes cuentan N, ambas pasan y el INSERT (serializado despues)
+    supera ``cantidad_maxima_vehiculos``. Se libera con el commit/rollback.
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:k)"),
+        {"k": uuid_to_int64(uuid_subscripcion_cliente)},
+    )
+
+
 async def crear_subscripcion_vehiculos_bulk(
     session: AsyncSession,
     *,
@@ -727,10 +744,7 @@ async def crear_subscripcion_vehiculos_bulk(
 
     Returns the list of newly inserted ORM rows.
     """
-    await session.execute(
-        text("SELECT pg_advisory_xact_lock(:k)"),
-        {"k": uuid_to_int64(uuid_subscripcion_cliente)},
-    )
+    await bloquear_subscripcion(session, uuid_subscripcion_cliente)
     rows: list[SubscripcionVehiculos] = []
     for v_uuid in uuid_vehiculos:
         row = SubscripcionVehiculos(

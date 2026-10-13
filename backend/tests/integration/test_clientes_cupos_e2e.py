@@ -223,7 +223,7 @@ async def test_agregar_vehiculo_happy_path_single_commit() -> None:
     session.commit = AsyncMock()
     payload = _build_agregar_payload(uuid_subscripcion_cliente=subscripcion.uuid)
 
-    m_lookup = AsyncMock(side_effect=[detalle_antes, detalle_despues])
+    m_lookup = AsyncMock(side_effect=[detalle_antes, detalle_antes, detalle_despues])
     m_buscar_o_crear = AsyncMock(return_value=(nuevo_vehiculo, True))
     m_agregar = AsyncMock()
 
@@ -235,6 +235,9 @@ async def test_agregar_vehiculo_happy_path_single_commit() -> None:
             handler_mod.repo_venta, "buscar_o_crear_vehiculo_por_placa", new=m_buscar_o_crear
         ),
         patch.object(handler_mod.repo_cupos, "agregar_vehiculo_a_subscripcion", new=m_agregar),
+        patch.object(
+            handler_mod.repo_venta, "bloquear_subscripcion", new=AsyncMock(return_value=None)
+        ),
         patch.object(
             handler_mod.repo_venta,
             "validar_placa_duplicada_subscripcion",
@@ -288,6 +291,9 @@ async def test_agregar_vehiculo_cantidad_maxima_excedida_no_commit() -> None:
             handler_mod.repo_venta, "buscar_o_crear_vehiculo_por_placa", new=m_buscar_o_crear
         ),
         patch.object(handler_mod.repo_cupos, "agregar_vehiculo_a_subscripcion", new=m_agregar),
+        patch.object(
+            handler_mod.repo_venta, "bloquear_subscripcion", new=AsyncMock(return_value=None)
+        ),
         patch.object(
             handler_mod.repo_venta,
             "validar_placa_duplicada_subscripcion",
@@ -344,6 +350,9 @@ async def test_agregar_vehiculo_tipo_incompatible_no_commit() -> None:
             handler_mod.repo_venta, "buscar_o_crear_vehiculo_por_placa", new=m_buscar_o_crear
         ),
         patch.object(handler_mod.repo_cupos, "agregar_vehiculo_a_subscripcion", new=m_agregar),
+        patch.object(
+            handler_mod.repo_venta, "bloquear_subscripcion", new=AsyncMock(return_value=None)
+        ),
         patch.object(
             handler_mod.repo_venta,
             "validar_placa_duplicada_subscripcion",
@@ -422,6 +431,9 @@ async def test_agregar_vehiculo_ya_inscrito_no_commit() -> None:
             handler_mod.repo_venta, "buscar_o_crear_vehiculo_por_placa", new=m_buscar_o_crear
         ),
         patch.object(handler_mod.repo_cupos, "agregar_vehiculo_a_subscripcion", new=m_agregar),
+        patch.object(
+            handler_mod.repo_venta, "bloquear_subscripcion", new=AsyncMock(return_value=None)
+        ),
         patch.object(
             handler_mod.repo_venta,
             "validar_placa_duplicada_subscripcion",

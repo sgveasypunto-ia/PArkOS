@@ -672,3 +672,42 @@ async def test_lectores_ignoran_fila_abierta_inactiva_legada(pg_engine, world) -
                 assert await _count_subscripciones_vigentes_dependientes(s, tipo) == 0
         finally:
             await trans.rollback()
+
+
+async def test_agregar_concurrente_sobre_cupo_deja_pasar_solo_uno(client, pg_engine, world) -> None:
+    import asyncio
+
+    w = world
+    # plan_any: cantidad_maxima_vehiculos=5 -> 4 inscritas, quedan 1 cupo.
+    sub, _ = await _make_sub(
+        pg_engine,
+        w,
+        sucursal=w.suc_a,
+        plan=w.plan_any,
+        vehiculos=[(_placa(), w.carro) for _ in range(4)],
+    )
+    token = await _login(client, w.sup_email)
+    p1, p2 = _placa(), _placa()
+
+    async def _agregar(placa):
+        return await client.post(
+            "/api/v1/clientes/subscripcion-vehiculos/agregar",
+            json={"uuid_subscripcion_cliente": str(sub), "placa": placa},
+            headers=_h(token, w.suc_a),
+        )
+
+    r1, r2 = await asyncio.gather(_agregar(p1), _agregar(p2))
+    codes = sorted([r1.status_code, r2.status_code])
+    assert codes == [201, 422], (r1.text, r2.text)
+    async with pg_engine.connect() as conn:
+        n = (
+            await conn.execute(
+                text(
+                    "SELECT count(*) FROM prod.subscripcion_vehiculos "
+                    "WHERE uuid_subscripcion_cliente=:s AND vigente_hasta IS NULL "
+                    "AND estado='activo'"
+                ),
+                {"s": sub},
+            )
+        ).scalar_one()
+    assert n == 5
