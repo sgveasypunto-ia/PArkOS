@@ -69,6 +69,20 @@ export class VentaSuscripcionTipoIncompatibleError extends Error {
 }
 
 /**
+ * 422 `plan_tipo_cliente_incompatible` (#14) — the plan is restricted to the
+ * other client type (`tipo_cliente_permitido`). Carries the permitted type.
+ */
+export class VentaSuscripcionPlanTipoClienteError extends Error {
+  public readonly status = 422;
+  public readonly tipoClientePermitido: string;
+  constructor(tipoClientePermitido = '') {
+    super('plan_tipo_cliente_incompatible');
+    this.name = 'VentaSuscripcionPlanTipoClienteError';
+    this.tipoClientePermitido = tipoClientePermitido;
+  }
+}
+
+/**
  * 422 `cantidad_maxima_excedida` — `len(payload.placas) >
  * plan.cantidad_maxima_vehiculos` (F1.12 REQ-OPS-088). Carries
  * the plan's max-vehiculos limit.

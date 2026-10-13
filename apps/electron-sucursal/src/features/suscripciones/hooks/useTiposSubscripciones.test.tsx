@@ -76,6 +76,18 @@ describe('useTiposSubscripciones — PT-2', () => {
     expect(mockFetch.mock.calls[0]?.[0]).toBe('/api/v1/catalogos/tipo-subscripciones?uuid_sucursal=suc-1');
   });
 
+  it('T4 (#14): tipo_cliente se envia como query param', async () => {
+    mockFetch.mockResolvedValueOnce({ items: [], next_cursor: null });
+    const { result } = renderHook(
+      () => useTiposSubscripciones('suc-1', '00000000-0000-0000-0000-00000000aa01', 'natural'),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.data).toBeDefined());
+    expect(mockFetch.mock.calls[0]?.[0]).toBe(
+      '/api/v1/catalogos/tipo-subscripciones?uuid_sucursal=suc-1&uuid_tipo_vehiculo=00000000-0000-0000-0000-00000000aa01&tipo_cliente=natural',
+    );
+  });
+
   it('T3: null type -> no fetch at all', async () => {
     renderHook(() => useTiposSubscripciones('suc-1', null), { wrapper });
     await new Promise((r) => setTimeout(r, 0));

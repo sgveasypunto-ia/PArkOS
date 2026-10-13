@@ -47,6 +47,10 @@ export const REGEX_AUTO = /^[A-Z]{3}[0-9]{3}$/;
  */
 export const REGEX_MOTO = /^[A-Z]{3}[0-9]{2}[A-Z]$/;
 
+/** Placeholders de ejemplo por tipo de vehículo (formatos de `REGEX_AUTO` / `REGEX_MOTO`). */
+export const PLACEHOLDER_PLACA_AUTO = 'ABC123';
+export const PLACEHOLDER_PLACA_MOTO = 'ABC12D';
+
 /**
  * Detecta tipo de vehículo (carro / moto) a partir de la placa digitada.
  *

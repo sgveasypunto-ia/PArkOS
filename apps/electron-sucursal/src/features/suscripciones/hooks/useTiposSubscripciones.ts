@@ -26,21 +26,30 @@ import {
   TipoSubscripcionListSchema,
 } from '../api/ventaSuscripcionApi';
 
-function buildUrl(uuid_sucursal: string, uuid_tipo_vehiculo: string | null): string {
-  const base = `${GET_TIPOS_SUBSCRIPCION_PATH}?uuid_sucursal=${encodeURIComponent(uuid_sucursal)}`;
+export type TipoClientePlan = 'natural' | 'juridica';
+
+function buildUrl(
+  uuid_sucursal: string,
+  uuid_tipo_vehiculo: string | null,
+  tipoCliente: TipoClientePlan | null = null,
+): string {
+  let url = `${GET_TIPOS_SUBSCRIPCION_PATH}?uuid_sucursal=${encodeURIComponent(uuid_sucursal)}`;
   // PT-2: the backend returns the plans of that vehicle type plus the ones
   // with a NULL type (valid for any vehicle).
-  return uuid_tipo_vehiculo
-    ? `${base}&uuid_tipo_vehiculo=${encodeURIComponent(uuid_tipo_vehiculo)}`
-    : base;
+  if (uuid_tipo_vehiculo) url += `&uuid_tipo_vehiculo=${encodeURIComponent(uuid_tipo_vehiculo)}`;
+  // #14: plans restricted to the other client type (e.g. MENSUAL_EMPRESA for a
+  // natural person) are never offered; unrestricted plans (NULL) always are.
+  if (tipoCliente) url += `&tipo_cliente=${encodeURIComponent(tipoCliente)}`;
+  return url;
 }
 
 async function fetchTiposSubscripciones(
   uuid_sucursal: string,
   uuid_tipo_vehiculo: string | null,
+  tipoCliente: TipoClientePlan | null,
 ): Promise<TipoSubscripcion[]> {
   const { parkosFetch } = await import('@parkos/ui-kit/fetch');
-  const raw = await parkosFetch<unknown>(buildUrl(uuid_sucursal, uuid_tipo_vehiculo));
+  const raw = await parkosFetch<unknown>(buildUrl(uuid_sucursal, uuid_tipo_vehiculo, tipoCliente));
   // Catalog endpoints wrap the rows in `{ items, next_cursor }` per
   // the F1.12 cursor-pagination contract. Unwrap to the bare array
   // for SWR consumers + downstream callers.
@@ -63,16 +72,18 @@ export interface UseTiposSubscripcionesResult {
 export function useTiposSubscripciones(
   uuid_sucursal: string | null,
   uuid_tipo_vehiculo?: string | null,
+  tipoCliente?: TipoClientePlan | null,
 ): UseTiposSubscripcionesResult {
   const accessToken = useAuthStore((s) => s.accessToken);
   const tipoVehiculo = uuid_tipo_vehiculo ?? null;
+  const tipoCli = tipoCliente ?? null;
   const gated = uuid_tipo_vehiculo === null;
   const key =
-    uuid_sucursal && accessToken && !gated ? buildUrl(uuid_sucursal, tipoVehiculo) : null;
+    uuid_sucursal && accessToken && !gated ? buildUrl(uuid_sucursal, tipoVehiculo, tipoCli) : null;
 
   const { data, error, isLoading, mutate } = useSWR<TipoSubscripcion[]>(
     key,
-    () => fetchTiposSubscripciones(uuid_sucursal as string, tipoVehiculo),
+    () => fetchTiposSubscripciones(uuid_sucursal as string, tipoVehiculo, tipoCli),
     {
       dedupingInterval: 30_000,
       shouldRetryOnError: (err) => {

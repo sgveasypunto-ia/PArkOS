@@ -85,7 +85,8 @@ const PLANES = [
 
 // Mirrors the backend filter: plans of that type + the NULL-type ones; `null`
 // (type not chosen yet) means nothing is fetched.
-const mockUseTiposSubscripciones = vi.fn((_suc: string | null, tipo?: string | null) => ({
+const mockUseTiposSubscripciones = vi.fn(
+  (_suc: string | null, tipo?: string | null, _tipoCliente?: 'natural' | 'juridica' | null) => ({
   data:
     tipo === null
       ? undefined
@@ -93,10 +94,14 @@ const mockUseTiposSubscripciones = vi.fn((_suc: string | null, tipo?: string | n
   error: undefined,
   refresh: async () => undefined,
   isLoading: false,
-}));
+  }),
+);
 vi.mock('../hooks/useTiposSubscripciones', () => ({
-  useTiposSubscripciones: (suc: string | null, tipo?: string | null) =>
-    mockUseTiposSubscripciones(suc, tipo),
+  useTiposSubscripciones: (
+    suc: string | null,
+    tipo?: string | null,
+    tipoCliente?: 'natural' | 'juridica' | null,
+  ) => mockUseTiposSubscripciones(suc, tipo, tipoCliente),
 }));
 
 vi.mock('../../catalogos/hooks/useTiposVehiculo', () => ({
@@ -623,9 +628,9 @@ describe('<Venta /> — wizard 6 pasos: cliente -> tipo -> plan -> cantidad -> p
     renderVenta();
     await paso1();
     // Before choosing a type nothing is fetched (null gate), no plan list yet.
-    expect(mockUseTiposSubscripciones).toHaveBeenLastCalledWith(null, null);
+    expect(mockUseTiposSubscripciones).toHaveBeenLastCalledWith(null, null, 'juridica');
     await paso2(TIPO_MOTO);
-    expect(mockUseTiposSubscripciones).toHaveBeenLastCalledWith(null, TIPO_MOTO);
+    expect(mockUseTiposSubscripciones).toHaveBeenLastCalledWith(null, TIPO_MOTO, 'juridica');
     expect(screen.getByTestId(`venta-plan-${PLAN_MOTO}`)).toBeDefined();
     expect(screen.getByTestId(`venta-plan-${PLAN_ANY}`)).toBeDefined();
     expect(screen.queryByTestId(`venta-plan-${PLAN_CARRO}`)).toBeNull();
@@ -968,5 +973,88 @@ describe('<Venta /> paso 6 — fecha de fin editable (solo acortar)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('<Venta /> — tipo de cliente, placeholder, cantidad en vivo y DV (#13 #14 #15 #17)', () => {
+  it('#14: persona natural pide planes con tipo_cliente natural; empresa con juridica', async () => {
+    renderVenta();
+    await change('venta-cliente-tipo-persona', 'persona');
+    await change('venta-cliente-numero', '1234567');
+    await change('venta-cliente-nombre', 'Ana');
+    await change('venta-cliente-apellido', 'Perez');
+    await click('venta-paso-1-siguiente');
+    await paso2(TIPO_MOTO);
+    expect(mockUseTiposSubscripciones).toHaveBeenLastCalledWith(null, TIPO_MOTO, 'natural');
+  });
+
+  it('#14: re-editar el paso 1 con otro tipo de cliente descarta el plan elegido', async () => {
+    renderVenta({ onCancel: vi.fn() });
+    await paso1(); // empresa / NIT
+    await paso2(TIPO_MOTO);
+    await click(`venta-plan-${PLAN_MOTO}`);
+    await click('venta-volver'); // -> 2
+    await click('venta-volver'); // -> 1
+    await change('venta-cliente-tipo-persona', 'persona');
+    await change('venta-cliente-numero', '1234567');
+    await change('venta-cliente-nombre', 'Ana');
+    await change('venta-cliente-apellido', 'Perez');
+    await click('venta-paso-1-siguiente');
+    await click('venta-paso-2-siguiente');
+    expect(
+      screen.getByTestId(`venta-plan-${PLAN_MOTO}`).getAttribute('aria-pressed'),
+    ).toBe('false');
+    expect((screen.getByTestId('venta-paso-3-siguiente') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('#14: 422 plan_tipo_cliente_incompatible vuelve al paso 3 con mensaje', async () => {
+    const mod = await import('../hooks/useVentaSuscripcion');
+    mockTrigger.mockRejectedValueOnce(new mod.VentaSuscripcionPlanTipoClienteError('juridica'));
+    renderVenta();
+    await hastaPago();
+    await click('pago-confirmar-stub');
+    expect(screen.getByTestId('venta-paso-3')).toBeDefined();
+    expect(screen.getByTestId('venta-paso-3-plan-tipo-cliente-error')).toBeDefined();
+  });
+
+  it('#13: el placeholder de la placa es ABC12D para moto y ABC123 para carro', async () => {
+    renderVenta();
+    await paso1();
+    await paso2(TIPO_MOTO);
+    await paso3(PLAN_MOTO);
+    await paso4();
+    expect(screen.getByTestId('venta-placa-input-0').getAttribute('placeholder')).toBe('ABC12D');
+    cleanup();
+    renderVenta();
+    await paso1();
+    await paso2(TIPO_CARRO);
+    await paso3(PLAN_CARRO);
+    await paso4();
+    expect(screen.getByTestId('venta-placa-input-0').getAttribute('placeholder')).toBe('ABC123');
+  });
+
+  it('#15: cantidad sobre el maximo del plan muestra el error al escribir y deshabilita Siguiente', async () => {
+    renderVenta();
+    await paso1();
+    await paso2();
+    await paso3(); // PLAN_CARRO: max 1
+    await change('venta-cantidad-input', '2');
+    expect(screen.getByTestId('venta-cantidad-error')).toBeDefined();
+    expect((screen.getByTestId('venta-paso-4-siguiente') as HTMLButtonElement).disabled).toBe(true);
+    await change('venta-cantidad-input', '1');
+    expect(screen.queryByTestId('venta-cantidad-error')).toBeNull();
+    expect((screen.getByTestId('venta-paso-4-siguiente') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('#17: NIT 800123456 con DV 9 informa el DV esperado (5)', async () => {
+    renderVenta();
+    await change('venta-cliente-numero', '800123456');
+    await change('venta-cliente-dv', '9');
+    await change('venta-cliente-nombre', 'ACME');
+    await click('venta-paso-1-siguiente');
+    expect(screen.getByTestId('venta-cliente-dv-error').textContent).toContain('DV esperado: 5');
+    await change('venta-cliente-dv', '5');
+    await click('venta-paso-1-siguiente');
+    expect(screen.getByTestId('venta-paso-2')).toBeDefined();
   });
 });

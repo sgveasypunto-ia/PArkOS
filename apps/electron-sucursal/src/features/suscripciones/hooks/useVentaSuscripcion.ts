@@ -47,6 +47,7 @@ export {
   VentaSuscripcionTipoIncompatibleError,
   VentaSuscripcionCantidadMaximaError,
   VentaSuscripcionFechaFinError,
+  VentaSuscripcionPlanTipoClienteError,
   VentaSuscripcionValidationError,
 } from './ventaSuscripcionErrors';
 
@@ -61,6 +62,7 @@ import {
   VentaSuscripcionTipoIncompatibleError,
   VentaSuscripcionCantidadMaximaError,
   VentaSuscripcionFechaFinError,
+  VentaSuscripcionPlanTipoClienteError,
   VentaSuscripcionValidationError,
   extraerMensajeDetail422,
 } from './ventaSuscripcionErrors';
@@ -97,6 +99,7 @@ interface BackendErrorBody {
   cantidad_maxima_vehiculos?: number;
   message?: string;
   fecha_fin_maxima?: string;
+  tipo_cliente_permitido?: string;
 }
 
 /**
@@ -166,6 +169,11 @@ async function mutateFn(
           throw new VentaSuscripcionFechaFinError(
             typeof parsed?.message === 'string' ? parsed.message : '',
             typeof parsed?.fecha_fin_maxima === 'string' ? parsed.fecha_fin_maxima : '',
+          );
+        }
+        if (code === 'plan_tipo_cliente_incompatible') {
+          throw new VentaSuscripcionPlanTipoClienteError(
+            typeof parsed?.tipo_cliente_permitido === 'string' ? parsed.tipo_cliente_permitido : '',
           );
         }
         if (code === 'tipo_vehiculo_incompatible') {
