@@ -636,7 +636,7 @@ describe('<PlacaInputHero /> — salida por consecutivo escrito + Enter (sin sug
   });
 });
 
-describe('<VehiculosDentroList /> — click en un ítem abre la salida (B)', () => {
+describe('<VehiculosDentroList /> — lista con scroll + menú de acciones por fila (B)', () => {
   const ITEM_CON_PLACA = {
     uuid: 'uuid-ingreso-abc123',
     placa: 'ABC123',
@@ -670,13 +670,80 @@ describe('<VehiculosDentroList /> — click en un ítem abre la salida (B)', () 
     );
   }
 
-  it('B1: ítem sin placa → botón accesible que abre salida con initialUuidIngreso', async () => {
+  const ITEM_SIN_NADA = {
+    uuid: 'uuid-ingreso-sin-id',
+    placa: null,
+    fecha_ingreso: '2026-09-19T10:00:00Z',
+    consecutivo: null,
+    created_at: '2026-09-19T10:00:00Z',
+    uuid_tipo_vehiculo: '00000000-0000-0000-0000-000000000002',
+    uuid_sucursal: 'suc-uuid-1',
+  };
+
+  async function abrirMenu(uuid: string, name: RegExp): Promise<HTMLElement> {
+    const li = screen.getByTestId(`vehiculos-item-${uuid}`);
+    const trigger = within(li).getByRole('button', { name });
+    await userEvent.click(trigger);
+    return trigger;
+  }
+
+  it('B1: muestra TODAS las filas sin controles de paginación, con conteo en el header', () => {
+    const muchos = Array.from({ length: 25 }, (_, i) => ({
+      ...ITEM_CON_PLACA,
+      uuid: `uuid-${i}`,
+      placa: `AAA${String(i).padStart(3, '0')}`,
+    }));
+    mockUseIngresosActivos.mockReturnValue(muchos);
+    renderConSesion();
+
+    const list = screen.getByTestId('vehiculos-list');
+    expect(within(list).getAllByRole('listitem')).toHaveLength(25);
+    expect(screen.getByTestId('vehiculos-count')).toHaveTextContent('25');
+    expect(list.className).toContain('overflow-y-auto');
+    expect(screen.queryByTestId('vehiculos-pagination')).not.toBeInTheDocument();
+    expect(screen.queryByText(/por página/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /página (anterior|siguiente)/i })).toBeNull();
+  });
+
+  it('B2: la fila es un trigger de menú (aria-haspopup/expanded) y click NO abre salida directo', async () => {
+    mockUseIngresosActivos.mockReturnValue([ITEM_CON_PLACA]);
+    renderConSesion();
+
+    const li = screen.getByTestId('vehiculos-item-uuid-ingreso-abc123');
+    const trigger = within(li).getByRole('button', { name: 'Acciones para ABC123' });
+    expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+
+    await userEvent.click(trigger);
+
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).getAllByRole('menuitem').map((m) => m.textContent)).toEqual([
+      'Registrar salida',
+      'Reimprimir ticket de entrada',
+    ]);
+    expect(useDashboardDrawerStore.getState().openDrawer).toBeNull();
+  });
+
+  it('B3: "Registrar salida" con placa → abre salida con esa placa', async () => {
+    mockUseIngresosActivos.mockReturnValue([ITEM_CON_PLACA]);
+    renderConSesion();
+
+    await abrirMenu('uuid-ingreso-abc123', /Acciones para ABC123/);
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Registrar salida' }));
+
+    const state = useDashboardDrawerStore.getState();
+    expect(state.openDrawer).toBe('salida');
+    expect(state.initialPlaca).toBe('ABC123');
+    expect(state.initialUuidIngreso).toBeNull();
+  });
+
+  it('B4: ítem sin placa (consecutivo) → "Registrar salida" abre salida con initialUuidIngreso', async () => {
     mockUseIngresosActivos.mockReturnValue([ITEM_SIN_PLACA]);
     renderConSesion();
 
-    const li = screen.getByTestId('vehiculos-item-uuid-ingreso-patineta');
-    const boton = within(li).getByRole('button', { name: /PATINETA-000003-34a24bae/ });
-    await userEvent.click(boton);
+    await abrirMenu('uuid-ingreso-patineta', /PATINETA-000003-34a24bae/);
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Registrar salida' }));
 
     const state = useDashboardDrawerStore.getState();
     expect(state.openDrawer).toBe('salida');
@@ -684,19 +751,66 @@ describe('<VehiculosDentroList /> — click en un ítem abre la salida (B)', () 
     expect(state.initialUuidIngreso).toBe('uuid-ingreso-patineta');
   });
 
-  it('B2: ítem con placa → abre salida con esa placa; activable por teclado (Enter)', async () => {
+  it('B5: "Reimprimir ticket de entrada" → abre el drawer reimpresion con la placa', async () => {
+    mockUseIngresosActivos.mockReturnValue([ITEM_CON_PLACA]);
+    renderConSesion();
+
+    await abrirMenu('uuid-ingreso-abc123', /Acciones para ABC123/);
+    await userEvent.click(
+      await screen.findByRole('menuitem', { name: 'Reimprimir ticket de entrada' }),
+    );
+
+    const state = useDashboardDrawerStore.getState();
+    expect(state.openDrawer).toBe('reimpresion');
+    expect(state.initialPlaca).toBe('ABC123');
+  });
+
+  it('B6: ítem sin placa → reimpresión usa el consecutivo como término', async () => {
+    mockUseIngresosActivos.mockReturnValue([ITEM_SIN_PLACA]);
+    renderConSesion();
+
+    await abrirMenu('uuid-ingreso-patineta', /PATINETA-000003-34a24bae/);
+    await userEvent.click(
+      await screen.findByRole('menuitem', { name: 'Reimprimir ticket de entrada' }),
+    );
+
+    const state = useDashboardDrawerStore.getState();
+    expect(state.openDrawer).toBe('reimpresion');
+    expect(state.initialPlaca).toBe('PATINETA-000003-34a24bae');
+  });
+
+  it('B7: sin placa ni consecutivo → el menú oculta la reimpresión y deja la salida', async () => {
+    mockUseIngresosActivos.mockReturnValue([ITEM_SIN_NADA]);
+    renderConSesion();
+
+    await abrirMenu('uuid-ingreso-sin-id', /Acciones para uuid-ing/);
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).getAllByRole('menuitem')).toHaveLength(1);
+    expect(within(menu).getByRole('menuitem', { name: 'Registrar salida' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /reimprimir/i })).toBeNull();
+
+    await userEvent.click(within(menu).getByRole('menuitem', { name: 'Registrar salida' }));
+    expect(useDashboardDrawerStore.getState().initialUuidIngreso).toBe('uuid-ingreso-sin-id');
+  });
+
+  it('B8: teclado — Enter abre el menú; Esc lo cierra y devuelve el foco a la fila', async () => {
     mockUseIngresosActivos.mockReturnValue([ITEM_CON_PLACA]);
     renderConSesion();
 
     const li = screen.getByTestId('vehiculos-item-uuid-ingreso-abc123');
-    const boton = within(li).getByRole('button', { name: /ABC123/ });
-    boton.focus();
+    const trigger = within(li).getByRole('button', { name: 'Acciones para ABC123' });
+    trigger.focus();
     await userEvent.keyboard('{Enter}');
+    expect(await screen.findByRole('menu')).toBeInTheDocument();
 
-    const state = useDashboardDrawerStore.getState();
-    expect(state.openDrawer).toBe('salida');
-    expect(state.initialPlaca).toBe('ABC123');
-    expect(state.initialUuidIngreso).toBeNull();
+    await userEvent.keyboard('{Escape}');
+
+    await waitFor(() => {
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    });
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(trigger).toHaveFocus();
+    expect(useDashboardDrawerStore.getState().openDrawer).toBeNull();
   });
 });
 

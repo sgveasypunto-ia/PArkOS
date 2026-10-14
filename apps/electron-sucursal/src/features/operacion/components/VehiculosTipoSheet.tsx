@@ -36,6 +36,7 @@ import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
 import { formatHoraCorta } from '../../caja/lib/format';
 import { useIngresosActivos } from '../hooks/useIngresosActivos';
 import { useOcupacion } from '../hooks/useOcupacion';
+import { openReimpresionDeIngreso, terminoReimpresion } from '../lib/openReimpresionDeIngreso';
 import { openSalidaDeIngreso } from '../lib/openSalidaDeIngreso';
 
 const TITLE_ID = 'vehiculos-tipo-title';
@@ -147,7 +148,7 @@ export function VehiculosTipoSheet(): JSX.Element {
                 const idVisible = it.placa ?? it.consecutivo ?? it.uuid.slice(0, 8);
                 // Término que `resolverIngresoReimpresion` entiende (placa o
                 // consecutivo); sin ninguno no hay forma de re-buscar el ingreso.
-                const terminoReimpresion = it.placa ?? it.consecutivo;
+                const puedeReimprimir = terminoReimpresion(it) !== null;
                 const anchorId = `${ANCHOR_ID}-${it.uuid}`;
                 return (
                   <li
@@ -182,7 +183,7 @@ export function VehiculosTipoSheet(): JSX.Element {
                           defaultValue: 'Registrar salida',
                         })}
                       </button>
-                      {terminoReimpresion !== null && (
+                      {puedeReimprimir && (
                         <button
                           type="button"
                           data-testid={`vehiculos-tipo-reimprimir-${it.uuid}`}
@@ -190,7 +191,7 @@ export function VehiculosTipoSheet(): JSX.Element {
                             id: idVisible,
                             defaultValue: 'Reimprimir ticket de {{id}}',
                           })}
-                          onClick={() => openDrawer('reimpresion', anchorId, terminoReimpresion)}
+                          onClick={() => openReimpresionDeIngreso(openDrawer, anchorId, it)}
                           className="h-8 rounded-lg border border-border bg-background px-3 text-xs font-medium transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         >
                           {t('operacion:vehiculosTipo.reimprimir', {

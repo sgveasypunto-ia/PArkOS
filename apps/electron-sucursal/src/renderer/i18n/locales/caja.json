@@ -101,7 +101,9 @@
     "alertas": "Alertas",
     "placeholderDesc": "Sección pendiente.",
     "consecutivoNoEncontrado": "Consecutivo no encontrado entre los vehículos dentro.",
-    "registrarSalidaDe": "Registrar salida de {{id}}",
+    "accionesDe": "Acciones para {{id}}",
+    "registrarSalida": "Registrar salida",
+    "reimprimirTicketEntrada": "Reimprimir ticket de entrada",
     "placaHint": "Digita la placa y presioná Enter. El sistema abre automáticamente el panel correspondiente (pago si tiene cobro pendiente, salida si ya está dentro, ingreso si es nueva).",
     "help": {
       "ingreso": "Abrir el panel de ingreso (tecla F1).",
