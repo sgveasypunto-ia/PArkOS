@@ -95,14 +95,18 @@ from ._helpers import apply_no_store_header, no_store_headers, voucher_duplicado
 
 router = APIRouter(prefix="/facturacion", tags=["facturacion"])
 
-# Issuer-permission defaults per resource (T-PR6-10). All 5 tables use
-# the same operator + admin scope because the operator mutates these
-# (in custom endpoints shipping later) and the admin needs cross-branch
-# read visibility.
+# Issuer-permission defaults per resource (T-PR6-10). Tables mounted
+# via :func:`make_router` use the same operator + admin scope because
+# the operator mutates these (in custom endpoints shipping later) and
+# the admin needs cross-branch read visibility.
+#
+# HU-X.1b (2026-10-13): ``factura-detalle`` and ``factura-impuestos`` are
+# NOT in this dict because they have their own custom handlers mounted
+# below (the generic factory silently drops ``?uuid_factura=`` because
+# its ``list_endpoint`` does not declare the Query param — same defect
+# that X.1a fixed for ``factura-pagos``).
 _ROUTER_CONFIG = {
     "facturas": ("operador-,admin-", "emitir_factura"),
-    "factura-detalle": ("operador-,admin-", "emitir_factura"),
-    "factura-impuestos": ("operador-,admin-", "emitir_factura"),
     "factura-otros-cobros": ("operador-,admin-", "emitir_factura"),
     "factura-pagos": ("operador-,admin-", "emitir_factura"),
 }
@@ -146,22 +150,9 @@ _mount_factura(
     create_schema=FacturasCreate,
     update_schema=FacturasUpdate,
 )
-_mount_factura(
-    resource="factura-detalle",
-    model_cls=FacturaDetalle,
-    read_schema=FacturaDetalleRead,
-    read_list_schema=FacturaDetalleReadList,
-    create_schema=FacturaDetalleCreate,
-    update_schema=FacturaDetalleUpdate,
-)
-_mount_factura(
-    resource="factura-impuestos",
-    model_cls=FacturaImpuestos,
-    read_schema=FacturaImpuestosRead,
-    read_list_schema=FacturaImpuestosReadList,
-    create_schema=FacturaImpuestosCreate,
-    update_schema=FacturaImpuestosUpdate,
-)
+# HU-X.1b: ``factura-detalle`` and ``factura-impuestos`` are NOT mounted
+# via ``_mount_factura`` (see comment in ``_ROUTER_CONFIG``). Their
+# custom handlers live below, right after the ``factura-pagos`` ones.
 _mount_factura(
     resource="factura-otros-cobros",
     model_cls=FacturaOtrosCobros,
@@ -208,6 +199,16 @@ _facturacion_issuer_dep = requires_issuer("operador-", "admin-")
 # the default-arg evaluation time (Python's late binding for default
 # args). Equivalent to what the factory's ``list_endpoint`` does, with
 # ONE addition: ``?uuid_factura=`` is honoured.
+#
+# HU-X.1b (2026-10-13) — same pattern replicated for
+# ``factura-detalle`` and ``factura-impuestos`` (Bug #1 from the E2E
+# report). The 2026-10-13 E2E proved that the E2E ``FacturaDetalle`` page
+# was rendering 5 items from 5 different facturas when opening the
+# detail of any single one — the root cause was the factory silently
+# dropping the ``?uuid_factura=`` query param because ``list_endpoint``
+# never declared it. The two handlers below are verbatim copies of the
+# ``factura-pagos`` shape (cursor decode, ``WHERE uuid_factura = ?``,
+# cursor encode), pointing at the new model classes.
 # ---------------------------------------------------------------------------
 
 
@@ -309,6 +310,201 @@ async def get_factura_pago(
             detail={"error": "not_found", "uuid": str(uuid)},
         )
     return FacturaPagosRead.model_validate(row)
+
+
+# ---------------------------------------------------------------------------
+# HU-X.1b — custom list + read handlers for ``factura-detalle`` and
+# ``factura-impuestos``. Same shape as the X.1a ``factura-pagos`` handlers
+# above. See the comment block above for the full rationale.
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/factura-detalle",
+    response_model=FacturaDetalleReadList,
+    summary="HU-X.1b: list ``prod.factura_detalle`` rows, optional ``?uuid_factura=`` filter.",
+    responses={
+        400: {"description": "invalid_cursor"},
+    },
+)
+async def list_factura_detalle(
+    cursor: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    uuid_factura: uuid_lib.UUID | None = Query(None),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_facturacion_issuer_dep),
+) -> FacturaDetalleReadList:
+    """List ``prod.factura_detalle`` rows.
+
+    Filters and pagination mirror the generic ``make_router`` list
+    endpoint, with ONE addition: ``?uuid_factura=`` is honoured
+    (factory silently drops it because the param is not declared).
+
+    The filter is applied BEFORE the cursor pagination so the cursor
+    stays consistent within the filtered set (X.1a invariant).
+    Tenant scope is enforced by ``do_orm_execute`` (``uuid_sucursal``
+    on ``FacturaDetalle``).
+    """
+    try:
+        decoded = _cursor_decode(cursor) if cursor else None
+    except InvalidCursorError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_cursor", "detail": str(exc)},
+        ) from exc
+
+    stmt = select(FacturaDetalle).order_by(
+        FacturaDetalle.created_at.asc(), FacturaDetalle.uuid.asc()
+    )
+    if uuid_factura is not None:
+        stmt = stmt.where(FacturaDetalle.uuid_factura == uuid_factura)
+    if decoded is not None:
+        cursor_ts = _parse_cursor_timestamp(decoded.created_at)  # type: ignore[attr-defined]
+        stmt = stmt.where(
+            (FacturaDetalle.created_at < cursor_ts)
+            | (
+                (FacturaDetalle.created_at == cursor_ts)
+                & (FacturaDetalle.uuid > uuid_lib.UUID(decoded.uuid))  # type: ignore[attr-defined]
+            )
+        )
+    stmt = stmt.limit(limit + 1)
+
+    result = await session.execute(stmt)
+    rows = list(result.scalars().all())
+
+    next_cursor: str | None = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1]
+        next_cursor = _cursor_encode(
+            _Cursor(
+                created_at=last.created_at.isoformat(),
+                uuid=str(last.uuid),
+            )
+        )
+
+    items = [FacturaDetalleRead.model_validate(row) for row in rows]
+    return FacturaDetalleReadList(items=items, next_cursor=next_cursor)
+
+
+@router.get(
+    "/factura-detalle/{uuid}",
+    response_model=FacturaDetalleRead,
+    summary="HU-X.1b: single-row read of ``prod.factura_detalle``.",
+    responses={404: {"description": "not_found"}},
+)
+async def get_factura_detalle(
+    uuid: uuid_lib.UUID,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_facturacion_issuer_dep),
+) -> FacturaDetalleRead:
+    """Single-row read by uuid.
+
+    Tenant scope enforced by ``do_orm_execute`` (uuid_sucursal column).
+    """
+    result = await session.execute(
+        select(FacturaDetalle).where(FacturaDetalle.uuid == uuid).limit(1)
+    )
+    row = result.scalars().first()
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "not_found", "uuid": str(uuid)},
+        )
+    return FacturaDetalleRead.model_validate(row)
+
+
+@router.get(
+    "/factura-impuestos",
+    response_model=FacturaImpuestosReadList,
+    summary="HU-X.1b: list ``prod.factura_impuestos`` rows, optional ``?uuid_factura=`` filter.",
+    responses={
+        400: {"description": "invalid_cursor"},
+    },
+)
+async def list_factura_impuestos(
+    cursor: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    uuid_factura: uuid_lib.UUID | None = Query(None),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_facturacion_issuer_dep),
+) -> FacturaImpuestosReadList:
+    """List ``prod.factura_impuestos`` rows.
+
+    Same filter + cursor contract as ``list_factura_detalle`` above.
+    Tenant scope enforced by ``do_orm_execute`` (uuid_sucursal column).
+    """
+    try:
+        decoded = _cursor_decode(cursor) if cursor else None
+    except InvalidCursorError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_cursor", "detail": str(exc)},
+        ) from exc
+
+    stmt = select(FacturaImpuestos).order_by(
+        FacturaImpuestos.created_at.asc(), FacturaImpuestos.uuid.asc()
+    )
+    if uuid_factura is not None:
+        stmt = stmt.where(FacturaImpuestos.uuid_factura == uuid_factura)
+    if decoded is not None:
+        cursor_ts = _parse_cursor_timestamp(decoded.created_at)  # type: ignore[attr-defined]
+        stmt = stmt.where(
+            (FacturaImpuestos.created_at < cursor_ts)
+            | (
+                (FacturaImpuestos.created_at == cursor_ts)
+                & (FacturaImpuestos.uuid > uuid_lib.UUID(decoded.uuid))  # type: ignore[attr-defined]
+            )
+        )
+    stmt = stmt.limit(limit + 1)
+
+    result = await session.execute(stmt)
+    rows = list(result.scalars().all())
+
+    next_cursor: str | None = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1]
+        next_cursor = _cursor_encode(
+            _Cursor(
+                created_at=last.created_at.isoformat(),
+                uuid=str(last.uuid),
+            )
+        )
+
+    items = [FacturaImpuestosRead.model_validate(row) for row in rows]
+    return FacturaImpuestosReadList(items=items, next_cursor=next_cursor)
+
+
+@router.get(
+    "/factura-impuestos/{uuid}",
+    response_model=FacturaImpuestosRead,
+    summary="HU-X.1b: single-row read of ``prod.factura_impuestos``.",
+    responses={404: {"description": "not_found"}},
+)
+async def get_factura_impuesto(
+    uuid: uuid_lib.UUID,
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    _ctx: TenantContext = Depends(get_tenant_ctx),  # noqa: B008
+    _claims: None = Depends(_facturacion_issuer_dep),
+) -> FacturaImpuestosRead:
+    """Single-row read by uuid.
+
+    Tenant scope enforced by ``do_orm_execute`` (uuid_sucursal column).
+    """
+    result = await session.execute(
+        select(FacturaImpuestos).where(FacturaImpuestos.uuid == uuid).limit(1)
+    )
+    row = result.scalars().first()
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "not_found", "uuid": str(uuid)},
+        )
+    return FacturaImpuestosRead.model_validate(row)
 
 
 @router.post(
