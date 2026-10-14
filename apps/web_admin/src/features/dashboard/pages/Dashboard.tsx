@@ -209,7 +209,7 @@ export default function Dashboard(): JSX.Element {
                       className="text-sm text-muted-foreground"
                       data-testid="dashboard-facturas-empty"
                     >
-                      {t('dashboard.facturasEmpty', 'Ninguna factura activa')}
+                      {t('dashboard.facturasEmpty', 'Sin facturas')}
                     </p>
                   )
                 : undefined
