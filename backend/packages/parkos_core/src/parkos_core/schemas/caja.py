@@ -137,6 +137,13 @@ class ArqueoRead(_Base):
     # an arqueo in the Listado tab. ``list_arqueos`` populates this via a
     # batched lookup (``repo.arqueo.get_alerta_uuids_for_arqueos``).
     alerta_uuid: uuid_lib.UUID | None = None
+    # Bug #2 fix (2026-10-14): ``prod.arqueo`` only carries the FK column
+    # ``uuid_tipo_arqueo``; the codigo is resolved in a batched lookup
+    # (``repo.arqueo.get_codigos_for_tipos_arqueo``). The FE uses this
+    # to branch on ``cierre_dia`` in the admin ``DiferenciasPanel`` and
+    # render the per-session breakdown. The POST handler's response
+    # (``ArqueoReadForHandler``) already includes this field.
+    codigo_tipo_arqueo: str | None = None
 
 
 class ArqueoCreate(_Base):

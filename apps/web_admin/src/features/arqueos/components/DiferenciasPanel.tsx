@@ -79,9 +79,26 @@ export function DiferenciasPanel({
     );
   }
 
-  const hasDesc =
-    diferencias.diferencia_efectivo !== 0 ||
+  // Bug #2 fix (2026-10-14): the BE removed the datafono fields from
+  // the diferencias response (commit 05888fde, REQ-OPS-192) and the
+  // Zod schema defaults them to 0. When the values are exactly 0 we
+  // can't distinguish "no datafono tracked here" (the common case for
+  // the legacy response) from "0.00 reported". The datafono row in
+  // this panel is therefore best-effort: it shows the values when
+  // non-zero (real data) and "—" otherwise (signaling the response
+  // didn't carry them). The descuadre warning still fires on
+  // efectivo != 0 -- datafono=0 alone is not flagged because legacy
+  // responses are indistinguishable from a 0 report.
+  const hasDatafonoData =
+    diferencias.valor_datafono_esperado !== 0 ||
+    diferencias.valor_datafono_reportado !== 0 ||
     diferencias.diferencia_datafono !== 0;
+
+  // The descuadre warning: only effective-side non-zero counts.
+  // datafono=0 is ambiguous (legacy vs. real zero) so we don't
+  // surface it alone -- this matches the operator's "efectivo is the
+  // canonical medio de pago" mental model.
+  const hasDescEfectivo = diferencias.diferencia_efectivo !== 0;
 
   return (
     <section
@@ -111,52 +128,59 @@ export function DiferenciasPanel({
             </th>
           </tr>
         </thead>
-        <tbody>
-          <tr data-testid="diferencias-row-efectivo" className="border-t">
-            <th
-              scope="row"
-              className="px-4 py-2 font-medium"
-              data-testid="diferencias-label-efectivo"
-            >
-              {t('arqueos.detail.efectivo', 'Efectivo')}
-            </th>
-            <td className="px-4 py-2 font-mono text-xs">
-              {fmt(diferencias.valor_efectivo_esperado)}
-            </td>
-            <td className="px-4 py-2 font-mono text-xs">
-              {fmt(diferencias.valor_efectivo_reportado)}
-            </td>
-            <td
-              data-testid="diferencias-cell-efectivo"
-              className={`px-4 py-2 font-mono text-xs ${hasDesc && diferencias.diferencia_efectivo !== 0 ? 'font-semibold text-destructive' : ''}`}
-            >
-              {fmt(diferencias.diferencia_efectivo)}
-            </td>
-          </tr>
-          <tr data-testid="diferencias-row-datafono" className="border-t">
-            <th
-              scope="row"
-              className="px-4 py-2 font-medium"
-              data-testid="diferencias-label-datafono"
-            >
-              {t('arqueos.detail.datafono', 'Datáfono')}
-            </th>
-            <td className="px-4 py-2 font-mono text-xs">
-              {fmt(diferencias.valor_datafono_esperado)}
-            </td>
-            <td className="px-4 py-2 font-mono text-xs">
-              {fmt(diferencias.valor_datafono_reportado)}
-            </td>
-            <td
-              data-testid="diferencias-cell-datafono"
-              className={`px-4 py-2 font-mono text-xs ${hasDesc && diferencias.diferencia_datafono !== 0 ? 'font-semibold text-destructive' : ''}`}
-            >
-              {fmt(diferencias.diferencia_datafono)}
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      {hasDesc && (
+          <tbody>
+            <tr data-testid="diferencias-row-efectivo" className="border-t">
+              <th
+                scope="row"
+                className="px-4 py-2 font-medium"
+                data-testid="diferencias-label-efectivo"
+              >
+                {t('arqueos.detail.efectivo', 'Efectivo')}
+              </th>
+              <td className="px-4 py-2 font-mono text-xs">
+                {fmt(diferencias.valor_efectivo_esperado)}
+              </td>
+              <td className="px-4 py-2 font-mono text-xs">
+                {fmt(diferencias.valor_efectivo_reportado)}
+              </td>
+              <td
+                data-testid="diferencias-cell-efectivo"
+                className={`px-4 py-2 font-mono text-xs ${hasDescEfectivo ? 'font-semibold text-destructive' : ''}`}
+              >
+                {fmt(diferencias.diferencia_efectivo)}
+              </td>
+            </tr>
+            <tr data-testid="diferencias-row-datafono" className="border-t">
+              <th
+                scope="row"
+                className="px-4 py-2 font-medium"
+                data-testid="diferencias-label-datafono"
+              >
+                {t('arqueos.detail.datafono', 'Datáfono')}
+              </th>
+              <td className="px-4 py-2 font-mono text-xs">
+                {hasDatafonoData
+                  ? fmt(diferencias.valor_datafono_esperado)
+                  : '—'}
+              </td>
+              <td className="px-4 py-2 font-mono text-xs">
+                {hasDatafonoData
+                  ? fmt(diferencias.valor_datafono_reportado)
+                  : '—'}
+              </td>
+              <td
+                data-testid="diferencias-cell-datafono"
+                className={`px-4 py-2 font-mono text-xs ${hasDatafonoData && diferencias.diferencia_datafono !== 0 ? 'font-semibold text-destructive' : ''}`}
+              >
+                {hasDatafonoData
+                  ? fmt(diferencias.diferencia_datafono)
+                  : '—'}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      )
+      {hasDescEfectivo && (
         <p
           data-testid="diferencias-descuadre-warning"
           className="border-t bg-destructive/10 px-4 py-2 text-sm text-destructive"

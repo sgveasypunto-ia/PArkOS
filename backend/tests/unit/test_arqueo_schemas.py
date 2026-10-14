@@ -210,6 +210,76 @@ def test_arqueo_read_for_handler_excludes_datafono_fields() -> None:
 
 
 # ---------------------------------------------------------------------------
+# ArqueoRead -- GET /api/v1/caja/arqueo (admin list) response
+# Bug #2 fix (2026-10-14): the admin list now exposes
+# ``codigo_tipo_arqueo`` so the FE DiferenciasPanel can branch on
+# ``cierre_dia`` to render the per-session breakdown. The codigo is
+# resolved in a batched lookup server-side (the ``Arqueo`` ORM does
+# not eager-load ``TipoArqueo``).
+# ---------------------------------------------------------------------------
+
+
+def test_arqueo_read_accepts_codigo_tipo_arqueo() -> None:
+    """Bug #2 (2026-10-14): admin list row carries the resolved codigo
+    so the FE can detect ``cierre_dia`` without a second round-trip.
+    """
+    from parkos_core.schemas.caja import ArqueoRead
+
+    resp = ArqueoRead(
+        uuid=_uuid(),
+        created_at="2026-10-14T01:00:00",
+        created_by=None,
+        sync_status=None,
+        sync_timestamp=None,
+        sync_attempts=None,
+        fecha_retencion_hasta=date(2026, 10, 14),
+        uuid_sucursal=_uuid(),
+        uuid_tipo_arqueo=_uuid(),
+        uuid_sesion=None,  # cierre_dia aggregate
+        valor_efectivo_esperado=Decimal("270000"),
+        valor_datafono_esperado=None,
+        valor_efectivo_reportado=Decimal("105000"),
+        valor_datafono_reportado=None,
+        alerta_uuid=None,
+        codigo_tipo_arqueo="cierre_dia",
+    )
+    assert resp.codigo_tipo_arqueo == "cierre_dia"
+    assert resp.uuid_sesion is None  # aggregate rows always have null uuid_sesion
+
+
+def test_arqueo_read_codigo_tipo_arqueo_is_optional() -> None:
+    """Backward compat: rows emitted before the fix lack the codigo.
+
+    ``.model_validate`` from a dict without the field MUST NOT raise
+    (default = None) -- the FE treats None as 'unknown type, render
+    the generic detail' (no drill-down by session).
+    """
+    from parkos_core.schemas.caja import ArqueoRead
+
+    resp = ArqueoRead.model_validate(
+        {
+            "uuid": str(_uuid()),
+            "created_at": "2026-10-14T01:00:00",
+            "created_by": None,
+            "sync_status": None,
+            "sync_timestamp": None,
+            "sync_attempts": None,
+            "fecha_retencion_hasta": "2026-10-14",
+            "uuid_sucursal": None,
+            "uuid_tipo_arqueo": None,
+            "uuid_sesion": None,
+            "valor_efectivo_esperado": "0",
+            "valor_datafono_esperado": None,
+            "valor_efectivo_reportado": "0",
+            "valor_datafono_reportado": None,
+            "alerta_uuid": None,
+            # codigo_tipo_arqueo omitted -- pre-fix rows
+        }
+    )
+    assert resp.codigo_tipo_arqueo is None
+
+
+# ---------------------------------------------------------------------------
 # ArqueoResumenRead + CierreDiarioQueryParams
 # ---------------------------------------------------------------------------
 
