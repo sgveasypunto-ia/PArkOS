@@ -778,19 +778,253 @@ async def test_facturas_uuid_cliente_lista_cruzando_sucursales(pg_engine, pg_dsn
 
 
 @pytest.mark.asyncio
-async def test_facturas_sin_uuid_sucursal_ni_uuid_cliente_422_missing_filter(
+async def test_facturas_sin_uuid_sucursal_ni_uuid_cliente_devuelve_agregado_cross_branch(
     pg_engine, pg_dsn
 ) -> None:
-    """HU-F20.1: neither filter given -> 422 ``missing_filter``."""
+    """HU-fix-reporteria-todas-sucursales: BOTH filters omitted -> 200 with the
+    cross-branch aggregate over every permitted branch (the "Todas las
+    sucursales" view in /reporteria/financiera). Pre-HU-fix this shape
+    was refused with 422 ``missing_filter``; that guard now only
+    applies when neither the actor nor their permitidas can resolve a
+    scope (defense in depth via ``missing_sucursal_context``).
+    """
     _truncate(pg_dsn)
-    uuid_sucursal = uuid_lib.uuid4()
-    await _seed_sucursal(pg_engine, uuid_sucursal=uuid_sucursal)
+    suc_a = uuid_lib.uuid4()
+    suc_b = uuid_lib.uuid4()
+    await _seed_sucursal(pg_engine, uuid_sucursal=suc_a)
+    await _seed_sucursal(pg_engine, uuid_sucursal=suc_b)
     admin_actor = uuid_lib.uuid4()
-    await _assign_admin(pg_engine, actor_uuid=admin_actor, sucursales=[uuid_sucursal])
+    await _assign_admin(pg_engine, actor_uuid=admin_actor, sucursales=[suc_a, suc_b])
+
+    today = datetime.now(UTC).replace(tzinfo=None)
+    factura_a = await _seed_factura(
+        pg_engine,
+        uuid_sucursal=suc_a,
+        created_at=today,
+        subtotal=Decimal("10000"),
+        descuento=Decimal("0"),
+        total=Decimal("11900"),
+    )
+    factura_b = await _seed_factura(
+        pg_engine,
+        uuid_sucursal=suc_b,
+        created_at=today,
+        subtotal=Decimal("20000"),
+        descuento=Decimal("0"),
+        total=Decimal("23800"),
+    )
 
     fastapi_app, token = _setup_app_and_token(
-        pg_engine, admin_actor=admin_actor, permitidas=[uuid_sucursal]
+        pg_engine, admin_actor=admin_actor, permitidas=[suc_a, suc_b]
+    )
+    resp = await _get(
+        fastapi_app,
+        f"/api/v1/admin/reporteria/facturas?desde={today.date().isoformat()}&hasta={today.date().isoformat()}",
+        token=token,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # No single branch identity: cross-branch aggregate.
+    assert body["uuid_sucursal"] is None
+    by_uuid = {item["uuid"]: item for item in body["items"]}
+    assert set(by_uuid) == {str(factura_a), str(factura_b)}
+    assert by_uuid[str(factura_a)]["uuid_sucursal"] == str(suc_a)
+    assert by_uuid[str(factura_b)]["uuid_sucursal"] == str(suc_b)
+
+
+@pytest.mark.asyncio
+async def test_facturas_sin_uuid_sucursal_ni_uuid_cliente_sin_permitidas_400(
+    pg_engine, pg_dsn
+) -> None:
+    """HU-fix-reporteria-todas-sucursales: BOTH filters omitted AND no permitted
+    branches -> 400 ``missing_sucursal_context`` (the actor cannot
+    scope to anything). Replaces the pre-HU-fix 422 ``missing_filter``
+    case for the no-sucursal no-cliente shape; the 422 guard was
+    only ever there because the old SQL had no concept of a
+    cross-branch aggregate.
+    """
+    _truncate(pg_dsn)
+    # No sucursales assigned to the admin -> permitidas == [].
+    admin_actor = uuid_lib.uuid4()
+    await _assign_admin(pg_engine, actor_uuid=admin_actor, sucursales=[])
+
+    fastapi_app, token = _setup_app_and_token(
+        pg_engine, admin_actor=admin_actor, permitidas=[]
     )
     resp = await _get(fastapi_app, "/api/v1/admin/reporteria/facturas", token=token)
-    assert resp.status_code == 422
-    assert resp.json()["detail"]["error"] == "missing_filter"
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["error"] == "missing_sucursal_context"
+
+
+@pytest.mark.asyncio
+async def test_pagos_sin_uuid_sucursal_devuelve_agregado_cross_branch(
+    pg_engine, pg_dsn
+) -> None:
+    """HU-fix-reporteria-todas-sucursales: omitting uuid_sucursal on
+    /admin/reporteria/pagos returns the cross-branch aggregate over
+    every permitted branch (same shape the FE tab and the
+    reporte_operacional cross-branch view already ship). The
+    ``monto_neto`` per (fecha, medio_pago) is the SUM of
+    (pago - reverso) across all branches in the actor's permitidas.
+    """
+    _truncate(pg_dsn)
+    suc_a = uuid_lib.uuid4()
+    suc_b = uuid_lib.uuid4()
+    await _seed_sucursal(pg_engine, uuid_sucursal=suc_a)
+    await _seed_sucursal(pg_engine, uuid_sucursal=suc_b)
+    admin_actor = uuid_lib.uuid4()
+    await _assign_admin(pg_engine, actor_uuid=admin_actor, sucursales=[suc_a, suc_b])
+
+    today = datetime.now(UTC).replace(tzinfo=None)
+    # Branch A: 100k pago.
+    fac_a = await _seed_factura(
+        pg_engine,
+        uuid_sucursal=suc_a,
+        created_at=today,
+        subtotal=Decimal("100000"),
+        descuento=Decimal("0"),
+        total=Decimal("100000"),
+    )
+    await _seed_factura_pago(
+        pg_engine,
+        uuid_sucursal=suc_a,
+        uuid_factura=fac_a,
+        medio_pago="efectivo",
+        valor=Decimal("100000"),
+        tipo_movimiento="pago",
+        created_at=today,
+    )
+    # Branch B: 50k pago + 10k reverso of a different invoice's pago.
+    fac_b1 = await _seed_factura(
+        pg_engine,
+        uuid_sucursal=suc_b,
+        created_at=today,
+        subtotal=Decimal("50000"),
+        descuento=Decimal("0"),
+        total=Decimal("50000"),
+    )
+    await _seed_factura_pago(
+        pg_engine,
+        uuid_sucursal=suc_b,
+        uuid_factura=fac_b1,
+        medio_pago="efectivo",
+        valor=Decimal("50000"),
+        tipo_movimiento="pago",
+        created_at=today,
+    )
+    fac_b2 = await _seed_factura(
+        pg_engine,
+        uuid_sucursal=suc_b,
+        created_at=today,
+        subtotal=Decimal("20000"),
+        descuento=Decimal("0"),
+        total=Decimal("20000"),
+    )
+    pago_b2 = await _seed_factura_pago(
+        pg_engine,
+        uuid_sucursal=suc_b,
+        uuid_factura=fac_b2,
+        medio_pago="efectivo",
+        valor=Decimal("20000"),
+        tipo_movimiento="pago",
+        created_at=today,
+    )
+    await _seed_factura_pago(
+        pg_engine,
+        uuid_sucursal=suc_b,
+        uuid_factura=fac_b2,
+        medio_pago="efectivo",
+        valor=Decimal("10000"),
+        tipo_movimiento="reverso",
+        created_at=today,
+        uuid_pago_revertido=pago_b2,
+    )
+
+    fastapi_app, token = _setup_app_and_token(
+        pg_engine, admin_actor=admin_actor, permitidas=[suc_a, suc_b]
+    )
+    resp = await _get(
+        fastapi_app,
+        f"/api/v1/admin/reporteria/pagos?desde={today.date().isoformat()}&hasta={today.date().isoformat()}",
+        token=token,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # Cross-branch: no single branch identity at the top level.
+    assert body["uuid_sucursal"] is None
+    by_medio = {item["medio_pago"]: item["monto_neto"] for item in body["items"]}
+    # Branch A: 100k. Branch B: 50k pago + 20k pago - 10k reverso = 60k.
+    # Aggregate: 100k + 60k = 160k efectivo, all in the same day bucket.
+    assert by_medio["efectivo"] == pytest.approx(160000.0)
+
+
+@pytest.mark.asyncio
+async def test_pagos_sin_uuid_sucursal_branch_no_permitida_no_aparece(
+    pg_engine, pg_dsn
+) -> None:
+    """HU-fix-reporteria-todas-sucursales: the cross-branch aggregate
+    respects the actor's permitidas set -- rows from a branch the
+    actor is NOT permitted on are filtered out server-side, never
+    returned even when the caller omitted uuid_sucursal.
+    """
+    _truncate(pg_dsn)
+    suc_a = uuid_lib.uuid4()
+    suc_b = uuid_lib.uuid4()
+    await _seed_sucursal(pg_engine, uuid_sucursal=suc_a)
+    await _seed_sucursal(pg_engine, uuid_sucursal=suc_b)
+    admin_actor = uuid_lib.uuid4()
+    # Admin only permitted on A.
+    await _assign_admin(pg_engine, actor_uuid=admin_actor, sucursales=[suc_a])
+
+    today = datetime.now(UTC).replace(tzinfo=None)
+    # Branch A: 30k.
+    fac_a = await _seed_factura(
+        pg_engine,
+        uuid_sucursal=suc_a,
+        created_at=today,
+        subtotal=Decimal("30000"),
+        descuento=Decimal("0"),
+        total=Decimal("30000"),
+    )
+    await _seed_factura_pago(
+        pg_engine,
+        uuid_sucursal=suc_a,
+        uuid_factura=fac_a,
+        medio_pago="efectivo",
+        valor=Decimal("30000"),
+        tipo_movimiento="pago",
+        created_at=today,
+    )
+    # Branch B: 999k -- must NOT appear in the response.
+    fac_b = await _seed_factura(
+        pg_engine,
+        uuid_sucursal=suc_b,
+        created_at=today,
+        subtotal=Decimal("999000"),
+        descuento=Decimal("0"),
+        total=Decimal("999000"),
+    )
+    await _seed_factura_pago(
+        pg_engine,
+        uuid_sucursal=suc_b,
+        uuid_factura=fac_b,
+        medio_pago="efectivo",
+        valor=Decimal("999000"),
+        tipo_movimiento="pago",
+        created_at=today,
+    )
+
+    fastapi_app, token = _setup_app_and_token(
+        pg_engine, admin_actor=admin_actor, permitidas=[suc_a]
+    )
+    resp = await _get(
+        fastapi_app,
+        f"/api/v1/admin/reporteria/pagos?desde={today.date().isoformat()}&hasta={today.date().isoformat()}",
+        token=token,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    by_medio = {item["medio_pago"]: item["monto_neto"] for item in body["items"]}
+    # Only branch A's 30k pago -- branch B's 999k is NOT in the result
+    # even though we asked for the cross-branch aggregate.
+    assert by_medio.get("efectivo") == pytest.approx(30000.0)

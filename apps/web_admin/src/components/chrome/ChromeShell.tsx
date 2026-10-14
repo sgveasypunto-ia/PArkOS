@@ -43,7 +43,28 @@ export function ChromeShell(): JSX.Element {
         <Breadcrumb />
         <div className="flex flex-1 min-h-0">
           <AppSidebar items={HUB_CARDS} permisos={permisos} />
-          <Outlet />
+          {/*
+            F17.x/ChromeShell layout follow-up: the page Outlet is a flex
+            child of this row but had no `flex-1 min-w-0`, so its width
+            followed the *content's* intrinsic min-width instead of the
+            remaining row width (1395 − 240 sidebar = 1155). The
+            /reporteria and /reporteria/financiera pages exposed the
+            bug because their `<main>` does not carry `flex flex-1`
+            (the long "Todas las sucursales" subtitle pushed main wider
+            than the short per-branch one — 118 / 305 px of dead space
+            on the right). Wrapping the Outlet in `flex-1 min-w-0` (a
+            BLOCK wrapper, NOT a flex container — the inner `<main>` is
+            a block child and would otherwise become a flex item with
+            content-driven width) makes the page fill the row by
+            default; the rare page that needs a fixed width can still
+            opt out by setting its own `max-w-*` on `<main>`. `min-w-0`
+            is required so the wrapper can shrink below its content's
+            intrinsic min-width (the table's `overflow-auto` already
+            handles the per-cell overflow inside the page).
+          */}
+          <div className="flex-1 min-w-0">
+            <Outlet />
+          </div>
         </div>
       </div>
     </BreadcrumbsProvider>

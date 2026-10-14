@@ -110,6 +110,7 @@ describe('AlertasList', () => {
   });
 
   it('T2: the sucursal filter only offers permitted branches', async () => {
+    const user = userEvent.setup();
     useAdminAuthMock.mockReturnValue({ sucursalUuids: [SUC_PERMITIDA] });
     useSucursalesDirectorioMock.mockReturnValue({
       sucursales: [
@@ -121,10 +122,14 @@ describe('AlertasList', () => {
 
     renderPage();
 
-    const select = await screen.findByTestId('alertas-filters-sucursal');
-    const optionValues = Array.from(select.querySelectorAll('option')).map((o) => o.getAttribute('value'));
-    expect(optionValues).toContain(SUC_PERMITIDA);
-    expect(optionValues).not.toContain(SUC_NO_PERMITIDA);
+    const input = await screen.findByTestId('alertas-filters-sucursal');
+    await user.click(input);
+    expect(
+      screen.getByTestId(`alertas-filters-sucursal-option-${SUC_PERMITIDA}`),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId(`alertas-filters-sucursal-option-${SUC_NO_PERMITIDA}`),
+    ).not.toBeInTheDocument();
   });
 
   it('T4: clicking "Ver detalle" navigates to /alertas/{uuid}', async () => {

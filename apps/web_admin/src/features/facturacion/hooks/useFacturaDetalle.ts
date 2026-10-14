@@ -8,7 +8,7 @@
  *   - `impuestos` — `GET /facturacion/factura-impuestos?uuid_factura=...`
  *   - `pagos`     — `GET /facturacion/factura-pagos?uuid_factura=...` (X.1a fix)
  *   - `fe`        — `GET /facturacion/factura-electronica?uuid_factura=...` (HU-X.8)
- *   - `hash`      — `GET /admin/log-transaccional?tabla_afectada=factura&limit=20`
+ *   - `hash`      — `GET /admin/log-transaccional?tabla=factura&limit=20`
  *                   (filtered client-side for the matching `uuid_referencia`)
  *
  * The page composes 6 sections from these — one per query above. Each

@@ -485,6 +485,27 @@ async def branch_dashboard(
         )
     ).scalar() or 0
 
+    # Bug #3 fix (2026-10-14): ``facturas_emitidas_count`` is the
+    # historical count of operational invoices (POS receipts) at the
+    # branch, NOT a count of electronic invoices. The previous handler
+    # populated this field by reusing the ``facturas_electronicas_count``
+    # variable, so the wire always reported the same number for both
+    # and a branch with no DIAN ``resolucion_facturacion`` (no
+    # ``prod.factura_electronica`` rows) showed 0 even when it had
+    # many ``prod.facturas`` rows. The 2026-10-13 E2E caught this
+    # as the dashboard's "FACTURAS: Ninguna factura activa" KPI
+    # card. Filter is consistent with ``ingresos_count`` above
+    # (historical, no date range) -- "emitidas" here means "issued
+    # over the branch's lifetime", matching the operator's mental
+    # model.
+    facturas_emitidas_count = (
+        await session.execute(
+            select(func.count())
+            .select_from(Facturas)
+            .where(Facturas.uuid_sucursal == uuid)
+        )
+    ).scalar() or 0
+
     open_alertas_count = (
         await session.execute(
             select(func.count())
@@ -512,7 +533,7 @@ async def branch_dashboard(
         fecha=now,
         ingresos_count=int(ingresos_count),
         ingresos_monto_total=ingresos_monto_total,
-        facturas_emitidas_count=int(facturas_electronicas_count),
+        facturas_emitidas_count=int(facturas_emitidas_count),
         facturas_electronicas_count=int(facturas_electronicas_count),
         open_alertas_count=int(open_alertas_count),
         sync_health=DashboardSyncHealth(

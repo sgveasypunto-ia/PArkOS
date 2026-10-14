@@ -96,7 +96,12 @@ export default function LogTransaccional({ swrSalt }: LogTransaccionalProps): JS
   const { items, isLoading, error, hasMore, loadMore } = useLogTransaccional(query, { swrSalt });
 
   const sucursalOptions = useMemo(
-    () => sucursales.map((s) => ({ uuid: s.uuid, nombre: s.nombre })),
+    () =>
+      sucursales.map((s) => ({
+        uuid: s.uuid,
+        nombre: s.nombre,
+        prefijo_nombre: s.prefijo_nombre ?? null,
+      })),
     [sucursales],
   );
 

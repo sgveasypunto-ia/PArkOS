@@ -679,3 +679,109 @@ async def test_fecha_desde_despues_de_hasta_es_400(
         )
     assert resp.status_code == 400, f"got {resp.status_code}: {resp.text}"
     assert resp.json()["detail"]["error"] == "fecha_desde_after_hasta"
+
+
+async def test_sin_uuid_sucursal_devuelve_agregado_cross_branch(
+    pg_engine, mint_operador_jwt, pg_dsn
+) -> None:
+    """HU-fix-reporteria-todas-sucursales: omitting uuid_sucursal returns the
+    cross-branch aggregate over every branch the actor is permitted
+    to see (the 'Todas las sucursales' view in /reporteria). Totals
+    are the SUM of the per-branch rollups, not a second source of
+    truth. ``uuid_sucursal`` at the top level is ``None`` so the
+    UI can render the "Todas las sucursales" badge.
+    """
+    _truncate(pg_dsn)
+    branch_a = uuid_lib.uuid4()
+    branch_b = uuid_lib.uuid4()
+    await _seed_sucursal(pg_engine, uuid_sucursal=branch_a)
+    await _seed_sucursal(pg_engine, uuid_sucursal=branch_b)
+
+    admin_actor = uuid_lib.uuid4()
+    await _assign_admin(
+        pg_engine, actor_uuid=admin_actor, sucursales=[branch_a, branch_b]
+    )
+
+    today = _now_naive()
+    # Two ingresos on branch A, one on branch B; aggregate must show 3.
+    await _seed_ingreso(pg_engine, uuid_sucursal=branch_a, created_at=today)
+    await _seed_ingreso(pg_engine, uuid_sucursal=branch_a, created_at=today)
+    await _seed_ingreso(pg_engine, uuid_sucursal=branch_b, created_at=today)
+
+    fastapi_app, set_claims = _build_app(pg_engine)
+    set_claims(
+        {
+            "sub": str(admin_actor),
+            "rol": "admin",
+            "iss": "admin-test",
+            "sucursales_permitidas": [str(branch_a), str(branch_b)],
+        }
+    )
+    token = issue_token(
+        subject_uuid=admin_actor,
+        issuer="admin-test",
+        claims={
+            "rol": "admin",
+            "sucursales_permitidas": [str(branch_a), str(branch_b)],
+        },
+    )
+
+    from httpx import ASGITransport
+
+    transport = ASGITransport(app=fastapi_app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as c:
+        # NOTE: no uuid_sucursal query param.
+        resp = await c.get(
+            f"/api/v1/admin/reporteria/operacional?fecha_desde={today.date().isoformat()}&fecha_hasta={today.date().isoformat()}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert resp.status_code == 200, f"got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    # Cross-branch: no single branch to report at the top level.
+    assert body["uuid_sucursal"] is None
+    # Three ingresos total (2 on A + 1 on B), one day.
+    assert body["totales"]["ingresos_count"] == 3
+    assert len(body["items"]) == 1  # single day
+    assert body["items"][0]["ingresos_count"] == 3
+
+
+async def test_sin_uuid_sucursal_sin_permitidas_es_400(
+    pg_engine, mint_operador_jwt, pg_dsn
+) -> None:
+    """HU-fix-reporteria-todas-sucursales: omitting uuid_sucursal with no
+    permitted branches -> 400 ``missing_sucursal_context`` (defense
+    in depth: the actor has nothing to scope to).
+    """
+    _truncate(pg_dsn)
+    admin_actor = uuid_lib.uuid4()
+    await _assign_admin(pg_engine, actor_uuid=admin_actor, sucursales=[])
+
+    fastapi_app, set_claims = _build_app(pg_engine)
+    set_claims(
+        {
+            "sub": str(admin_actor),
+            "rol": "admin",
+            "iss": "admin-test",
+            "sucursales_permitidas": [],
+        }
+    )
+    token = issue_token(
+        subject_uuid=admin_actor,
+        issuer="admin-test",
+        claims={"rol": "admin", "sucursales_permitidas": []},
+    )
+
+    from httpx import ASGITransport
+
+    transport = ASGITransport(app=fastapi_app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as c:
+        resp = await c.get(
+            "/api/v1/admin/reporteria/operacional",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert resp.status_code == 400, f"got {resp.status_code}: {resp.text}"
+    assert resp.json()["detail"]["error"] == "missing_sucursal_context"

@@ -1,9 +1,14 @@
 /**
  * `<FacturaImpuestosTable />` — IVA rows for a factura (REQ-X-05).
  *
- * Source: `GET /api/v1/facturacion/factura-impuestos?uuid_factura=...`.
- * Same factory-ignores-filter caveat as items (X.1a only fixed the
- * pagos endpoint).
+ * Source: `GET /api/v1/facturacion/factura-impuestos?uuid_factura=...`
+ * (HU-X.1b — custom handler, the factory used to silently drop the
+ * filter; the bug was caught by the 2026-10-13 E2E).
+ *
+ * Defense in depth: the server is now authoritative (X.1b), but the
+ * page ALSO filters by `item.uuid_factura === uuidFactura` so a
+ * misbehaving API or stale cache cannot leak IVA rows from other
+ * facturas into this drill-down (KD-FACT-01).
  */
 import { useTranslation } from 'react-i18next';
 
@@ -40,6 +45,12 @@ export interface FacturaImpuestosTableProps {
   isLoading: boolean;
   error: Error | null | undefined;
   onRetry: () => void;
+  /**
+   * UUID of the parent factura (from the URL). Used by the client-side
+   * filter so we never render IVA rows belonging to a different factura
+   * even if the server response is misaligned (X.1b defense in depth).
+   */
+  uuidFactura: string;
 }
 
 export function FacturaImpuestosTable({
@@ -47,8 +58,16 @@ export function FacturaImpuestosTable({
   isLoading,
   error,
   onRetry,
+  uuidFactura,
 }: FacturaImpuestosTableProps): JSX.Element {
   const { t } = useTranslation('facturacionAdmin');
+  // X.1b: client-side filter. See FacturaItemsTable for the full
+  // rationale. `uuid_factura` may arrive as a `uuid.UUID` object from
+  // the API and we normalise via `String()` to compare against the
+  // string prop.
+  const ownItems = items.filter(
+    (row) => String(row.uuid_factura) === uuidFactura,
+  );
   return (
     <div className="space-y-2">
       <h2 className="text-base font-semibold">
@@ -97,7 +116,7 @@ export function FacturaImpuestosTable({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {items.length === 0 ? (
+            {ownItems.length === 0 ? (
               <TableRow>
                 <TableCell
                   colSpan={4}
@@ -110,7 +129,7 @@ export function FacturaImpuestosTable({
                 </TableCell>
               </TableRow>
             ) : (
-              items.map((row) => (
+              ownItems.map((row) => (
                 <TableRow
                   key={row.uuid}
                   data-testid={`factura-impuesto-row-${row.uuid}`}

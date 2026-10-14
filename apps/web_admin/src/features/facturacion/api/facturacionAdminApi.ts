@@ -107,11 +107,11 @@ export async function fetchFacturaByUuid(uuid: string): Promise<FacturaDetailRea
  * `fetchFacturaDetalle(uuidFactura)` — invoice line items.
  * `GET /api/v1/facturacion/factura-detalle?uuid_factura=...`.
  *
- * NOTE: as of HU-X.1a, this endpoint does NOT honour `?uuid_factura=`
- * (the factory ignores it — same bug as the pagos endpoint). The
- * filter is still applied client-side in the SWR key to keep the URL
- * semantic; the page filters items by `item.uuid_factura === uuid` as
- * a safety net.
+ * HU-X.1b (2026-10-13): the server is now authoritative — custom
+ * handler in ``api/v1/facturacion.py`` honours ``?uuid_factura=``.
+ * The page ALSO filters by ``item.uuid_factura === uuidFactura`` as
+ * defense in depth (KD-FACT-01) so a misbehaving API or stale
+ * cache cannot leak lines from other facturas into this drill-down.
  */
 export async function fetchFacturaDetalle(
   uuidFactura: string,
@@ -126,6 +126,11 @@ export async function fetchFacturaDetalle(
 /**
  * `fetchFacturaImpuestos(uuidFactura)` — IVA rows for a factura.
  * `GET /api/v1/facturacion/factura-impuestos?uuid_factura=...`.
+ *
+ * HU-X.1b (2026-10-13): the server is now authoritative — custom
+ * handler honours ``?uuid_factura=``. The page ALSO filters by
+ * ``item.uuid_factura === uuidFactura`` as defense in depth
+ * (KD-FACT-01).
  */
 export async function fetchFacturaImpuestos(
   uuidFactura: string,
@@ -212,10 +217,24 @@ export async function fetchFacturaElectronicaByFacturaUuid(
  * `fetchFacturaHash(_uuidFactura)` — last `log_transaccional` rows for the
  * factura, used to display the `hash_actual` in the header card.
  *
- * `GET /api/v1/admin/log-transaccional?tabla_afectada=factura&limit=20`
+ * `GET /api/v1/admin/log-transaccional?tabla=factura&limit=20`
  * (filtered client-side by `uuid_referencia === uuid` via
  * `findHashForFactura`). Uses the admin endpoint (cross-branch,
  * admin-only — same surface the `/auditoria/log` page consumes).
+ *
+ * Bug #4 fix (2026-10-14): the query param is ``tabla``, NOT
+ * ``tabla_afectada``. ``tabla_afectada`` is the RESPONSE field name
+ * (the log row's table label); the QUERY param that the BE handler
+ * reads is ``tabla`` (per the OpenAPI at /api/v1/admin/log-transaccional).
+ * The pre-fix code sent ``?tabla_afectada=factura`` which FastAPI
+ * silently dropped — the handler then returned the last 20 log rows
+ * of ANY type, not the ones for the factura. ``findHashForFactura``
+ * filtered client-side so the bug was invisible at runtime, but the
+ * wire contract was broken and any future refactor that drops the
+ * client-side filter would have surfaced it. Note: this endpoint is
+ * distinct from the legacy ``/admin/audit/log`` (used by
+ * ``auditApi.ts``, ``EmpresaBitacoraTab``, ``ClienteBitacoraTab``),
+ * which DOES use ``?tabla_afectada=``. Two endpoints, two contracts.
  *
  * The `uuidFactura` arg is reserved for a future BE filter (the
  * `?uuid_referencia=…` query param is not yet exposed). The leading
@@ -225,7 +244,7 @@ export async function fetchFacturaHash(
   _uuidFactura: string,
 ): Promise<LogTransaccionalList> {
   return fetchJson<LogTransaccionalList>(
-    `/api/v1/admin/log-transaccional?tabla_afectada=factura&limit=20`,
+    `/api/v1/admin/log-transaccional?tabla=factura&limit=20`,
     { method: 'GET', headers: { Accept: 'application/json' } },
     logTransaccionalListSchema,
   );

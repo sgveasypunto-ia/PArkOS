@@ -38,6 +38,16 @@ export const arqueoReadSchema = z.object({
   /** QA backlog cleanup (2026-10-02, AlertaLink) — populated by a batched
    * lookup server-side; null when the arqueo had no descuadre crítico. */
   alerta_uuid: z.string().uuid().nullable().optional(),
+  /**
+   * Bug #2 fix (2026-10-14): the codigo (``cierre_dia``, ``auditoria``,
+   * ``cierre_turno``, ``cierre_sesion``) is resolved server-side via
+   * ``repo.arqueo.get_codigos_for_tipos_arqueo`` and surfaces here so
+   * ``<DiferenciasPanel>`` can branch on ``cierre_dia`` and render the
+   * per-session breakdown. Optional with default null for
+   * backward-compat with rows emitted before the fix (the FE treats
+   * null as 'unknown type, render the generic detail').
+   */
+  codigo_tipo_arqueo: z.string().nullable().optional(),
 });
 
 export type ArqueoRead = z.infer<typeof arqueoReadSchema>;
@@ -80,19 +90,36 @@ export type ArqueosListResponse = z.infer<typeof arqueosListResponseSchema>;
  * endpoint). Used by the F18.3 resumen tab.
  */
 export const arqueoResumenItemSchema = z.object({
-  uuid: z.string().uuid().nullable(),
-  uuid_tipo_arqueo: z.string().uuid().nullable(),
-  codigo_tipo_arqueo: z.string().nullable(),
-  uuid_sesion: z.string().uuid().nullable(),
-  valor_efectivo_esperado: z.string().nullable(),
-  valor_datafono_esperado: z.string().nullable(),
-  valor_efectivo_reportado: z.string().nullable(),
-  valor_datafono_reportado: z.string().nullable(),
-  diferencia_efectivo: z.string().nullable(),
-  diferencia_datafono: z.string().nullable(),
-  descuadre_pct: z.string().nullable(),
-  alerta_generada: z.boolean().nullable(),
-  alerta_uuid: z.string().uuid().nullable(),
+  uuid: z.string().uuid().nullable().optional(),
+  uuid_tipo_arqueo: z.string().uuid().nullable().optional(),
+  codigo_tipo_arqueo: z.string().nullable().optional(),
+  uuid_sesion: z.string().uuid().nullable().optional(),
+  /** Operator that opened the sesion (Bug #2 drill-down, 2026-10-14). */
+  uuid_usuario: z.string().uuid().nullable().optional(),
+  /** ISO timestamp when the sesion was opened. */
+  timestamp_apertura: z.string().nullable().optional(),
+  /** ISO timestamp when the sesion was closed; null while still open. */
+  timestamp_cierre: z.string().nullable().optional(),
+  /** ``abierta`` | ``cerrada`` -- the sesion lifecycle state. */
+  estado: z.string().nullable().optional(),
+  /**
+   * The arqueo row this sesion belongs to. The BE only sets this on
+   * cierre_turno / cierre_sesion rows (single-sesion arqueos); the
+   * cierre_dia aggregate row carries the day-level totals and the
+   * per-sesion rows inside ``sesiones[]`` have ``uuid_arqueo = null``
+   * (the per-sesion breakdown is the admin drill-down, not a single
+   * arqueo). Marked optional so the FE accepts both shapes.
+   */
+  uuid_arqueo: z.string().uuid().nullable().optional(),
+  valor_efectivo_esperado: z.string().nullable().optional(),
+  valor_datafono_esperado: z.string().nullable().optional(),
+  valor_efectivo_reportado: z.string().nullable().optional(),
+  valor_datafono_reportado: z.string().nullable().optional(),
+  diferencia_efectivo: z.string().nullable().optional(),
+  diferencia_datafono: z.string().nullable().optional(),
+  descuadre_pct: z.string().nullable().optional(),
+  alerta_generada: z.boolean().nullable().optional(),
+  alerta_uuid: z.string().uuid().nullable().optional(),
 });
 
 export type ArqueoResumenItem = z.infer<typeof arqueoResumenItemSchema>;
@@ -120,21 +147,52 @@ export const arqueoResumenAdminReadSchema = z.object({
 export type ArqueoResumenAdminRead = z.infer<typeof arqueoResumenAdminReadSchema>;
 
 /**
+ * Per-branch ``/caja/arqueo/resumen`` response. Carries the
+ * ``sesiones[]`` array (one row per turn opened at the branch on the
+ * given date) plus an optional ``cierre_dia`` aggregate row (the
+ * day-level cierre_dia arqueo, if any). Both shapes come from the
+ * BE's ``ArqueoResumenRead`` (see
+ * ``backend/.../api/v1/caja_arqueo.py::get_arqueo_resumen``).
+ *
+ * Bug #2 fix (2026-10-14): the admin ``<ArqueoDetalle>`` panel reuses
+ * this same shape for the per-session drill-down when the selected
+ * arqueo is a ``cierre_dia`` aggregate.
+ */
+export const arqueoResumenReadSchema = z.object({
+  fecha: z.string(),
+  uuid_sucursal: z.string().uuid(),
+  sesiones: z.array(arqueoResumenItemSchema),
+  cierre_dia: arqueoResumenItemSchema.nullable(),
+});
+
+export type ArqueoResumenRead = z.infer<typeof arqueoResumenReadSchema>;
+
+/**
  * Per-arqueo deltas (GET /caja-sesion/arqueos/{uuid}/diferencias).
  *
  * The BE serializes ``Decimal`` as ``float`` -- the schema accepts
- * ``number`` directly so we don't coerce. The shape carries all four
+ * ``number`` directly so we don't coerce. The shape carries the four
  * signed components plus the two computed differences; the FE renders
  * the abs values via i18n'd labels.
+ *
+ * Bug #2 fix (2026-10-14): the three datafono fields are OPTIONAL with
+ * default 0. The BE removed them from this response in commit
+ * ``05888fde`` (REQ-OPS-192, "responses drop datafono"), but the FE
+ * still used them. Without ``.default(0)`` the Zod validator throws
+ * on every arqueo (no datafono fields in the response) and
+ * ``<DiferenciasPanel>`` always renders "No se pudo cargar la
+ * diferencia." The default keeps the validator permissive for
+ * pre-fix responses while ``<DiferenciasPanel>`` renders "—" when
+ * the values are 0 (signaling "not tracked here").
  */
 export const diferenciasReadSchema = z.object({
   uuid_arqueo: z.string().uuid(),
   valor_efectivo_esperado: z.number(),
-  valor_datafono_esperado: z.number(),
+  valor_datafono_esperado: z.number().default(0),
   valor_efectivo_reportado: z.number(),
-  valor_datafono_reportado: z.number(),
+  valor_datafono_reportado: z.number().default(0),
   diferencia_efectivo: z.number(),
-  diferencia_datafono: z.number(),
+  diferencia_datafono: z.number().default(0),
 });
 
 export type DiferenciasRead = z.infer<typeof diferenciasReadSchema>;

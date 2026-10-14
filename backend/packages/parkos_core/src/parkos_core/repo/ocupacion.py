@@ -20,11 +20,20 @@ The encapsulation lets:
 
 Bind params only (no string interpolation -- KD-1 SQL injection
 hygiene). SQL is ``text(...)`` with SQLAlchemy parameter substitution.
+
+HU-fix-reporteria-todas-sucursales: ``uuid_sucursal`` is now
+``UUID | Iterable[UUID]`` so the same helper backs both the
+single-branch read (HU-F1.5) and the cross-branch aggregate read
+in the "Todas las sucursales" view of /reporteria. The aggregate
+shape is the same: one row per ``(uuid_tipo_vehiculo)``, summed
+across every branch in the iterable.
 """
 from __future__ import annotations
 
 import uuid as uuid_lib
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Union
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,7 +63,7 @@ class OcupacionItemRow:
 async def get_ocupacion_puros_activos(
     session: AsyncSession,
     *,
-    uuid_sucursal: uuid_lib.UUID,
+    uuid_sucursal: "Union[uuid_lib.UUID, Iterable[uuid_lib.UUID]]",
 ) -> list[OcupacionItemRow]:
     """REQ-OPS-030: SELECT for the per-tipo breakdown.
 
@@ -73,8 +82,29 @@ async def get_ocupacion_puros_activos(
     KD-4: rows are ordered by ``tv.tipo`` for deterministic output
     across refreshes (the MV itself does not guarantee ordering).
 
+    HU-fix-reporteria-todas-sucursales: ``uuid_sucursal`` accepts
+    either a single ``UUID`` (HU-F1.5 single-branch read) or an
+    iterable of UUIDs (cross-branch aggregate over every permitted
+    branch -- the "Todas las sucursales" view in /reporteria). The
+    iterable shape uses ``IN (:uuid_sucursal_0, :uuid_sucursal_1,
+    ...)`` and sums the per-branch capacity/activos by
+    ``uuid_tipo_vehiculo``; the single-UUID shape keeps the original
+    ``= :uuid_sucursal`` predicate for parity with the pre-HU-fix
+    SQL. A single-element iterable falls into the IN path (it is
+    the caller's job to special-case the one-branch reads to a
+    scalar when they want the original predicate); in practice the
+    single-branch endpoint hands the helper a scalar ``UUID`` and
+    only the cross-branch caller hands an iterable.
+
+    Empty iterables short-circuit (no branch in scope -> 0 rows,
+    same as the helper was never called). The endpoint is expected
+    to gate that case with ``missing_sucursal_context`` before
+    calling the helper -- this is a defense-in-depth check, not a
+    public contract.
+
     SQL (kept in sync with the migration's MV definition):
 
+        -- single-UUID path:
         SELECT
             tv.uuid                       AS uuid_tipo_vehiculo,
             tv.tipo                       AS tipo,
@@ -90,33 +120,78 @@ async def get_ocupacion_puros_activos(
          AND mv.uuid_tipo_vehiculo = tv.uuid
         WHERE tv.vigente_hasta IS NULL
         ORDER BY tv.tipo
+
+        -- iterable path: same SELECT but the cvs/mv JOINs use
+        -- ``uuid_sucursal IN (:b0, :b1, ...)`` and SUM the cupos /
+        -- activos per ``uuid_tipo_vehiculo`` so the row cardinality
+        -- stays 1-per-tipo (not 1-per-(tipo, branch)).
     """
+    # Single-UUID path: original F1.5 SQL unchanged.
+    if isinstance(uuid_sucursal, uuid_lib.UUID):
+        stmt = text(
+            """
+            SELECT
+                tv.uuid                       AS uuid_tipo_vehiculo,
+                tv.tipo                       AS tipo,
+                COALESCE(cvs.cantidad, 0)     AS cupo_maximo,
+                COALESCE(mv.activos, 0)       AS activos
+            FROM prod.tipos_vehiculo tv
+            LEFT JOIN prod.cantidad_vehiculos_sucursal cvs
+              ON cvs.uuid_sucursal = :uuid_sucursal
+             AND cvs.uuid_tipo_vehiculo = tv.uuid
+             AND cvs.vigente_hasta IS NULL
+            LEFT JOIN prod.mv_ocupacion_diaria mv
+              ON mv.uuid_sucursal = :uuid_sucursal
+             AND mv.uuid_tipo_vehiculo = tv.uuid
+            WHERE tv.vigente_hasta IS NULL
+            ORDER BY tv.tipo
+            """
+        )
+        rows = (await session.execute(stmt, {"uuid_sucursal": str(uuid_sucursal)})).all()
+        return [
+            OcupacionItemRow(
+                uuid_tipo_vehiculo=r.uuid_tipo_vehiculo,
+                tipo=r.tipo,
+                cupo_maximo=int(r.cupo_maximo or 0),
+                activos=int(r.activos or 0),
+            )
+            for r in rows
+        ]
+
+    # Cross-branch path: aggregate per-tipo over every branch in the
+    # iterable. Empty iterable -> 0 rows, no SQL fired.
+    sucursales = list(uuid_sucursal)
+    if not sucursales:
+        return []
+    placeholders = ", ".join(f":b{i}" for i in range(len(sucursales)))
     stmt = text(
-        """
+        f"""
         SELECT
             tv.uuid                       AS uuid_tipo_vehiculo,
             tv.tipo                       AS tipo,
-            COALESCE(cvs.cantidad, 0)     AS cupo_maximo,
-            COALESCE(mv.activos, 0)       AS activos
+            COALESCE(SUM(cvs.cantidad), 0) AS cupo_maximo,
+            COALESCE(SUM(mv.activos), 0)   AS activos
         FROM prod.tipos_vehiculo tv
         LEFT JOIN prod.cantidad_vehiculos_sucursal cvs
-          ON cvs.uuid_sucursal = :uuid_sucursal
+          ON cvs.uuid_sucursal IN ({placeholders})
          AND cvs.uuid_tipo_vehiculo = tv.uuid
          AND cvs.vigente_hasta IS NULL
         LEFT JOIN prod.mv_ocupacion_diaria mv
-          ON mv.uuid_sucursal = :uuid_sucursal
+          ON mv.uuid_sucursal IN ({placeholders})
          AND mv.uuid_tipo_vehiculo = tv.uuid
         WHERE tv.vigente_hasta IS NULL
+        GROUP BY tv.uuid, tv.tipo
         ORDER BY tv.tipo
         """
     )
-    rows = (await session.execute(stmt, {"uuid_sucursal": str(uuid_sucursal)})).all()
+    bind = {f"b{i}": str(b) for i, b in enumerate(sucursales)}
+    rows = (await session.execute(stmt, bind)).all()
     return [
         OcupacionItemRow(
             uuid_tipo_vehiculo=r.uuid_tipo_vehiculo,
             tipo=r.tipo,
-            cupo_maximo=r.cupo_maximo,
-            activos=r.activos,
+            cupo_maximo=int(r.cupo_maximo or 0),
+            activos=int(r.activos or 0),
         )
         for r in rows
     ]

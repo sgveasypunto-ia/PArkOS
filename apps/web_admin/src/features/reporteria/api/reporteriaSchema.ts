@@ -84,8 +84,13 @@ export const ocupacionItemSchema = z.object({
 
 export type OcupacionItem = z.infer<typeof ocupacionItemSchema>;
 
+// HU-fix-reporteria-todas-sucursales: ``uuid_sucursal`` is ``None`` in
+// the cross-branch "Todas las sucursales" aggregate (backend
+// ``OcupacionResponse.uuid_sucursal: UUID | None``). Keep the schema in
+// sync so the cross-branch response parses instead of failing Zod and
+// showing the bogus Zod error in the UI.
 export const ocupacionResponseSchema = z.object({
-  uuid_sucursal: z.string().uuid(),
+  uuid_sucursal: z.string().uuid().nullable(),
   items: z.array(ocupacionItemSchema),
   generado_en: z.string(),
 });
@@ -93,7 +98,11 @@ export const ocupacionResponseSchema = z.object({
 export type OcupacionResponse = z.infer<typeof ocupacionResponseSchema>;
 
 export interface ReporteriaQuery {
-  uuid_sucursal: string;
+  // HU-fix-reporteria-todas-sucursales: ``null`` is the cross-branch
+  // ("Todas las sucursales") shape; the API layer omits the
+  // ``uuid_sucursal`` query param in that case so the backend
+  // resolves scope fresh from ``usuarios_sucursal``.
+  uuid_sucursal: string | null;
   placa?: string;
   activo?: boolean;
   fecha_desde?: string;
@@ -142,8 +151,13 @@ export const reporteEstanciaItemSchema = z.object({
 
 export type ReporteEstanciaItem = z.infer<typeof reporteEstanciaItemSchema>;
 
+// HU-fix-reporteria-todas-sucursales: ``uuid_sucursal`` is ``None`` in
+// the cross-branch "Todas las sucursales" aggregate (backend
+// ``ReporteOperacionalResponse.uuid_sucursal: UUID | None``). Single-
+// branch callers still get the concrete uuid, so the schema is
+// ``nullable`` to cover both modes.
 export const reporteOperacionalResponseSchema = z.object({
-  uuid_sucursal: z.string().uuid(),
+  uuid_sucursal: z.string().uuid().nullable(),
   fecha_desde: z.string(),
   fecha_hasta: z.string(),
   items: z.array(reporteOperacionalItemSchema),
@@ -270,8 +284,12 @@ export const reportePagoMedioItemSchema = z.object({
 
 export type ReportePagoMedioItem = z.infer<typeof reportePagoMedioItemSchema>;
 
+// HU-fix-reporteria-todas-sucursales: ``uuid_sucursal`` is ``None`` in
+// the cross-branch "Todas las sucursales" aggregate (backend
+// ``ReportePagosResponse.uuid_sucursal: UUID | None``). Same nullable
+// shape as ``ReporteOperacionalResponse`` for symmetry.
 export const reportePagosResponseSchema = z.object({
-  uuid_sucursal: z.string().uuid(),
+  uuid_sucursal: z.string().uuid().nullable(),
   desde: z.string(),
   hasta: z.string(),
   items: z.array(reportePagoMedioItemSchema),

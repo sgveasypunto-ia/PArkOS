@@ -137,6 +137,7 @@ export function FacturaDetalle(): JSX.Element {
         isLoading={swr.detalle.isLoading}
         error={swr.detalle.error}
         onRetry={() => swr.detalle.mutate()}
+        uuidFactura={header.uuid}
       />
 
       <FacturaImpuestosTable
@@ -144,6 +145,7 @@ export function FacturaDetalle(): JSX.Element {
         isLoading={swr.impuestos.isLoading}
         error={swr.impuestos.error}
         onRetry={() => swr.impuestos.mutate()}
+        uuidFactura={header.uuid}
       />
 
       <FacturaPagosTable

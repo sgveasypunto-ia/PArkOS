@@ -6,7 +6,10 @@
  *   - `uuid_sucursal` -- restricted to the actor's `sucursales
  *     permitidas` (`useAdminAuth().sucursalUuids`); the container passes
  *     only those as `options.sucursalOptions`. Empty = all permitted
- *     branches.
+ *     branches. Renders through the shared `SucursalFilterCombobox`
+ *     (HU-fix-usuarios-alignment) so the admin can type to find a
+ *     branch by `nombre` / `prefijo_nombre` / `uuid` once the
+ *     directory grows past a handful of rows.
  *   - `tipo_alerta` -- free-text filter. `GET /workflows/alert-types` is
  *     mounted on the backend now (it was a 404 until HU-F11.2 fix,
  *     2026-09-24), but this filter stays free-text on purpose: the
@@ -20,6 +23,7 @@ import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { SucursalFilterCombobox } from '@/features/admin/components/SucursalFilterCombobox';
 
 import { ALERTA_ESTADOS, ALERTA_SEVERITIES } from '../api/alertasSchema';
 import type { AlertaEstado, AlertaSeverity } from '../api/alertasSchema';
@@ -34,7 +38,11 @@ export interface AlertasFiltersValue {
 }
 
 export interface AlertasFiltersOptions {
-  sucursalOptions: ReadonlyArray<{ uuid: string; nombre: string | null }>;
+  sucursalOptions: ReadonlyArray<{
+    uuid: string;
+    nombre: string | null;
+    prefijo_nombre?: string | null;
+  }>;
 }
 
 export interface AlertasFiltersProps {
@@ -60,24 +68,19 @@ export function AlertasFilters({
       data-testid="alertas-filters"
       className="grid grid-cols-1 gap-3 rounded-md border bg-muted/20 sm:grid-cols-2 md:grid-cols-6"
     >
-      <label className="flex flex-col gap-1 text-xs">
-        <span className="font-medium text-muted-foreground">
-          {t('alertas.filters.branch', 'Sucursal')}
-        </span>
-        <select
-          data-testid="alertas-filters-sucursal"
-          value={value.uuid_sucursal}
-          onChange={(e) => update({ uuid_sucursal: e.target.value })}
-          className="rounded-md border bg-background px-2 py-1 text-sm"
-        >
-          <option value="">{t('alertas.filters.allBranches', 'Todas mis sucursales')}</option>
-          {options.sucursalOptions.map((s) => (
-            <option key={s.uuid} value={s.uuid}>
-              {s.nombre ?? s.uuid}
-            </option>
-          ))}
-        </select>
-      </label>
+      <SucursalFilterCombobox
+        options={options.sucursalOptions.map((s) => ({
+          uuid: s.uuid,
+          nombre: s.nombre,
+          prefijo_nombre: s.prefijo_nombre ?? null,
+        }))}
+        value={value.uuid_sucursal}
+        onChange={(v) => update({ uuid_sucursal: v })}
+        label={t('alertas.filters.branch', 'Sucursal')}
+        placeholder={t('alertas.filters.search', 'Buscar por nombre, prefijo o UUID…')}
+        allLabel={t('alertas.filters.allBranches', 'Todas mis sucursales')}
+        testId="alertas-filters-sucursal"
+      />
 
       <label className="flex flex-col gap-1 text-xs">
         <span className="font-medium text-muted-foreground">
@@ -157,6 +160,7 @@ export function AlertasFilters({
           data-testid="alertas-filters-reset"
           type="button"
           variant="ghost"
+          size="sm"
           onClick={onReset}
         >
           {t('alertas.filters.reset', 'Limpiar')}
