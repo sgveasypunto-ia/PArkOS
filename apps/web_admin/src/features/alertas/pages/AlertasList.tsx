@@ -76,7 +76,14 @@ export default function AlertasList({ swrSalt }: AlertasListPageProps): JSX.Elem
 
   const permittedSet = useMemo(() => new Set(sucursalUuids), [sucursalUuids]);
   const sucursalOptions = useMemo(
-    () => sucursales.filter((s) => permittedSet.has(s.uuid)).map((s) => ({ uuid: s.uuid, nombre: s.nombre })),
+    () =>
+      sucursales
+        .filter((s) => permittedSet.has(s.uuid))
+        .map((s) => ({
+          uuid: s.uuid,
+          nombre: s.nombre,
+          prefijo_nombre: s.prefijo_nombre ?? null,
+        })),
     [sucursales, permittedSet],
   );
   const scopedItems = useMemo(

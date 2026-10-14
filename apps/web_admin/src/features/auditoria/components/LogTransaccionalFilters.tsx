@@ -12,8 +12,9 @@
  *     catalog endpoint exists to constrain this one to a dropdown.
  *   - `uuid_registro` / `uuid_usuario` -- free-text UUID filters (pasted
  *     by the admin, e.g. from a support ticket or `BuscarGlobal`).
- *   - `uuid_sucursal` -- branch dropdown, full directory (cross-branch
- *     admin surface, same as `SyncLog.tsx` / `ArqueosFilters.tsx` -- the
+ *   - `uuid_sucursal` -- searchable single-select via
+ *     `SucursalFilterCombobox`, full directory (cross-branch admin
+ *     surface, same as `SyncLog.tsx` / `ArqueosFilters.tsx` -- the
  *     BE already enforces 403/400 server-side, so the FE doesn't need its
  *     own client-side branch restriction here like `AlertasFilters.tsx`
  *     does).
@@ -23,6 +24,7 @@ import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { SucursalFilterCombobox } from '@/features/admin/components/SucursalFilterCombobox';
 
 export interface LogTransaccionalFiltersValue {
   tabla: string;
@@ -34,7 +36,11 @@ export interface LogTransaccionalFiltersValue {
 }
 
 export interface LogTransaccionalFiltersOptions {
-  sucursalOptions: ReadonlyArray<{ uuid: string; nombre: string | null }>;
+  sucursalOptions: ReadonlyArray<{
+    uuid: string;
+    nombre: string | null;
+    prefijo_nombre?: string | null;
+  }>;
 }
 
 export interface LogTransaccionalFiltersProps {
@@ -84,24 +90,22 @@ export function LogTransaccionalFilters({
         />
       </label>
 
-      <label className="flex flex-col gap-1 text-xs">
-        <span className="font-medium text-muted-foreground">
-          {t('auditoria.filters.branch', 'Sucursal')}
-        </span>
-        <select
-          data-testid="log-transaccional-filters-sucursal"
-          value={value.uuid_sucursal}
-          onChange={(e) => update({ uuid_sucursal: e.target.value })}
-          className="rounded-md border bg-background px-2 py-1 text-sm"
-        >
-          <option value="">{t('auditoria.filters.allBranches', 'Todas')}</option>
-          {options.sucursalOptions.map((s) => (
-            <option key={s.uuid} value={s.uuid}>
-              {s.nombre ?? s.uuid}
-            </option>
-          ))}
-        </select>
-      </label>
+      <SucursalFilterCombobox
+        options={options.sucursalOptions.map((s) => ({
+          uuid: s.uuid,
+          nombre: s.nombre,
+          prefijo_nombre: s.prefijo_nombre ?? null,
+        }))}
+        value={value.uuid_sucursal}
+        onChange={(v) => update({ uuid_sucursal: v })}
+        label={t('auditoria.filters.branch', 'Sucursal')}
+        placeholder={t(
+          'auditoria.filters.search',
+          'Buscar por nombre, prefijo o UUID…',
+        )}
+        allLabel={t('auditoria.filters.allBranches', 'Todas')}
+        testId="log-transaccional-filters-sucursal"
+      />
 
       <label className="flex flex-col gap-1 text-xs">
         <span className="font-medium text-muted-foreground">
@@ -143,6 +147,7 @@ export function LogTransaccionalFilters({
           data-testid="log-transaccional-filters-reset"
           type="button"
           variant="ghost"
+          size="sm"
           onClick={onReset}
         >
           {t('auditoria.filters.reset', 'Limpiar')}
