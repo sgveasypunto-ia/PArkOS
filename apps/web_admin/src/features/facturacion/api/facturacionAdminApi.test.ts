@@ -152,13 +152,23 @@ describe('facturacionAdminApi', () => {
     expect((caught as FacturacionHttpError).status).toBe(404);
   });
 
-  it('fetchFacturaHash queries /admin/log-transaccional with limit=20', async () => {
+  it('fetchFacturaHash queries /admin/log-transaccional with the BE-correct query params', async () => {
+    // Bug #4 fix (2026-10-14): the query param is ``tabla`` -- the
+    // BE handler at /api/v1/admin/log-transaccional (HU-F20.4 cross-
+    // branch) reads ``tabla`` per its OpenAPI. The pre-fix code sent
+    // ``tabla_afectada=factura`` which FastAPI silently dropped, so
+    // the response returned the last N log rows of any type. The
+    // client-side filter in ``findHashForFactura`` masked the bug;
+    // this test pins the wire shape so a future refactor doesn't
+    // regress. Note: this is distinct from the legacy
+    // ``/admin/audit/log`` endpoint, which DOES use ``?tabla_afectada=``.
     const UUID = 'd8c22ebb-948e-4745-aaa1-52e0a698124a';
     mockedFetch.mockResolvedValueOnce(ok({ items: [], next_cursor: null }));
     await fetchFacturaHash(UUID);
     const calledUrl = mockedFetch.mock.calls[0][0] as string;
     expect(calledUrl).toContain('/admin/log-transaccional');
-    expect(calledUrl).toContain('tabla_afectada=factura');
+    expect(calledUrl).toContain('tabla=factura');
+    expect(calledUrl).not.toContain('tabla_afectada=');
     expect(calledUrl).toContain('limit=20');
   });
 
