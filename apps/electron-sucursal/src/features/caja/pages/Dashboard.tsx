@@ -86,11 +86,12 @@ import logoDark from '../../../assets/brand/logos/logo-horizontal-dark--REQUIERE
 import { useResumenCierrePendiente } from '../hooks/useResumenCierrePendiente';
 import { useSesionActiva } from '../hooks/useSesionActiva';
 import { CuposLibresStrip } from '../../operacion/components/CuposLibresStrip';
+import { openSalidaDeIngreso } from '../../operacion/lib/openSalidaDeIngreso';
 import { FacturaElectronicaRetryPanel } from '../../facturacion/components/FacturaElectronicaRetryPanel';
 import { ProximasVencerBanner } from '../../suscripciones/components/ProximasVencerBanner';
 import { BaseCajaAviso } from '../components/BaseCajaAviso';
 import { SyncStatusBadge } from '../../sync/components/SyncStatusBadge';
-import { AlertasPanel } from '../../../components/AlertasPanel';
+import { AlertasTrigger } from '../../alertas/components/AlertasTrigger';
 import { useIngresoActivo } from '../../operacion/hooks/useIngresoActivo';
 import { useIngresosActivos } from '../../operacion/hooks/useIngresosActivos';
 import {
@@ -628,20 +629,6 @@ export function Dashboard(): JSX.Element | null {
             </CardContent>
           </Card>
 
-          {/* Alertas de la sucursal — panel VISIBLE del hub. Antes vivía en un
-              `<div aria-hidden className="sr-only">` (1x1px recortado con
-              controles enfocables dentro de aria-hidden): "Marcar revisada"
-              y los chips de filtro eran inalcanzables para el operador. El
-              `data-testid="dashboard-section-alertas"` se conserva; el panel
-              trae su propio <h2> y no necesita CardHeader. */}
-          <Card data-testid="alertas-card" className="overflow-hidden">
-            <CardContent className="p-5">
-              <section data-testid="dashboard-section-alertas">
-                <AlertasPanel uuid_sucursal={uuid_sucursal} />
-              </section>
-            </CardContent>
-          </Card>
-
           {/* Hidden: legacy section panel kept for tests via
               `data-testid="dashboard-section-fe-retry"`. */}
           <div aria-hidden className="sr-only">
@@ -652,7 +639,10 @@ export function Dashboard(): JSX.Element | null {
         </main>
 
         {/* ── Footer full-width (operador 2026-09-22): inventario per-tipo + cupos libres agregados ── */}
-        <CuposLibresStrip uuid_sucursal={uuid_sucursal} />
+        <CuposLibresStrip uuid_sucursal={uuid_sucursal}>
+          {/* Alertas: módulo colapsado — trigger en el footer, panel en bottom sheet. */}
+          <AlertasTrigger uuid_sucursal={uuid_sucursal} />
+        </CuposLibresStrip>
 
         {/* ── DrawerHost mounts the SINGLE active drawer (REQ-OPS-138) ─── */}
         <DrawerHost />
@@ -680,25 +670,6 @@ const PLACA_HERO_MAX_LEN = 30;
 
 /** Forma de un consecutivo impreso en el tiquete: `<TIPO>-NNNNNN-<uuid8>`. */
 const CONSECUTIVO_SHAPE_REGEX = /^[A-Z]+-\d{6}-[0-9a-f]{8}$/i;
-
-/**
- * Abre el drawer de salida para un ingreso activo ya resuelto — helper
- * compartido por la búsqueda del hero (sugerencia / consecutivo) y por el
- * click en "Vehículos dentro". Con placa se entrega la placa; sin placa
- * (bici/patineta) se entrega el `uuid_ingreso` directo, porque no hay
- * texto de placa que re-buscar (`<SalidaPanel initialUuidIngreso>`).
- */
-function openSalidaDeIngreso(
-  openDrawer: ReturnType<typeof useDashboardDrawerStore.getState>['open'],
-  anchorId: string,
-  ingreso: { uuid: string; placa: string | null },
-): void {
-  if (ingreso.placa) {
-    openDrawer('salida', anchorId, ingreso.placa);
-  } else {
-    openDrawer('salida', anchorId, null, null, ingreso.uuid);
-  }
-}
 
 function PlacaInputHero({
   uuid_sucursal,

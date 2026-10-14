@@ -43,12 +43,18 @@
  * de progreso + Tooltip con leyenda — shape distinto al de esta fila
  * de chips. Se reusa solo la lógica de color (`classForPorcentaje`).
  */
+import type { ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import { Bike, Car, Truck } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
+import { useDashboardDrawerStore } from '@/store/dashboardDrawerStore';
+
 import { useOcupacion } from '../hooks/useOcupacion';
 import { classForPorcentaje } from '../occupancyThresholds';
+
+/** Prefijo del id DOM de cada chip (ancla de foco para el sheet de placas). */
+export const CUPOS_CHIP_ID_PREFIX = 'cupos-chip-';
 
 type ColorLevel = 'green' | 'yellow' | 'red';
 
@@ -87,13 +93,20 @@ export interface CuposLibresStripProps {
    *  hook retorna `undefined` y el KPI renderiza `—` (load-state,
    *  no se inventa 0). */
   uuid_sucursal: string | null;
+  /** Slot al final de la fila (p. ej. el trigger de alertas). */
+  children?: ReactNode;
 }
 
 export function CuposLibresStrip({
   uuid_sucursal,
+  children,
 }: CuposLibresStripProps): JSX.Element {
   const { t } = useTranslation(['operacion', 'caja']);
   const { data } = useOcupacion(uuid_sucursal);
+  const openDrawerKind = useDashboardDrawerStore((s) => s.openDrawer);
+  const openTipoUuid = useDashboardDrawerStore((s) => s.tipoVehiculoUuid);
+  const openDrawer = useDashboardDrawerStore((s) => s.open);
+  const closeDrawer = useDashboardDrawerStore((s) => s.close);
 
   const items = data?.items ?? [];
 
@@ -144,6 +157,9 @@ export function CuposLibresStrip({
             visibleItems.map((it) => {
               const color = classForPorcentaje(it.activos / it.cupo_maximo);
               const Icon = iconForTipo(it.tipo);
+              const chipId = `${CUPOS_CHIP_ID_PREFIX}${it.uuid_tipo_vehiculo}`;
+              const expanded =
+                openDrawerKind === 'vehiculos-tipo' && openTipoUuid === it.uuid_tipo_vehiculo;
               return (
                 <li
                   key={it.uuid_tipo_vehiculo}
@@ -151,7 +167,28 @@ export function CuposLibresStrip({
                   data-color={color}
                   aria-live="polite"
                   aria-atomic="false"
-                  className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 ${CHIP_CLASS[color]}`}
+                >
+                {/* Chip = botón que abre el bottom sheet con las placas dentro
+                    de ese tipo (`<VehiculosTipoSheet />`). Mismo aspecto por
+                    umbral; sólo se agrega affordance (hover / foco / cursor). */}
+                <button
+                  type="button"
+                  id={chipId}
+                  data-testid={`cupos-libres-strip-chip-${it.tipo}`}
+                  aria-haspopup="dialog"
+                  aria-expanded={expanded}
+                  aria-label={t('operacion:cuposLibresStrip.verPlacas', {
+                    tipo: it.tipo,
+                    activos: it.activos,
+                    cupo: it.cupo_maximo,
+                    defaultValue: '{{tipo}}: {{activos}} de {{cupo}} ocupados, ver placas',
+                  })}
+                  onClick={() =>
+                    expanded
+                      ? closeDrawer()
+                      : openDrawer('vehiculos-tipo', chipId, null, null, null, it.uuid_tipo_vehiculo)
+                  }
+                  className={`inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 transition hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ${CHIP_CLASS[color]}`}
                 >
                   <Icon aria-hidden className={`h-3.5 w-3.5 shrink-0 ${ICON_TEXT[color]}`} />
                   <span className={`text-[11px] font-semibold uppercase tracking-[0.04em] ${NUMBER_TEXT[color]}/80`}>
@@ -168,6 +205,7 @@ export function CuposLibresStrip({
                   <span className={`font-mono text-[10px] tabular-nums ${NUMBER_TEXT[color]}/60`}>
                     ({it.activos}/{it.cupo_maximo})
                   </span>
+                </button>
                 </li>
               );
             })
@@ -193,6 +231,7 @@ export function CuposLibresStrip({
             {hasRealCupos ? totalCuposLibres : '—'}
           </span>
         </div>
+        {children}
       </div>
     </footer>
   );

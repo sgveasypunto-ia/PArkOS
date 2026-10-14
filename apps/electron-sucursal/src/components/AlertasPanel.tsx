@@ -33,9 +33,15 @@ import {
 
 export interface AlertasPanelProps {
   uuid_sucursal: string | null;
+  /**
+   * Rendered inside `<AlertasSheet />`: the sheet owns the title (its
+   * `SheetTitle` labels the dialog) and the count badge, so the panel
+   * skips its own header and drops the heading-based labelling.
+   */
+  embedded?: boolean;
 }
 
-export function AlertasPanel({ uuid_sucursal }: AlertasPanelProps): JSX.Element | null {
+export function AlertasPanel({ uuid_sucursal, embedded = false }: AlertasPanelProps): JSX.Element | null {
   const { t } = useTranslation();
   const { mergedAlertas, openAlertsCount, error } = useAlertas(uuid_sucursal);
 
@@ -83,10 +89,11 @@ export function AlertasPanel({ uuid_sucursal }: AlertasPanelProps): JSX.Element 
 
   return (
     <section
-      aria-labelledby="alertas-panel-title"
+      aria-labelledby={embedded ? undefined : 'alertas-panel-title'}
       className="space-y-4"
       data-testid="alertas-panel"
     >
+      {!embedded && (
       <header className="flex items-center justify-between gap-2">
         <h2 id="alertas-panel-title" className="text-lg font-semibold">
           {t('alertas:dashboard.title', { defaultValue: 'Alertas de la sucursal' })}
@@ -99,6 +106,7 @@ export function AlertasPanel({ uuid_sucursal }: AlertasPanelProps): JSX.Element 
           {openAlertsCount}
         </span>
       </header>
+      )}
 
       {error && (
         <p role="alert" className="text-sm text-destructive" data-testid="alertas-error">

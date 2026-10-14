@@ -24,6 +24,10 @@
  *   - `'ingreso'`        → `<IngresoSheet />` (F6.1 — wires the
  *                          dashboard's PlacaInputHero to the ingreso flow)
  *   - `'salida'`         → `<SalidaSheet />` (F7.1 — same for salida)
+ *   - `'alertas'`         → `<AlertasSheet />` (bottom sheet con el panel
+ *                          de alertas; trigger en el footer de cupos)
+ *   - `'vehiculos-tipo'` → `<VehiculosTipoSheet />` (bottom sheet con las
+ *                          placas dentro de un tipo; trigger = chip de cupos)
  *   - `'suscripciones'`  → `<SuscripcionesSheet />` (F9.2 — list +
  *                          "Nueva venta" CTA into the existing
  *                          4-step `<Venta />` wizard at
@@ -42,6 +46,8 @@ import { CerrarTurnoSheet } from '../components/CerrarTurnoSheet';
 import { CierreDiarioSheet } from '../pages/CierreDiarioSheet';
 import { IngresoSheet } from '../../operacion/components/IngresoSheet';
 import { SalidaSheet } from '../../operacion/components/SalidaSheet';
+import { AlertasSheet } from '../../alertas/components/AlertasSheet';
+import { VehiculosTipoSheet } from '../../operacion/components/VehiculosTipoSheet';
 import { SuscripcionesSheet } from '../../suscripciones/components/SuscripcionesSheet';
 
 export function DrawerHost(): JSX.Element | null {
@@ -128,6 +134,12 @@ export function DrawerHost(): JSX.Element | null {
   }
   if (openDrawer === 'salida') {
     return <SalidaSheet />;
+  }
+  if (openDrawer === 'alertas') {
+    return <AlertasSheet />;
+  }
+  if (openDrawer === 'vehiculos-tipo') {
+    return <VehiculosTipoSheet />;
   }
   if (openDrawer === 'suscripciones') {
     // HU-F9.2 sheet — list + "Nueva venta" CTA. CTA closes the

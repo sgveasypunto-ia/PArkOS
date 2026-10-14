@@ -61,6 +61,12 @@ export type DrawerKind =
   | 'salida'
   | 'suscripciones'
   | 'inventario'
+  // Alertas de la sucursal: bottom sheet abierto desde el trigger del footer
+  // (antes un panel inline permanente que tapaba la zona de operación).
+  | 'alertas'
+  // Placas dentro por tipo de vehículo: bottom sheet abierto desde un chip
+  // de cupos del footer; el tipo viaja en `tipoVehiculoUuid`.
+  | 'vehiculos-tipo'
   | null;
 
 export type NonNullDrawerKind = Exclude<DrawerKind, null>;
@@ -124,6 +130,12 @@ export interface DashboardDrawerState {
    */
   pagoContext: PagoContext | null;
   /**
+   * `uuid_tipo_vehiculo` del chip que abrió el drawer `vehiculos-tipo`.
+   * `null` para cualquier otro drawer. Mismo ciclo de vida que
+   * `initialPlaca`: lo fija `open(...)`, lo limpia `close()`.
+   */
+  tipoVehiculoUuid: string | null;
+  /**
    * Open a drawer. The optional `placa` arg records the plate that
    * triggered the open so the drawer can pre-fill its form; it is
    * ignored by drawers that don't need it. The optional `pagoContext`
@@ -136,6 +148,7 @@ export interface DashboardDrawerState {
     placa?: string | null,
     pagoContext?: PagoContext | null,
     initialUuidIngreso?: string | null,
+    tipoVehiculoUuid?: string | null,
   ): void;
   close(): void;
 }
@@ -146,13 +159,22 @@ export const useDashboardDrawerStore = create<DashboardDrawerState>((set) => ({
   initialPlaca: null,
   initialUuidIngreso: null,
   pagoContext: null,
-  open: (kind, anchorId, placa = null, pagoContext = null, initialUuidIngreso = null) =>
+  tipoVehiculoUuid: null,
+  open: (
+    kind,
+    anchorId,
+    placa = null,
+    pagoContext = null,
+    initialUuidIngreso = null,
+    tipoVehiculoUuid = null,
+  ) =>
     set({
       openDrawer: kind,
       lastAnchorId: anchorId,
       initialPlaca: placa,
       pagoContext: pagoContext,
       initialUuidIngreso,
+      tipoVehiculoUuid,
     }),
   close: () =>
     set({
@@ -161,6 +183,7 @@ export const useDashboardDrawerStore = create<DashboardDrawerState>((set) => ({
       initialPlaca: null,
       pagoContext: null,
       initialUuidIngreso: null,
+      tipoVehiculoUuid: null,
     }),
 }));
 

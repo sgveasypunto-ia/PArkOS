@@ -2,6 +2,15 @@
   "titulo": "Alertas",
   "vacio": "Sin alertas abiertas.",
   "error": "Error al cargar alertas",
+  "trigger": {
+    "texto": "Alertas",
+    "label_zero": "Alertas: ninguna abierta",
+    "label_one": "Alertas: {{count}} abierta",
+    "label_other": "Alertas: {{count}} abiertas"
+  },
+  "sheet": {
+    "descripcion": "Alertas abiertas de la sucursal, con filtros por severidad y tipo."
+  },
   "dashboard": {
     "title": "Alertas de la sucursal",
     "drillDown": "Ver detalle",
