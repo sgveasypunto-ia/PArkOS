@@ -101,9 +101,15 @@ export function ArqueosPage(): JSX.Element {
     queries: [
       {
         queryKey: ['arqueo-filter-sucursales'],
-        queryFn: async (): Promise<Array<{ uuid: string; nombre: string | null }>> => {
+        queryFn: async (): Promise<
+          Array<{ uuid: string; nombre: string | null; prefijo_nombre: string | null }>
+        > => {
           const rows = await listSucursales({ limit: 200 });
-          return rows.map((s) => ({ uuid: s.uuid, nombre: s.nombre }));
+          return rows.map((s) => ({
+            uuid: s.uuid,
+            nombre: s.nombre,
+            prefijo_nombre: s.prefijo_nombre ?? null,
+          }));
         },
       },
       {

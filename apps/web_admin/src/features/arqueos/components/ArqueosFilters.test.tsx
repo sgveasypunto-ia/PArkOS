@@ -50,7 +50,7 @@ describe('ArqueosFilters', () => {
     expect(screen.getByTestId('arqueos-filters-reset')).toBeInTheDocument();
   });
 
-  it('calling onChange when the branch dropdown changes', async () => {
+  it('calling onChange when the branch combobox selection changes', async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
     render(
@@ -61,9 +61,11 @@ describe('ArqueosFilters', () => {
         options={OPTIONS}
       />,
     );
-    await user.selectOptions(
-      screen.getByTestId('arqueos-filters-sucursal'),
-      '00000000-0000-0000-0000-000000000001',
+    await user.click(screen.getByTestId('arqueos-filters-sucursal'));
+    await user.click(
+      screen.getByTestId(
+        'arqueos-filters-sucursal-option-00000000-0000-0000-0000-000000000001',
+      ),
     );
     expect(onChange).toHaveBeenCalledWith({
       ...EMPTY,
