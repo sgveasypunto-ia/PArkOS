@@ -107,11 +107,11 @@ export async function fetchFacturaByUuid(uuid: string): Promise<FacturaDetailRea
  * `fetchFacturaDetalle(uuidFactura)` — invoice line items.
  * `GET /api/v1/facturacion/factura-detalle?uuid_factura=...`.
  *
- * NOTE: as of HU-X.1a, this endpoint does NOT honour `?uuid_factura=`
- * (the factory ignores it — same bug as the pagos endpoint). The
- * filter is still applied client-side in the SWR key to keep the URL
- * semantic; the page filters items by `item.uuid_factura === uuid` as
- * a safety net.
+ * HU-X.1b (2026-10-13): the server is now authoritative — custom
+ * handler in ``api/v1/facturacion.py`` honours ``?uuid_factura=``.
+ * The page ALSO filters by ``item.uuid_factura === uuidFactura`` as
+ * defense in depth (KD-FACT-01) so a misbehaving API or stale
+ * cache cannot leak lines from other facturas into this drill-down.
  */
 export async function fetchFacturaDetalle(
   uuidFactura: string,
@@ -126,6 +126,11 @@ export async function fetchFacturaDetalle(
 /**
  * `fetchFacturaImpuestos(uuidFactura)` — IVA rows for a factura.
  * `GET /api/v1/facturacion/factura-impuestos?uuid_factura=...`.
+ *
+ * HU-X.1b (2026-10-13): the server is now authoritative — custom
+ * handler honours ``?uuid_factura=``. The page ALSO filters by
+ * ``item.uuid_factura === uuidFactura`` as defense in depth
+ * (KD-FACT-01).
  */
 export async function fetchFacturaImpuestos(
   uuidFactura: string,

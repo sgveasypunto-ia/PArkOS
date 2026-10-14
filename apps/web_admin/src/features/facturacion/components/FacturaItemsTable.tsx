@@ -1,14 +1,18 @@
 /**
  * `<FacturaItemsTable />` — invoice line items (REQ-X-04).
  *
- * Source: `GET /api/v1/facturacion/factura-detalle?uuid_factura=...` (the
- * factory mount; as of X.1a the endpoint does NOT honour the
- * `?uuid_factura=` filter — same bug as the pagos endpoint, fixed in
- * a follow-up). The page filters items by `item.uuid_factura === uuid`
- * as a safety net (defense in depth: server should also filter).
+ * Source: `GET /api/v1/facturacion/factura-detalle?uuid_factura=...`
+ * (HU-X.1b — custom handler, the factory used to silently drop the
+ * filter; the bug was caught by the 2026-10-13 E2E — see
+ * ``openspec/changes/hu-x1b-factura-detalle-impuestos-filter/``).
+ *
+ * Defense in depth: the server is now authoritative (X.1b), but the
+ * page ALSO filters by `item.uuid_factura === uuidFactura` so a
+ * misbehaving API or stale cache cannot leak lines from other
+ * facturas into this drill-down (REQ-X-11 + KD-FACT-01).
  *
  * Per-section error/loading: a 5xx on this endpoint shows the inline
- * alert but does NOT fatal the page (REQ-X-11).
+ * alert but does NOT fatal the page.
  */
 import { useTranslation } from 'react-i18next';
 
@@ -36,6 +40,12 @@ export interface FacturaItemsTableProps {
   isLoading: boolean;
   error: Error | null | undefined;
   onRetry: () => void;
+  /**
+   * UUID of the parent factura (from the URL). Used by the client-side
+   * filter so we never render lines belonging to a different factura
+   * even if the server response is misaligned (X.1b defense in depth).
+   */
+  uuidFactura: string;
 }
 
 export function FacturaItemsTable({
@@ -43,8 +53,16 @@ export function FacturaItemsTable({
   isLoading,
   error,
   onRetry,
+  uuidFactura,
 }: FacturaItemsTableProps): JSX.Element {
   const { t } = useTranslation('facturacionAdmin');
+  // X.1b: client-side filter. The server now honours ?uuid_factura=
+  // (see api/v1/facturacion.py), but we keep the filter here as a
+  // safety net so a stale cache or a misbehaving backend cannot leak
+  // lines from other facturas into this drill-down.
+  const ownItems = items.filter(
+    (row) => String(row.uuid_factura) === uuidFactura,
+  );
   return (
     <div className="space-y-2">
       <h2 className="text-base font-semibold">
@@ -93,7 +111,7 @@ export function FacturaItemsTable({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {items.length === 0 ? (
+            {ownItems.length === 0 ? (
               <TableRow>
                 <TableCell
                   colSpan={4}
@@ -106,7 +124,7 @@ export function FacturaItemsTable({
                 </TableCell>
               </TableRow>
             ) : (
-              items.map((row) => (
+              ownItems.map((row) => (
                 <TableRow key={row.uuid} data-testid={`factura-item-row-${row.uuid}`}>
                   <TableCell>{row.concepto}</TableCell>
                   <TableCell className="text-right tabular-nums">
