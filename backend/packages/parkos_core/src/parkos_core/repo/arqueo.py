@@ -964,6 +964,45 @@ async def get_alerta_uuids_for_arqueos(
     return {row.uuid_arqueo: row.uuid for row in result if row.uuid_arqueo is not None}
 
 
+async def get_codigos_for_tipos_arqueo(
+    session: AsyncSession,
+    uuid_tipo_arqueos: list[uuid_lib.UUID],
+) -> dict[uuid_lib.UUID, str]:
+    """Batched ``uuid_tipo_arqueo`` -> ``codigo`` lookup for the admin list.
+
+    The ``Arqueo`` ORM does not eager-load a ``TipoArqueo`` relationship
+    (only the FK column ``uuid_tipo_arqueo``), so the wire schema
+    ``ArqueoRead.codigo_tipo_arqueo`` needs a separate resolution. Same
+    N+1-prevention pattern as ``get_alerta_uuids_for_arqueos`` above:
+    one batched ``uuid IN (...)`` query per page (1 round-trip) instead
+    of one per row.
+
+    The lookup is by exact ``uuid`` (PK), so each ``uuid`` matches at
+    most one row -- no vigente_hasta filter needed. A bi-temporal
+    re-insert of the same ``codigo`` (e.g. ``cierre_dia``) gets a NEW
+    uuid; the historic closed predecessor keeps its original uuid and
+    the FK on ``Arqueo.uuid_tipo_arqueo`` may point to either (the
+    one vigente when the arqueo was created). The codigo is
+    the string on the row, so picking any row by uuid is correct.
+    Returns ``codigo`` as a string, empty-string when the column is
+    NULL (a config error -- the FK should not have been created).
+
+    Empty input short-circuits to avoid an always-false ``IN ()``
+    round-trip (same as the alerta variant).
+    """
+    if not uuid_tipo_arqueos:
+        return {}
+    stmt = select(TipoArqueo.uuid, TipoArqueo.codigo).where(
+        TipoArqueo.uuid.in_(uuid_tipo_arqueos)
+    )
+    result = await session.execute(stmt)
+    return {
+        row.uuid: (row.codigo or "")
+        for row in result
+        if row.uuid is not None
+    }
+
+
 # ---------------------------------------------------------------------------
 # HU-F18.3 admin cross-branch resumen (REQ-OPS-153)
 # ---------------------------------------------------------------------------

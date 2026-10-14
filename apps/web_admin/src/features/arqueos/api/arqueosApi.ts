@@ -16,13 +16,17 @@ import { parkosFetchRaw, type ParkosFetchInit } from '@parkos/ui-kit/fetch';
 
 import {
   arqueoResumenAdminReadSchema,
+  arqueoResumenReadSchema,
   arqueosListResponseSchema,
   diferenciasReadSchema,
   type ArqueoResumenAdminRead,
+  type ArqueoResumenRead,
   type ArqueosListQuery,
   type ArqueosListResponse,
   type DiferenciasRead,
 } from './arqueosSchema';
+// Re-export so the hook can import a single symbol.
+export type { ArqueoResumenRead };
 
 const LIST_PATH = '/api/v1/caja/arqueo';
 const DIFERENCIAS_PATH_FRAGMENT = '/api/v1/caja-sesion/arqueos';
@@ -98,4 +102,29 @@ export async function fetchResumenAdmin(
     headers: { Accept: 'application/json' },
   });
   return arqueoResumenAdminReadSchema.parse(raw);
+}
+
+/**
+ * Bug #2 fix (2026-10-14): per-branch ``cierre_dia`` drill-down
+ * payload. Wraps ``GET /api/v1/caja/arqueo/resumen?uuid_sucursal=&fecha=``
+ * (operador- or admin- issuer). Returns the same
+ * ``ArqueoResumenRead`` shape (which carries the ``sesiones[]`` array
+ * + optional ``cierre_dia`` aggregate). The admin reuses the operator's
+ * per-branch endpoint because the closure logic (KD-ARQUEO-03) is
+ * the same -- only the issuer gate differs.
+ */
+export async function fetchArqueoResumen(
+  uuid_sucursal: string,
+  fecha: string,
+): Promise<ArqueoResumenRead> {
+  const params = new URLSearchParams({
+    uuid_sucursal,
+    fecha,
+  });
+  const url = `/api/v1/caja/arqueo/resumen?${params.toString()}`;
+  const raw = await fetchJson<unknown>(url, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+  });
+  return arqueoResumenReadSchema.parse(raw);
 }

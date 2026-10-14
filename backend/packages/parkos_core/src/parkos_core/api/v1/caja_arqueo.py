@@ -169,15 +169,37 @@ async def list_arqueos(
         session, [r.uuid for r in page_rows]
     )
 
+    # Bug #2 fix (2026-10-14): the wire schema exposes
+    # ``ArqueoRead.codigo_tipo_arqueo`` so the admin ``DiferenciasPanel``
+    # can branch on ``cierre_dia`` to render the per-session breakdown.
+    # The ``Arqueo`` ORM does not eager-load ``TipoArqueo`` (only the
+    # FK column), so we resolve the codigo in one batched lookup per
+    # page (same N+1-prevention pattern as the alerta batch above).
+    uuid_tipo_arqueos = [
+        r.uuid_tipo_arqueo for r in page_rows if r.uuid_tipo_arqueo is not None
+    ]
+    codigos_tipo_arqueo = await repo_arqueo.get_codigos_for_tipos_arqueo(
+        session, uuid_tipo_arqueos
+    )
+
     _helpers.apply_no_store_header(response)
     return ArqueoReadList(
-        items=[_to_arqueo_read(r, alerta_uuids.get(r.uuid)) for r in page_rows],
+        items=[
+            _to_arqueo_read(
+                r,
+                alerta_uuids.get(r.uuid),
+                codigos_tipo_arqueo.get(r.uuid_tipo_arqueo) if r.uuid_tipo_arqueo else None,
+            )
+            for r in page_rows
+        ],
         next_cursor=next_cursor,
     )
 
 
 def _to_arqueo_read(
-    row: repo_arqueo.Arqueo, alerta_uuid: uuid_lib.UUID | None = None
+    row: repo_arqueo.Arqueo,
+    alerta_uuid: uuid_lib.UUID | None = None,
+    codigo_tipo_arqueo: str | None = None,
 ) -> "ArqueoRead":
     """Shrink an ``Arqueo`` ORM row to the wire schema ``ArqueoRead``.
 
@@ -185,9 +207,10 @@ def _to_arqueo_read(
     ``fecha_retencion_hasta``); the wire schema mirrors the column set
     1:1 (see ``schemas/caja.py::ArqueoRead``). Single-row mapper; the
     list endpoint wraps it inside ``items=[...]`` of the envelope.
-    ``alerta_uuid`` is NOT an ``Arqueo`` column (see
-    ``repo.arqueo.get_alerta_uuids_for_arqueos``) -- the caller resolves
-    it separately and passes it in.
+    ``alerta_uuid`` and ``codigo_tipo_arqueo`` are NOT ``Arqueo`` columns
+    (see ``repo.arqueo.get_alerta_uuids_for_arqueos`` and
+    ``get_codigos_for_tipos_arqueo``) -- the caller resolves them
+    separately via batched lookups and passes them in.
     """
     from ...schemas.caja import ArqueoRead
 
@@ -207,6 +230,7 @@ def _to_arqueo_read(
         valor_efectivo_reportado=row.valor_efectivo_reportado,
         valor_datafono_reportado=row.valor_datafono_reportado,
         alerta_uuid=alerta_uuid,
+        codigo_tipo_arqueo=codigo_tipo_arqueo,
     )
 
 # KD-3 issuer chain + ``realizar_arqueo`` permission gate (DEC-ARQUEO-05).

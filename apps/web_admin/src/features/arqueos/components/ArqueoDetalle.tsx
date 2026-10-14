@@ -10,7 +10,10 @@
  *     ``useArqueoDetalle().diferencias``.
  *   - The ``AlertaLink`` when ``arqueo.alerta_uuid`` is present (QA
  *     backlog cleanup, 2026-10-02: ``GET /api/v1/caja/arqueo`` now
- *     populates it — see ``repo.arqueo.get_alerta_uuids_for_arqueos``).
+ *     populates it -- see ``repo.arqueo.get_alerta_uuids_for_arqueos``).
+ *   - The ``SesionesBreakdownTable`` (Bug #2 fix, 2026-10-14) when
+ *     the selected row is a ``cierre_dia`` aggregate -- the panel
+ *     shows which operator turns contributed to the day-level total.
  *
  * HU-F18.4 adds the "Exportar PDF firmado" action: the same two rows
  * ``DiferenciasPanel`` renders (Efectivo / Datáfono -- esperado,
@@ -26,9 +29,11 @@ import { exportSignedPdf } from '@/lib/export/pdf';
 import type { CsvColumn } from '@/lib/export/csv';
 
 import type { ArqueoRead, DiferenciasRead } from '../api/arqueosSchema';
+import { useArqueoSesionesBreakdown } from '../hooks/useArqueoSesionesBreakdown';
 import { fetchSucursalLogoDataUrl } from '../lib/sucursalLogo';
 import { AlertaLink } from './AlertaLink';
 import { DiferenciasPanel } from './DiferenciasPanel';
+import { SesionesBreakdownTable } from './SesionesBreakdownTable';
 
 export interface ArqueoDetalleProps {
   arqueo: ArqueoRead | null;
@@ -88,6 +93,18 @@ export function ArqueoDetalle({
   const { t } = useTranslation();
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+
+  // Bug #2 fix (2026-10-14): cierre_dia aggregates are multi-session
+  // (every sesion that was open+closed during the day at the same
+  // branch). The per-aggregate ``valor_efectivo_esperado`` is the
+  // SUM across those sesiones; the admin needs the breakdown to
+  // identify which operator turns are responsible. The hook fires
+  // the per-branch resumen endpoint only when the selected row is a
+  // ``cierre_dia`` (the SWR key returns null for other types) so
+  // auditoria / cierre_turno / cierre_sesion never trigger this
+  // network call.
+  const breakdown = useArqueoSesionesBreakdown(arqueo);
+  const isCierreDia = arqueo?.codigo_tipo_arqueo === 'cierre_dia';
 
   async function handleExportPdf(): Promise<void> {
     if (!arqueo || !diferencias) return;
@@ -197,6 +214,15 @@ export function ArqueoDetalle({
         isLoading={diferenciasLoading}
         error={diferenciasError}
       />
+
+      {isCierreDia && (
+        <SesionesBreakdownTable
+          sesiones={breakdown.sesiones}
+          isLoading={breakdown.isLoading}
+          error={breakdown.error}
+          onRetry={() => void breakdown.refresh()}
+        />
+      )}
     </section>
   );
 }
