@@ -69,7 +69,7 @@
  *   - Success card renders uuid_reimpresion + costo_aplicado + motivo
  *     + "Anular" action que abre un alertdialog con motivo_anulacion.
  */
-import { useCallback, useId, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -196,7 +196,18 @@ function esIngresoYaTieneSalida(err: unknown): boolean {
   return err instanceof Error && err.message.includes('ingreso_ya_tiene_salida');
 }
 
-export function ReimprimirTiquete(): JSX.Element {
+export interface ReimprimirTiqueteProps {
+  /**
+   * Placa o consecutivo con el que arranca la búsqueda (entrada desde otro
+   * flujo, p. ej. el sheet de placas por tipo). Se resuelve una vez al montar
+   * con la MISMA ruta que el submit del form; sin él, el form arranca vacío.
+   */
+  initialTermino?: string | null;
+}
+
+export function ReimprimirTiquete({
+  initialTermino = null,
+}: ReimprimirTiqueteProps = {}): JSX.Element {
   const { t } = useTranslation('facturacion');
   const { sucursal } = useAuth();
 
@@ -299,6 +310,16 @@ export function ReimprimirTiquete(): JSX.Element {
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'error');
     }
+  }, []);
+
+  // Pre-relleno: mismo patrón que `initialPlaca` en `<SalidaPanel />`.
+  useEffect(() => {
+    if (initialTermino === null || initialTermino.trim() === '') return;
+    buscarForm.setValue('termino', initialTermino, { shouldValidate: false });
+    setSuggestionsClosed(true);
+    void resolverYSetear(initialTermino);
+    // Sólo al montar: el sheet se remonta en cada apertura del drawer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleBuscarSubmit = buscarForm.handleSubmit(async (values) => {

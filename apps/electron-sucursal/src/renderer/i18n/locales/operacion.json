@@ -145,6 +145,21 @@
   },
   "cuposLibresStrip": {
     "libres": "libres",
-    "ocupados": "ocupados"
+    "ocupados": "ocupados",
+    "verPlacas": "{{tipo}}: {{activos}} de {{cupo}} ocupados, ver placas"
+  },
+  "vehiculosTipo": {
+    "titulo": "{{tipo}}",
+    "descripcion": "Vehículos dentro de tipo {{tipo}}, con acciones de salida y reimpresión de tiquete.",
+    "conteo_one": "{{count}} vehículo dentro",
+    "conteo_other": "{{count}} vehículos dentro",
+    "buscar": "Buscar placa",
+    "sinVehiculos": "No hay vehículos de este tipo dentro.",
+    "sinResultados": "Ninguna placa coincide con la búsqueda.",
+    "cargando": "Cargando vehículos…",
+    "registrarSalida": "Registrar salida",
+    "registrarSalidaDe": "Registrar salida de {{id}}",
+    "reimprimir": "Reimprimir ticket",
+    "reimprimirDe": "Reimprimir ticket de {{id}}"
   }
 }

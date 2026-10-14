@@ -137,7 +137,21 @@ vi.mock('../components/TurnoActivoToggle', () => ({
 // U16 failed unconditionally (unrelated to this HU). Fixed by pointing
 // the stub at the component actually rendered today.
 vi.mock('../../operacion/components/CuposLibresStrip', () => ({
-  CuposLibresStrip: () => <div data-testid="cupos-libres-strip-mock" />,
+  CuposLibresStrip: ({ children }: { children?: React.ReactNode }) => (
+    <div data-testid="cupos-libres-strip-mock">{children}</div>
+  ),
+}));
+
+// El trigger de alertas (slot del footer) lee el conteo vía useAlertas;
+// se stubea para no disparar SWR en este test de layout.
+vi.mock('../../alertas/hooks/useAlertas', () => ({
+  useAlertas: () => ({
+    data: [],
+    mergedAlertas: [{ uuid: 'a1', severidad: 'alta' }],
+    openAlertsCount: 1,
+    error: undefined,
+    refresh: async () => undefined,
+  }),
 }));
 
 // Stub IngresoSheet + SalidaSheet — DrawerHost tests cover the
@@ -278,7 +292,7 @@ describe('<Dashboard /> container — T4 + REQ-OPS-136 hub', () => {
     // invisible.
     expect(screen.queryByTestId('dashboard-section-sync')).not.toBeInTheDocument();
     expect(screen.getByTestId('dashboard-online')).toBeInTheDocument();
-    expect(screen.getByTestId('dashboard-section-alertas')).toBeInTheDocument();
+    expect(screen.queryByTestId('dashboard-section-alertas')).not.toBeInTheDocument();
     expect(screen.queryByTestId('dashboard-section-ingreso')).not.toBeInTheDocument();
     expect(screen.queryByTestId('dashboard-section-salida')).not.toBeInTheDocument();
     expect(screen.queryByTestId('dashboard-section-suscripciones')).not.toBeInTheDocument();
@@ -720,8 +734,8 @@ describe('<PlacaInputHero /> — placa con formato inválido (C)', () => {
   });
 });
 
-describe('<Dashboard /> — panel de alertas alcanzable (D)', () => {
-  it('D1: dashboard-section-alertas NO vive bajo aria-hidden ni sr-only (controles enfocables alcanzables)', () => {
+describe('<Dashboard /> — alertas como módulo colapsado (D)', () => {
+  it('D1: el panel NO vive inline; sólo hay un trigger en el footer', () => {
     mockUseSesionActiva.mockReturnValue({
       sesion: baseSesion,
       isLoading: false,
@@ -734,12 +748,14 @@ describe('<Dashboard /> — panel de alertas alcanzable (D)', () => {
       </MemoryRouter>,
     );
 
-    const seccion = screen.getByTestId('dashboard-section-alertas');
-    expect(seccion.closest('[aria-hidden="true"]')).toBeNull();
-    expect(seccion.closest('.sr-only')).toBeNull();
-    // Vive dentro de una Card visible del hub, junto a "Vehículos dentro".
-    expect(within(screen.getByTestId('alertas-card')).getByTestId('dashboard-section-alertas')).toBe(
-      seccion,
-    );
+    expect(screen.queryByTestId('alertas-panel')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('alertas-card')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('alertas-list')).not.toBeInTheDocument();
+    const trigger = screen.getByTestId('alertas-trigger');
+    expect(trigger).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(
+      within(screen.getByTestId('cupos-libres-strip-mock')).getByTestId('alertas-trigger'),
+    ).toBe(trigger);
   });
 });

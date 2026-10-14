@@ -32,6 +32,9 @@ import { ReimprimirTiquete } from '../pages/ReimprimirTiquete';
 export function ReimprimirTiqueteSheet(): JSX.Element {
   const openDrawer = useDashboardDrawerStore((s) => s.openDrawer);
   const lastAnchorId = useDashboardDrawerStore((s) => s.lastAnchorId);
+  // Término (placa o consecutivo) con el que se abrió el drawer, p. ej. desde
+  // `<VehiculosTipoSheet />`; `null` para sidebar / F8.
+  const initialTermino = useDashboardDrawerStore((s) => s.initialPlaca);
   const close = useDashboardDrawerStore((s) => s.close);
   const open = openDrawer === 'reimpresion';
 
@@ -67,7 +70,7 @@ export function ReimprimirTiqueteSheet(): JSX.Element {
           </SheetDescription>
         </SheetHeader>
         <div className="mx-auto w-full max-w-xl">
-          <ReimprimirTiquete />
+          <ReimprimirTiquete initialTermino={initialTermino} />
         </div>
       </SheetContent>
     </Sheet>

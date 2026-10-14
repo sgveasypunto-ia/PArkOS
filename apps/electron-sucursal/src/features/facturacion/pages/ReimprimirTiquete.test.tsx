@@ -316,6 +316,25 @@ describe('<ReimprimirTiquete /> — HU-F8.3 búsqueda placa/cupo + cobro real + 
     expect(screen.getByTestId('reimprimir-ingreso-encontrado').textContent).not.toContain('T10:00');
   });
 
+  it('T2b: initialTermino pre-resuelve el ingreso al montar (entrada desde el sheet de placas)', async () => {
+    mockUseReimprimir.mockReturnValue(buildReimprimirHook());
+    mockUseAnularReimpresion.mockReturnValue(buildAnularHook());
+    mockUseRegistrarPagoServicio.mockReturnValue(buildRegistrarPagoServicioHook());
+    mockResolverIngresoReimpresion.mockResolvedValue({
+      kind: 'found',
+      ingreso: INGRESO_CON_PLACA,
+    });
+
+    await act(async () => {
+      render(<ReimprimirTiquete initialTermino="ABC123" />);
+    });
+
+    expect(mockResolverIngresoReimpresion).toHaveBeenCalledTimes(1);
+    expect(mockResolverIngresoReimpresion).toHaveBeenCalledWith('ABC123');
+    expect(screen.getByTestId('reimprimir-ingreso-encontrado')).toBeInTheDocument();
+    expect(screen.getByTestId('reimprimir-motivo')).toBeInTheDocument();
+  });
+
   it('T3: motivo <10 chars → inline error; el paso de cobro NUNCA se abre', async () => {
     mockUseReimprimir.mockReturnValue(buildReimprimirHook());
     mockUseAnularReimpresion.mockReturnValue(buildAnularHook());
