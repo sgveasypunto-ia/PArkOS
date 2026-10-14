@@ -87,13 +87,17 @@ import { useResumenCierrePendiente } from '../hooks/useResumenCierrePendiente';
 import { useSesionActiva } from '../hooks/useSesionActiva';
 import { CuposLibresStrip } from '../../operacion/components/CuposLibresStrip';
 import { openSalidaDeIngreso } from '../../operacion/lib/openSalidaDeIngreso';
+import {
+  openReimpresionDeIngreso,
+  terminoReimpresion,
+} from '../../operacion/lib/openReimpresionDeIngreso';
 import { FacturaElectronicaRetryPanel } from '../../facturacion/components/FacturaElectronicaRetryPanel';
 import { ProximasVencerBanner } from '../../suscripciones/components/ProximasVencerBanner';
 import { BaseCajaAviso } from '../components/BaseCajaAviso';
 import { SyncStatusBadge } from '../../sync/components/SyncStatusBadge';
 import { AlertasTrigger } from '../../alertas/components/AlertasTrigger';
 import { useIngresoActivo } from '../../operacion/hooks/useIngresoActivo';
-import { useIngresosActivos } from '../../operacion/hooks/useIngresosActivos';
+import { useIngresosActivos, type IngresoActivo } from '../../operacion/hooks/useIngresosActivos';
 import {
   getIngresosByConsecutivo,
   getIngresosByPlaca,
@@ -115,6 +119,12 @@ import {
 } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import {
   Tooltip,
   TooltipContent,
@@ -566,7 +576,7 @@ export function Dashboard(): JSX.Element | null {
         {/* ── Center: placa hero + welcome ─────────────────────────────── */}
         <main
           lang="es-CO"
-          className="row-start-2 col-start-1 min-w-0 flex flex-col gap-3 overflow-y-auto p-[clamp(0.75rem,1.5vw,1.5rem)] md:col-start-2"
+          className="row-start-2 col-start-1 min-h-0 min-w-0 flex flex-col gap-3 overflow-y-auto p-[clamp(0.75rem,1.5vw,1.5rem)] md:col-start-2"
         >
           {/* Aviso de la base de caja recién recibida (parametrizada por
               administración); no renderiza nada si ya se descartó. */}
@@ -618,16 +628,7 @@ export function Dashboard(): JSX.Element | null {
             `vehiculos-list`. (F11.x direct layout — sin cambio de data
             ni de polling cadence; sigue siendo 10s vía useIngresosActivos.)
           */}
-          <Card data-testid="vehiculos-list-card" className="overflow-hidden">
-            <CardHeader className="px-5 pt-5 pb-3">
-              <CardTitle className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
-                {t('caja:dashboard.vehiculosDentro', { defaultValue: 'Vehículos dentro' })}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-3 pb-3 text-sm">
-              <VehiculosDentroList uuid_sucursal={uuid_sucursal} />
-            </CardContent>
-          </Card>
+          <VehiculosDentroList uuid_sucursal={uuid_sucursal} />
 
           {/* Hidden: legacy section panel kept for tests via
               `data-testid="dashboard-section-fe-retry"`. */}
@@ -951,226 +952,198 @@ function PlacaInputHero({
 }
 
 /**
- * Opciones de tamaño de página para el listado de vehículos dentro.
- * El operador pidió cap de 5 o 10 registros por vista para que el card
- * no exceda el viewport del kiosko (REQ-UX-F11.PAGINACION).
+ * "Vehículos dentro": TODOS los ingresos activos en una región con scroll
+ * interno que ocupa el alto disponible del card (el header + conteo quedan
+ * fijos; la página no crece). Sin paginación: `overflow-y-auto` simple rinde
+ * bien para unos cientos de filas. Cada fila es el trigger de un menú de
+ * acciones del vehículo; las acciones sólo ENRUTAN a los drawers existentes
+ * (mismos helpers que `<VehiculosTipoSheet />`).
  */
-const PAGE_SIZE_OPTIONS = [5, 10] as const;
-type PageSize = (typeof PAGE_SIZE_OPTIONS)[number];
-
 function VehiculosDentroList({
   uuid_sucursal,
 }: {
   uuid_sucursal: string | null;
 }): JSX.Element {
   const { t } = useTranslation('caja');
-  const openDrawer = useDashboardDrawerStore((s) => s.open);
   const items = useIngresosActivos(uuid_sucursal);
   // items is IngresoActivo[] | null. null = loading; [] = empty; >0 = lista.
   // Defensive: if the hook ever returned undefined, treat as loading.
   const safe = items ?? null;
 
-  const [pageSize, setPageSize] = useState<PageSize>(10);
-  const [currentPage, setCurrentPage] = useState(0);
+  return (
+    <Card
+      data-testid="vehiculos-list-card"
+      className="flex min-h-56 flex-1 flex-col overflow-hidden"
+    >
+      <CardHeader className="flex-row items-center gap-2 space-y-0 px-5 pt-5 pb-3">
+        <CardTitle className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
+          {t('caja:dashboard.vehiculosDentro', { defaultValue: 'Vehículos dentro' })}
+        </CardTitle>
+        {safe !== null && (
+          <span
+            data-testid="vehiculos-count"
+            aria-live="polite"
+            className="rounded-full bg-muted px-2 py-0.5 text-xs font-semibold tabular-nums text-muted-foreground"
+          >
+            {safe.length}
+          </span>
+        )}
+      </CardHeader>
+      <CardContent className="flex min-h-0 flex-1 flex-col px-3 pb-3 text-sm">
+        {safe === null ? (
+          <p className="text-muted-foreground" data-testid="vehiculos-loading">
+            {t('common:loading')}
+          </p>
+        ) : safe.length === 0 ? (
+          <p className="text-muted-foreground" data-testid="vehiculos-empty">
+            {t('caja:dashboard.sinVehiculos', { defaultValue: 'Sin vehículos dentro.' })}
+          </p>
+        ) : (
+          <ul
+            className="min-h-0 flex-1 divide-y divide-border/40 overflow-y-auto"
+            data-testid="vehiculos-list"
+          >
+            {safe.map((it) => (
+              <VehiculoDentroRow key={it.uuid} ingreso={it} />
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
-  // Si cambia el pageSize o los items y la página actual queda fuera de
-  // rango, reset a la primera página. Evita que el operador quede en una
-  // página vacía después de un cambio de filtro o un corte de ingresos.
-  useEffect(() => {
-    const total = safe?.length ?? 0;
-    const maxPage = Math.max(0, Math.ceil(total / pageSize) - 1);
-    if (currentPage > maxPage) {
-      setCurrentPage(0);
-    }
-  }, [safe, pageSize, currentPage]);
+function VehiculoDentroRow({ ingreso: it }: { ingreso: IngresoActivo }): JSX.Element {
+  const { t } = useTranslation('caja');
+  const openDrawer = useDashboardDrawerStore((s) => s.open);
+  // Cuando una acción abre un drawer, el foco lo maneja el drawer (y al
+  // cerrarse vuelve a este trigger vía `lastAnchorId`); sólo al cerrar el
+  // menú SIN elegir acción (Esc / click afuera) Radix devuelve el foco a la fila.
+  const actionChosenRef = useRef(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const rowRef = useRef<HTMLLIElement>(null);
+  const plateRef = useRef<HTMLButtonElement>(null);
 
-  if (safe === null) {
-    return (
-      <p className="text-muted-foreground" data-testid="vehiculos-loading">
-        {t('common:loading')}
-      </p>
-    );
-  }
-  if (safe.length === 0) {
-    return (
-      <p className="text-muted-foreground" data-testid="vehiculos-empty">
-        {t('caja:dashboard.sinVehiculos', { defaultValue: 'Sin vehículos dentro.' })}
-      </p>
-    );
-  }
-
-  const totalPages = Math.max(1, Math.ceil(safe.length / pageSize));
-  const start = currentPage * pageSize;
-  const visible = safe.slice(start, start + pageSize);
-  const firstShown = start + 1;
-  const lastShown = Math.min(start + pageSize, safe.length);
+  // Identificador visible: placa si existe, sino el consecutivo
+  // (REQ-OPS-197, mismo string que se imprime en el tiquete), y
+  // como último recurso los primeros 8 chars del uuid.
+  const idVisible = it.placa ?? it.consecutivo ?? it.uuid.slice(0, 8);
+  const anchorId = `vehiculos-item-anchor-${it.uuid}`;
+  // Hora del ingreso: canon backend `fecha_ingreso`, con fallback a
+  // `created_at` para filas viejas donde la columna quedó null.
+  const horaIso = it.fecha_ingreso ?? it.created_at;
+  // Cobros pendientes: la columna inline a la derecha SOLO si
+  // el wire trae un valor > 0. Operador 2026-09-22: "los cobros
+  // pendientes solo apareceran en el lado derecho de la tabla de
+  // vehiculos dentro cuando sean > 0 si no hay no deben aparecer".
+  // `?? null` cubre tanto `undefined` (campo ausente) como `null`
+  // explícito del backend.
+  const cobrosPendientes =
+    typeof it.cobros_pendientes === 'number' && it.cobros_pendientes > 0
+      ? it.cobros_pendientes
+      : null;
 
   return (
-    <div className="flex flex-col" data-testid="vehiculos-list-paginated">
-      {/*
-        Contenedor con altura limitada: el card NUNCA excede el viewport
-        del kiosko. `-14rem` reserva el header + panel de placa + chrome
-        del card. En viewports chicos el overflow-y-auto absorbe el caso
-        límite donde pageSize=10 entra justo pero el alto disponible
-        es menor; en viewports normales (>=768px) no aparece scroll.
-      */}
-      {/* Reserve 20rem (antes 14rem): el footer de cupos (2026-09-24)
-          dejó de estar topeado en 80px — crece a propósito para tener
-          más presencia visual, así que esta lista reserva más espacio
-          para que el footer más alto no la tape. */}
-      <ul
-        className="max-h-[calc(100dvh-14rem)] flex-1 divide-y divide-border/40 overflow-y-auto"
-        data-testid="vehiculos-list"
-      >
-        {visible.map((it) => {
-          // Identificador visible: placa si existe, sino el consecutivo
-          // (REQ-OPS-197, mismo string que se imprime en el tiquete), y
-          // como último recurso los primeros 8 chars del uuid.
-          const idVisible =
-            it.placa ?? it.consecutivo ?? it.uuid.slice(0, 8);
-          // Hora del ingreso: canon backend `fecha_ingreso`, con fallback a
-          // `created_at` para filas viejas donde la columna quedó null.
-          const horaIso = it.fecha_ingreso ?? it.created_at;
-          // Cobros pendientes: la columna inline a la derecha SOLO si
-          // el wire trae un valor > 0. Operador 2026-09-22: "los cobros
-          // pendientes solo apareceran en el lado derecho de la tabla de
-          // vehiculos dentro cuando sean > 0 si no hay no deben aparecer".
-          // `?? null` cubre tanto `undefined` (campo ausente) como `null`
-          // explícito del backend.
-          const cobrosPendientes =
-            typeof it.cobros_pendientes === 'number' && it.cobros_pendientes > 0
-              ? it.cobros_pendientes
-              : null;
-          return (
-            <li
-              key={it.uuid}
-              data-testid={`vehiculos-item-${it.uuid}`}
-            >
-              {/* Fila accionable: click/Enter/Espacio abre la salida del
-                  vehículo (mismo helper que la búsqueda del hero). */}
-              <button
-                type="button"
-                data-testid={`vehiculos-item-action-${it.uuid}`}
-                aria-label={t('caja:dashboard.registrarSalidaDe', {
-                  defaultValue: `Registrar salida de ${idVisible}`,
-                  id: idVisible,
-                })}
-                onClick={() => openSalidaDeIngreso(openDrawer, 'vehiculos-item', it)}
-                className="group flex w-full items-center justify-between rounded-xl px-3 py-2 text-left hover:bg-accent/40 focus-ring-apple transition-colors"
-              >
-              <span className="font-mono text-sm font-medium uppercase tracking-wide" title={it.uuid}>
-                {idVisible}
-              </span>
-              <div className="flex items-baseline gap-3">
-                {cobrosPendientes !== null && (
-                  <span
-                    data-testid={`vehiculos-item-cobros-${it.uuid}`}
-                    className="text-xs font-medium text-amber-700 dark:text-amber-300 tabular-nums"
-                    title={t('caja:dashboard.cobrosPendientesTitle', {
-                      defaultValue: 'Cobros pendientes',
-                    })}
-                  >
-                    {formatCOP(cobrosPendientes)}
-                  </span>
-                )}
-                <span className="text-xs text-muted-foreground tabular-nums">
-                  {formatHoraCorta(horaIso)}
-                </span>
-              </div>
-              </button>
-            </li>
-          );
+    // The menu is anchored to the right-hand block (cobros + time) and opens to its
+    // LEFT, in a single row: it sits on the right side of the table, never covers
+    // the time and is not taller than the row, so neighbouring plates stay visible.
+    // The plate button (and the rest of the row) toggles it.
+    <li
+      ref={rowRef}
+      data-testid={`vehiculos-item-${it.uuid}`}
+      data-state={menuOpen ? 'open' : 'closed'}
+      className="flex cursor-pointer items-center justify-between rounded-xl transition-colors hover:bg-accent/40 data-[state=open]:bg-accent/40"
+      onClick={(e) => {
+        // Portaled menu events bubble through React; only handle clicks on the row itself.
+        if (!e.currentTarget.contains(e.target as Node)) return;
+        // The anchor block is the Radix trigger and toggles by itself.
+        if ((e.target as HTMLElement).closest('[data-menu-anchor]')) return;
+        setMenuOpen((open) => !open);
+      }}
+    >
+      <button
+        type="button"
+        ref={plateRef}
+        id={anchorId}
+        data-testid={`vehiculos-item-action-${it.uuid}`}
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        aria-label={t('caja:dashboard.accionesDe', {
+          defaultValue: `Acciones para ${idVisible}`,
+          id: idVisible,
         })}
-      </ul>
-
-      {/*
-        Footer de paginación. Siempre visible cuando hay items — el
-        operador puede necesitar cambiar pageSize aunque haya una sola
-        página. Mantiene el control cerca de la lista (no en el header)
-        para no inflar el CardHeader.
-      */}
-      <div
-        className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border/40 pt-3 text-xs text-muted-foreground"
-        data-testid="vehiculos-pagination"
+        className="rounded-xl px-3 py-2 text-left focus-ring-apple"
       >
-        <span className="tabular-nums" data-testid="vehiculos-pagination-range">
-          {firstShown}-{lastShown} de {safe.length}
+        <span className="font-mono text-sm font-medium uppercase tracking-wide" title={it.uuid}>
+          {idVisible}
         </span>
-        <div className="flex items-center gap-1">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            disabled={currentPage === 0}
-            onClick={() => setCurrentPage((p) => Math.max(0, p - 1))}
-            aria-label={t('caja:dashboard.paginaAnterior', {
-              defaultValue: 'Página anterior',
-            })}
-            data-testid="vehiculos-pagination-prev"
-            className="h-7 w-7 p-0 rounded-lg"
-          >
-            ‹
-          </Button>
-          <span
-            className="tabular-nums"
-            data-testid="vehiculos-pagination-page"
-            aria-label={t('caja:dashboard.paginaActual', {
-              defaultValue: `Página ${currentPage + 1} de ${totalPages}`,
-              current: currentPage + 1,
-              total: totalPages,
-            })}
-          >
-            {currentPage + 1} / {totalPages}
-          </span>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            disabled={currentPage >= totalPages - 1}
-            onClick={() =>
-              setCurrentPage((p) => Math.min(totalPages - 1, p + 1))
-            }
-            aria-label={t('caja:dashboard.paginaSiguiente', {
-              defaultValue: 'Página siguiente',
-            })}
-            data-testid="vehiculos-pagination-next"
-            className="h-7 w-7 p-0 rounded-lg"
-          >
-            ›
-          </Button>
-          <span className="ml-2 hidden sm:inline">
-            {t('caja:dashboard.porPagina', { defaultValue: 'Por página' })}:
-          </span>
-          <div
-            role="group"
-            aria-label={t('caja:dashboard.porPagina', {
-              defaultValue: 'Por página',
-            })}
-            className="inline-flex overflow-hidden rounded-lg border border-border/60"
-          >
-            {PAGE_SIZE_OPTIONS.map((opt) => {
-              const active = pageSize === opt;
-              return (
-                <button
-                  key={opt}
-                  type="button"
-                  onClick={() => setPageSize(opt)}
-                  aria-pressed={active}
-                  className={
-                    'px-2.5 py-1 text-xs font-semibold ' +
-                    (active
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-background hover:bg-accent/60')
-                  }
-                  data-testid={`vehiculos-pagination-size-${opt}`}
-                >
-                  {opt}
-                </button>
-              );
-            })}
+      </button>
+      <DropdownMenu modal={false} open={menuOpen} onOpenChange={setMenuOpen}>
+        <DropdownMenuTrigger asChild>
+          <div data-menu-anchor className="flex items-baseline gap-3 px-3 py-2">
+            {cobrosPendientes !== null && (
+              <span
+                data-testid={`vehiculos-item-cobros-${it.uuid}`}
+                className="text-xs font-medium text-amber-700 dark:text-amber-300 tabular-nums"
+                title={t('caja:dashboard.cobrosPendientesTitle', {
+                  defaultValue: 'Cobros pendientes',
+                })}
+              >
+                {formatCOP(cobrosPendientes)}
+              </span>
+            )}
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {formatHoraCorta(horaIso)}
+            </span>
           </div>
-        </div>
-      </div>
-    </div>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          side="left"
+          align="center"
+          sideOffset={4}
+          className="flex flex-row justify-end gap-2 p-1.5"
+          data-testid={`vehiculos-item-menu-${it.uuid}`}
+          onInteractOutside={(e) => {
+            // Clicks on this row's own plate/row are handled by the row toggle.
+            if (rowRef.current?.contains(e.target as Node)) e.preventDefault();
+          }}
+          onCloseAutoFocus={(e) => {
+            // The anchor is not focusable: hand focus back to the plate button, unless
+            // an action opened a drawer (the drawer owns focus then).
+            e.preventDefault();
+            if (actionChosenRef.current) {
+              actionChosenRef.current = false;
+              return;
+            }
+            plateRef.current?.focus();
+          }}
+        >
+          <DropdownMenuItem
+            data-testid={`vehiculos-item-salida-${it.uuid}`}
+            className="h-8 cursor-pointer whitespace-nowrap rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/70 hover:text-primary-foreground hover:ring-2 hover:ring-primary/40 focus:bg-primary/70 focus:text-primary-foreground data-[highlighted]:bg-primary/70 data-[highlighted]:text-primary-foreground data-[highlighted]:ring-2 data-[highlighted]:ring-primary/40"
+            onSelect={() => {
+              actionChosenRef.current = true;
+              openSalidaDeIngreso(openDrawer, anchorId, it);
+            }}
+          >
+            {t('caja:dashboard.registrarSalida', { defaultValue: 'Registrar salida' })}
+          </DropdownMenuItem>
+          {terminoReimpresion(it) !== null && (
+            <DropdownMenuItem
+              data-testid={`vehiculos-item-reimprimir-${it.uuid}`}
+              className="h-8 cursor-pointer whitespace-nowrap rounded-lg border border-border bg-background px-3 text-xs font-medium transition-colors hover:border-primary hover:bg-primary/30 hover:text-foreground focus:border-primary focus:bg-primary/30 focus:text-foreground data-[highlighted]:border-primary data-[highlighted]:bg-primary/30"
+              onSelect={() => {
+                actionChosenRef.current = true;
+                openReimpresionDeIngreso(openDrawer, anchorId, it);
+              }}
+            >
+              {t('caja:dashboard.reimprimirTicketEntrada', {
+                defaultValue: 'Reimprimir ticket de entrada',
+              })}
+            </DropdownMenuItem>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </li>
   );
 }
